@@ -6,10 +6,18 @@ from admet.core.schema import ParamKind, ParamSchema
 from admet.core.workflow import Workflow, WorkflowState
 
 
-def render_workflow(workflow: Workflow, state: WorkflowState, settings: ParamSchema | None = None) -> None:
+def render_workflow(
+    workflow: Workflow,
+    state: WorkflowState,
+    settings: ParamSchema | None = None,
+    *,
+    engine: Any | None = None,
+) -> None:
     from nicegui import ui
 
     ui.label(workflow.label).classes("text-h4")
+    if engine is not None:
+        ui.label(f"Engine: {engine.name}").classes("text-subtitle2 text-grey-7")
     with ui.stepper().props("vertical").classes("w-full") as stepper:
         for stage in workflow.stages:
             with ui.step(stage.label):
@@ -41,4 +49,3 @@ def render_settings(settings: ParamSchema) -> dict[str, Any]:
         else:
             ui.input(param.label, value=param.default or "").bind_value(values, param.name)
     return values
-
