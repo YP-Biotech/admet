@@ -1,5 +1,6 @@
 """Headless acquisition pipeline primitives."""
 
+from .engine import PipelineEngine, PipelineEvent, PipelineState
 from .steps import PipelineStep, StepStatus
 from .triggers import (
     ConditionTrigger,
@@ -14,6 +15,9 @@ from .triggers import (
 __all__ = [
     "ConditionTrigger",
     "ConfirmationTrigger",
+    "PipelineEngine",
+    "PipelineEvent",
+    "PipelineState",
     "PipelineStep",
     "StepStatus",
     "ThresholdTrigger",
