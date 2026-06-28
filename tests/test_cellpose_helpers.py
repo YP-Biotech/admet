@@ -2,12 +2,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from admet.engines.analyze.cellpose.cache import Cache
 from admet.engines.analyze.cellpose.config import load_config
 from admet.engines.analyze.cellpose.correction import update_results_with_inclusions
+from admet.engines.analyze.cellpose.detection import CellposeDetection, CellposeUnavailableError
+from admet.engines.analyze.cellpose.engine import create_engine
 from admet.engines.analyze.cellpose.scanprotocol import build_layout, field_cells
 
 
@@ -121,6 +124,58 @@ class CellposeHelperTests(unittest.TestCase):
         self.assertEqual([row["droplet_id"] for row in corrected], [1, 3])
         self.assertEqual([row["inclusions"] for row in corrected], [2, 1])
         self.assertEqual([row["detected"] for row in corrected], [False, False])
+
+    def test_detection_parses_and_groups_evos_filenames(self):
+        detector = CellposeDetection(use_cache=False)
+
+        self.assertEqual(detector.parse_filename("image_z01_a01f05d4.tif"), (1, 5))
+        self.assertEqual(detector.parse_filename("image_a01f10d4.tif"), (0, 10))
+        self.assertEqual(detector.parse_filename("not-a-field.tif"), (0, None))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name in ("image_z02_a01f05d4.tif", "image_z01_a01f05d4.tif", "skip.tif"):
+                (Path(tmpdir) / name).touch()
+
+            groups = detector.load_and_group_images(tmpdir)
+
+        self.assertEqual(list(groups), [5])
+        self.assertEqual([z_index for z_index, _ in groups[5]], [1, 2])
+
+    def test_missing_cellpose_raises_import_error(self):
+        detector = CellposeDetection(use_cache=False)
+        original_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "cellpose.models":
+                raise ImportError("cellpose unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import), self.assertRaises(
+            CellposeUnavailableError
+        ):
+            detector.detect_droplets_cellpose(np.zeros((4, 4), dtype=np.uint8))
+
+    def test_cellpose_engine_returns_empty_result_for_empty_input(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "empty-sample"
+            output_dir = Path(tmpdir) / "output"
+            input_dir.mkdir()
+
+            result = create_engine().run_action(
+                "analyze",
+                {
+                    "input_dir": str(input_dir),
+                    "output_dir": str(output_dir),
+                    "write_artifacts": False,
+                },
+            )
+
+        stats = {stat.name: stat.value for stat in result.result_set.stats}
+        self.assertEqual(result.result_set.records, ())
+        self.assertEqual(stats["total_droplets"], 0)
+        self.assertEqual(stats["total_inclusions"], 0)
+        self.assertEqual(result.result_set.metadata["sample_id"], "empty-sample")
+        self.assertEqual(result.artifacts["output_dir"], str(output_dir))
 
 
 if __name__ == "__main__":
