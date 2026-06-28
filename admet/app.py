@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from admet.engines.analyze import create_analyze_registry
-from admet.engines.dummy import create_engine as create_dummy_engine
+from admet.engines.control import create_engine as create_control_engine
 from admet.workflows import create_analyze_workflow, create_control_workflow
 
 
@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> None:
         native = False
     else:
         workflow = create_control_workflow()
-        engine = create_dummy_engine()
+        engine = create_control_engine()
         native = True
 
     from admet.ui import render_workflow

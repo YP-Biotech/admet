@@ -1,0 +1,148 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from admet.core.engine import EngineContext
+from admet.engines.control.engine import FluidicsControlEngine
+from admet.engines.control.fluidics import PressureChannelInfo, SensorChannelInfo
+from admet.engines.control.fluidics.config import ProtocolStep
+
+
+class FakeControlSDK:
+    def __init__(self):
+        self.calls = []
+        self.pressure_channels = [
+            PressureChannelInfo(0, 1, 10, 0, "pressure", pmin=0.0, pmax=2000.0),
+            PressureChannelInfo(1, 1, 11, 1, "pressure", pmin=0.0, pmax=2000.0),
+        ]
+        self.sensor_channels = [
+            SensorChannelInfo(0, 1, 20, 0, "sensor", "Flow_L_dual", smin=0.0, smax=100.0),
+            SensorChannelInfo(1, 1, 21, 1, "sensor", "Flow_M_dual", smin=0.0, smax=40.0),
+        ]
+
+    def create_simulated_instrument(self, instr_type, serial, firmware, config):
+        self.calls.append(("create_sim", instr_type, serial, firmware, list(config)))
+
+    def remove_simulated_instrument(self, instr_type, serial):
+        self.calls.append(("remove_sim", instr_type, serial))
+
+    def init(self, instruments=None):
+        self.calls.append(("init", instruments))
+
+    def close(self):
+        self.calls.append(("close",))
+
+    def get_controllers_info(self):
+        return [{"sn": 1, "firmware": 2, "index": 0, "type": "LineUP"}]
+
+    def get_pressure_channels_info(self):
+        return list(self.pressure_channels)
+
+    def get_sensor_channels_info(self):
+        return list(self.sensor_channels)
+
+    def set_sensor_custom_scale(self, sensor_index, a, b=0.0, c=0.0, smax=None):
+        self.calls.append(("custom_scale", sensor_index, a, b, c, smax))
+
+    def set_sensor_regulation(self, sensor_index, pressure_index, setpoint):
+        self.calls.append(("regulate", sensor_index, pressure_index, setpoint))
+
+    def set_pressure(self, pressure_index, pressure):
+        self.calls.append(("pressure", pressure_index, pressure))
+
+    def get_pressure(self, pressure_index):
+        return 0.0
+
+    def get_sensor_value(self, sensor_index):
+        return 0.0
+
+    def calibrate_pressure(self, pressure_index):
+        self.calls.append(("calibrate", pressure_index))
+
+
+class FluidicsControlEngineTests(unittest.TestCase):
+    def test_connect_configures_channels_and_returns_status(self):
+        sdk = FakeControlSDK()
+        engine = FluidicsControlEngine(sdk)
+
+        result = engine.run_action(
+            "connect_fluidics",
+            {"simulated": True, "start_polling": False},
+        )
+
+        metadata = result.result_set.metadata
+        self.assertTrue(metadata["connected"])
+        self.assertTrue(metadata["simulated"])
+        self.assertEqual(metadata["pressure_channels"], 2)
+        self.assertEqual(metadata["sensor_channels"], 2)
+        self.assertEqual(len(engine.channel_manager.channels), 2)
+        self.assertFalse(metadata["polling_active"])
+        self.assertIn(("init", None), sdk.calls)
+
+        engine.run_action("disconnect_fluidics", {})
+        self.assertFalse(engine.hardware.connected)
+        self.assertIn(("close",), sdk.calls)
+
+    def test_start_recording_uses_context_workdir(self):
+        sdk = FakeControlSDK()
+        engine = FluidicsControlEngine(sdk)
+        engine.run_action("connect_fluidics", {"simulated": False, "start_polling": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = engine.run_action(
+                "start_recording",
+                {"log_dir": "fluidics-logs"},
+                EngineContext(workdir=tmpdir),
+            )
+            csv_path = Path(result.artifacts["csv_path"])
+
+        self.assertEqual(csv_path.parent.name, "fluidics-logs")
+        self.assertTrue(result.result_set.metadata["recording_active"])
+        engine.run_action("stop_recording", {})
+        self.assertFalse(engine.recording_active)
+
+    def test_build_pipeline_expands_group_repeats(self):
+        engine = FluidicsControlEngine(FakeControlSDK())
+        steps = [
+            ProtocolStep(
+                "solo",
+                {0: 1.0},
+                "time",
+                {"duration_s": 1.0},
+            ),
+            ProtocolStep(
+                "g1",
+                {0: 1.0},
+                "time",
+                {"duration_s": 1.0},
+                group="x",
+                repeat=2,
+            ),
+            ProtocolStep(
+                "g2",
+                {0: 2.0},
+                "time",
+                {"duration_s": 1.0},
+                group="x",
+                repeat=2,
+            ),
+        ]
+
+        pipeline = engine.build_pipeline_from_steps(steps)
+
+        self.assertEqual([step.name for step in pipeline], ["solo", "g1", "g2", "g1", "g2"])
+
+    def test_calibrate_action_uses_all_pressure_channels(self):
+        sdk = FakeControlSDK()
+        engine = FluidicsControlEngine(sdk)
+        engine.run_action("connect_fluidics", {"simulated": False, "start_polling": False})
+
+        result = engine.run_action("calibrate", {})
+
+        self.assertEqual(result.result_set.records[0].values["action"], "calibrate")
+        self.assertIn(("calibrate", 0), sdk.calls)
+        self.assertIn(("calibrate", 1), sdk.calls)
+
+
+if __name__ == "__main__":
+    unittest.main()
