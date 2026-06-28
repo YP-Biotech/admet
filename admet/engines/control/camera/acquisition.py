@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable
+from threading import Event, Thread
+from typing import Protocol
+
+import numpy as np
+
+log = logging.getLogger(__name__)
+
+
+class CameraSource(Protocol):
+    def start_grabbing(self, *, latest_only: bool = True) -> None:
+        ...
+
+    def stop_grabbing(self) -> None:
+        ...
+
+    def grab_frame(self, timeout_ms: int = 5) -> np.ndarray | None:
+        ...
+
+
+class FrameWriter(Protocol):
+    frame_count: int
+
+    def start(self) -> bool:
+        ...
+
+    def write(self, frame: np.ndarray) -> bool:
+        ...
+
+    def stop(self) -> str:
+        ...
+
+
+FrameCallback = Callable[[np.ndarray], None]
+StatsCallback = Callable[[dict], None]
+
+
+class CameraAcquisitionThread(Thread):
+    def __init__(
+        self,
+        camera: CameraSource,
+        *,
+        preview_callback: FrameCallback | None = None,
+        stats_callback: StatsCallback | None = None,
+        sleep_s: float = 0.001,
+        stats_interval_s: float = 0.2,
+    ):
+        super().__init__(daemon=True, name="CameraAcquisitionThread")
+        self.camera = camera
+        self.preview_callback = preview_callback
+        self.stats_callback = stats_callback
+        self.sleep_s = sleep_s
+        self.stats_interval_s = stats_interval_s
+
+        self.writer: FrameWriter | None = None
+        self.frame_count = 0
+        self.start_time = 0.0
+        self.last_stats_time = 0.0
+        self.max_frames: int | None = None
+        self.max_time: float | None = None
+        self.preview_enabled = True
+
+        self._stop_event = Event()
+        self._recording_event = Event()
+        self._frame_pending = Event()
+
+    @property
+    def recording(self) -> bool:
+        return self._recording_event.is_set()
+
+    def run(self) -> None:
+        self._stop_event.clear()
+        self.last_stats_time = time.time()
+        self.camera.start_grabbing(latest_only=True)
+        while not self._stop_event.is_set():
+            frame = self.camera.grab_frame()
+            if frame is None:
+                time.sleep(self.sleep_s)
+                continue
+            self.process_frame(frame)
+        self.camera.stop_grabbing()
+
+    def process_frame(self, frame: np.ndarray) -> None:
+        if self._recording_event.is_set() and self.writer:
+            if self.writer.write(frame):
+                self.frame_count += 1
+                if self._check_limits():
+                    self.stop_recording()
+
+        if self.preview_enabled and not self._frame_pending.is_set() and self.preview_callback:
+            self._frame_pending.set()
+            self.preview_callback(frame)
+
+        current_time = time.time()
+        if self.stats_callback and current_time - self.last_stats_time >= self.stats_interval_s:
+            self.last_stats_time = current_time
+            recording = self._recording_event.is_set()
+            self.stats_callback(
+                {
+                    "recording": recording,
+                    "frames": self.frame_count if recording else 0,
+                    "elapsed": current_time - self.start_time if recording else 0,
+                }
+            )
+
+    def start_recording(
+        self,
+        writer: FrameWriter,
+        *,
+        max_frames: int | None = None,
+        max_time: float | None = None,
+    ) -> bool:
+        self.writer = writer
+        self.max_frames = max_frames
+        self.max_time = max_time
+        self.frame_count = 0
+        self.start_time = time.time()
+        if not self.writer.start():
+            self.writer = None
+            return False
+        self.camera.stop_grabbing()
+        self.camera.start_grabbing(latest_only=False)
+        self._recording_event.set()
+        return True
+
+    def stop_recording(self) -> int:
+        frames = self.frame_count
+        self._recording_event.clear()
+        if self.writer:
+            self.writer.stop()
+            self.writer = None
+        if not self._stop_event.is_set():
+            self.camera.stop_grabbing()
+            self.camera.start_grabbing(latest_only=True)
+        return frames
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._recording_event.is_set():
+            self.stop_recording()
+        if self.is_alive():
+            self.join(timeout=2.0)
+
+    def set_preview_enabled(self, enabled: bool) -> None:
+        self.preview_enabled = enabled
+
+    def frame_processed(self) -> None:
+        self._frame_pending.clear()
+
+    def _check_limits(self) -> bool:
+        if self.max_frames and self.frame_count >= self.max_frames:
+            return True
+        if self.max_time and time.time() - self.start_time >= self.max_time:
+            return True
+        return False

@@ -6,7 +6,12 @@ from unittest.mock import patch
 
 import numpy as np
 
-from admet.engines.control.camera import Camera, PypylonUnavailableError, VideoWorker
+from admet.engines.control.camera import (
+    Camera,
+    CameraAcquisitionThread,
+    PypylonUnavailableError,
+    VideoWorker,
+)
 
 
 class FakeParam:
@@ -164,6 +169,75 @@ class VideoWorkerTests(unittest.TestCase):
             self.assertEqual(encoded["count"], 1)
             self.assertEqual(encoded["first_bytes"], bytes([0, 1, 2, 4]))
             self.assertEqual(encoded["shape"], (2, 2, 30.0))
+
+
+class FakeRecordingCamera:
+    def __init__(self):
+        self.strategies = []
+        self.grabbing = False
+
+    def start_grabbing(self, *, latest_only=True):
+        self.strategies.append(latest_only)
+        self.grabbing = True
+
+    def stop_grabbing(self):
+        self.grabbing = False
+
+    def grab_frame(self, timeout_ms=5):
+        return np.ones((2, 2), dtype=np.uint8)
+
+
+class FakeWriter:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+        self.frames = []
+        self.frame_count = 0
+
+    def start(self):
+        self.started = True
+        return True
+
+    def write(self, frame):
+        self.frames.append(frame.copy())
+        self.frame_count += 1
+        return True
+
+    def stop(self):
+        self.stopped = True
+        return "video.avi"
+
+
+class CameraAcquisitionThreadTests(unittest.TestCase):
+    def test_recording_writes_frames_and_switches_grab_strategy(self):
+        camera = FakeRecordingCamera()
+        writer = FakeWriter()
+        previews = []
+        acquisition = CameraAcquisitionThread(camera, preview_callback=previews.append)
+
+        self.assertTrue(acquisition.start_recording(writer, max_frames=2))
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8))
+        acquisition.frame_processed()
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8))
+
+        self.assertFalse(acquisition.recording)
+        self.assertTrue(writer.started)
+        self.assertTrue(writer.stopped)
+        self.assertEqual(len(writer.frames), 2)
+        self.assertEqual(previews[0].shape, (2, 2))
+        self.assertEqual(camera.strategies, [False, True])
+
+    def test_preview_can_be_disabled(self):
+        previews = []
+        acquisition = CameraAcquisitionThread(
+            FakeRecordingCamera(),
+            preview_callback=previews.append,
+        )
+        acquisition.set_preview_enabled(False)
+
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8))
+
+        self.assertEqual(previews, [])
 
 
 if __name__ == "__main__":
