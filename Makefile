@@ -1,7 +1,5 @@
 .PHONY: setup dev build test test-all test-core test-analyze test-control lint fmt clean
 
-PYTHON ?= python
-
 setup:
 	uv sync
 
@@ -16,13 +14,13 @@ test: test-core
 test-all: test-core test-analyze test-control
 
 test-core:
-	uv run python -m unittest discover -s tests
+	uv run -m unittest discover -s tests
 
 test-analyze:
-	uv run python -m unittest discover -s tests -p '*analyze*.py'
+	uv run -m unittest discover -s tests -p '*analyze*.py'
 
 test-control:
-	uv run python -m unittest discover -s tests -p '*control*.py'
+	uv run -m unittest discover -s tests -p '*control*.py'
 
 lint:
 	uv run ruff check .
@@ -32,4 +30,3 @@ fmt:
 
 clean:
 	rm -rf .pytest_cache .ruff_cache build dist *.egg-info
-
