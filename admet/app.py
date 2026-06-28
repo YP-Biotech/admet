@@ -22,8 +22,10 @@ def main(argv: list[str] | None = None) -> None:
 
     from admet.ui import render_workflow
 
-    render_workflow(workflow, workflow.initial_state(), create_engine().settings)
-    ui.run(native=native, title=f"admet {args.mode}")
+    def root() -> None:
+        render_workflow(workflow, workflow.initial_state(), create_engine().settings)
+
+    ui.run(root=root, native=native, reload=False, show=False, title=f"admet {args.mode}")
 
 
 if __name__ == "__main__":
