@@ -11,6 +11,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="admet")
     parser.add_argument("mode", choices=("analyze", "control"))
     parser.add_argument("--engine", default="dummy", help="engine id for analyze mode")
+    parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args(argv)
 
     from nicegui import ui
@@ -33,7 +34,14 @@ def main(argv: list[str] | None = None) -> None:
     def root() -> None:
         render_workflow(workflow, workflow.initial_state(), engine.settings, engine=engine)
 
-    ui.run(root=root, native=native, reload=False, show=False, title=f"admet {args.mode}")
+    ui.run(
+        root=root,
+        native=native,
+        reload=False,
+        show=False,
+        port=args.port,
+        title=f"admet {args.mode}",
+    )
 
 
 if __name__ == "__main__":
