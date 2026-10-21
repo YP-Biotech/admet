@@ -25,11 +25,56 @@ class ChannelState:
 
 
 class ChannelManager:
+    """Who controls each channel, and its flow regulation.
+
+    On real hardware ADMET feeds the regulation itself: every poll it hands the
+    SDK the reading and the setpoint (fgt_set_customSensorRegulation). The unit's
+    own regulation is never started, so its reaction to a negative flow, dropping
+    the pressure to zero, never happens. ADMET decides instead: while the unit
+    reads a negative flow, the regulation is told it is on target, so it holds the
+    pressure where it is. The simulator does not move its flow with pressure, so
+    there the unit's own regulation is used.
+    """
+
     def __init__(self, sdk: FluigentSDK):
         self._sdk = sdk
         self._lock = threading.Lock()
         self._channels: list[ChannelState] = []
         self._pipeline_paused = False
+        self.admet_regulation = False
+        self._ranges: dict[int, float] = {}
+        self._flows: dict[int, float] = {}
+
+    def set_regulation(self, *, admet: bool, ranges: dict[int, float]) -> None:
+        """Whether ADMET feeds the regulation, and each sensor's range it regulates within."""
+        with self._lock:
+            self.admet_regulation = admet
+            self._ranges = dict(ranges)
+
+    def feed_regulation(self, flows: list[float]) -> None:
+        """One regulation step for every flow-regulated channel, from this poll's readings."""
+        with self._lock:
+            self._flows = dict(enumerate(flows))
+            if not self.admet_regulation:
+                return
+            for channel in self._channels:
+                if channel.mode == "flow" and channel.regulation_active:
+                    self._feed(channel)
+
+    def _feed(self, channel: ChannelState) -> None:
+        flow = self._flows.get(channel.sensor_index)
+        if flow is None:
+            flow = self._flows[channel.sensor_index] = float(self._sdk.get_sensor_value(channel.sensor_index))
+        measure = flow if flow >= 0 else channel.active_setpoint
+        self._sdk.set_custom_regulation(measure, channel.active_setpoint,
+                                        self._ranges.get(channel.sensor_index, 0.0), channel.pressure_index)
+
+    def _regulate(self, channel: ChannelState, setpoint: float) -> None:
+        """Regulate the channel's flow to setpoint: fed by ADMET, or by the unit itself in simulation."""
+        if self.admet_regulation:
+            self._feed(channel)
+        else:
+            self._sdk.set_sensor_regulation(channel.sensor_index, channel.pressure_index, setpoint)
 
     @property
     def channels(self) -> list[ChannelState]:
@@ -60,11 +105,7 @@ class ChannelManager:
             channel.mode = "flow"
             if activate:
                 channel.regulation_active = True
-                self._sdk.set_sensor_regulation(
-                    channel.sensor_index,
-                    channel.pressure_index,
-                    setpoint,
-                )
+                self._regulate(channel, setpoint)
                 channel.command_started = time.monotonic()
 
     def user_set_pressure(self, channel_idx: int, pressure_mbar: float) -> None:
@@ -88,7 +129,7 @@ class ChannelManager:
             channel.base_setpoint = channel.active_setpoint = 0.0
             if channel.mode == "flow":
                 channel.regulation_active = True
-                self._sdk.set_sensor_regulation(channel.sensor_index, channel.pressure_index, 0.0)
+                self._regulate(channel, 0.0)
                 channel.command_started = time.monotonic()
             else:
                 channel.pressure_setpoint = 0.0
@@ -120,11 +161,7 @@ class ChannelManager:
             channel.regulation_active = True
             channel.mode = "flow"
             channel.pressure_setpoint = 0.0
-            self._sdk.set_sensor_regulation(
-                channel.sensor_index,
-                channel.pressure_index,
-                setpoint,
-            )
+            self._regulate(channel, setpoint)
             channel.command_started = time.monotonic()
 
     def pipeline_set_pressure(self, channel_idx: int, pressure_mbar: float) -> None:
@@ -151,11 +188,7 @@ class ChannelManager:
             channel.active_setpoint = channel.base_setpoint
             if channel.base_setpoint > 0 or channel.regulation_active:
                 channel.mode = "flow"
-                self._sdk.set_sensor_regulation(
-                    channel.sensor_index,
-                    channel.pressure_index,
-                    channel.base_setpoint,
-                )
+                self._regulate(channel, channel.base_setpoint)
                 channel.command_started = time.monotonic()
             else:
                 channel.regulation_active = False
@@ -173,11 +206,7 @@ class ChannelManager:
                         self._sdk.set_pressure(channel.pressure_index, 0.0)
                         channel.command_started = time.monotonic()
                     else:
-                        self._sdk.set_sensor_regulation(
-                            channel.sensor_index,
-                            channel.pressure_index,
-                            0.0,
-                        )
+                        self._regulate(channel, 0.0)
                         channel.command_started = time.monotonic()
 
     def pipeline_resume_all(self) -> None:
@@ -193,17 +222,16 @@ class ChannelManager:
                         self._sdk.set_pressure(channel.pressure_index, 0.0)
                         channel.command_started = time.monotonic()
                     else:
-                        self._sdk.set_sensor_regulation(
-                            channel.sensor_index,
-                            channel.pressure_index,
-                            0.0,
-                        )
+                        channel.active_setpoint = 0.0
+                        self._regulate(channel, 0.0)
                         channel.command_started = time.monotonic()
                     channel.owner = "user"
                     channel.active_setpoint = 0.0
-                    channel.regulation_active = False
-                    channel.mode = "off"
                     channel.pressure_setpoint = 0.0
+                    # The unit's own regulation keeps holding 0 by itself; ADMET's must keep being fed.
+                    keep = self.admet_regulation and channel.mode == "flow"
+                    channel.regulation_active = keep
+                    channel.mode = "flow" if keep else "off"
 
     def emergency_stop_all(self) -> None:
         with self._lock:

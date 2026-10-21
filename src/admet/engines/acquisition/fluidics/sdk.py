@@ -188,6 +188,10 @@ class FluigentSDK:
     ) -> None:
         self._module().fgt_set_sensorRegulation(sensor_index, pressure_index, setpoint)
 
+    def set_custom_regulation(self, measure: float, setpoint: float, max_range: float, pressure_index: int) -> None:
+        """One step of the SDK's regulation fed by ADMET's own reading; it stops unless fed at 1 Hz or more."""
+        self._module().fgt_set_customSensorRegulation(measure, setpoint, max_range, pressure_index)
+
     def get_sensor_value(self, sensor_index: int) -> float:
         return float(self._module().fgt_get_sensorValue(sensor_index))
 

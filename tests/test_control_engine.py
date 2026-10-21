@@ -105,6 +105,9 @@ class FakeControlSDK:
     def set_sensor_regulation(self, sensor_index, pressure_index, setpoint):
         self.calls.append(("regulate", sensor_index, pressure_index, setpoint))
 
+    def set_custom_regulation(self, measure, setpoint, max_range, pressure_index):
+        self.calls.append(("custom_regulation", measure, setpoint, max_range, pressure_index))
+
     def set_sensor_regulation_response(self, sensor_index, response_s):
         self.calls.append(("sensor_response", sensor_index, response_s))
 
@@ -510,6 +513,7 @@ class AcquisitionEngineTests(unittest.TestCase):
         sdk = FakeControlSDK()
         engine = make_engine(sdk)
         run_engine(engine, "connect_fluidics", {"simulated": False, "start_polling": False})
+        self.addCleanup(engine.stop_polling)
 
         calibrate = run_engine(engine, "calibrate_channels", {})
         corrections = run_engine(engine,
@@ -553,10 +557,34 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertEqual(scales[:2], [("custom_scale", 0, 1.0, 0.0, 0.0, None),
                                       ("custom_scale", 0, 0.7391, 0.012728, 0.0, 100.0)])
         self.assertEqual(scales[2], ("custom_scale", 1, 1.0, 0.0, 0.0, None))
-        self.assertIn(("regulate", 1, 1, 67.0), sdk.calls)
+        # On hardware ADMET feeds the regulation (reading, setpoint, range, pressure channel).
+        self.assertIn(("custom_regulation", 0.0, 67.0, 40.0, 1), sdk.calls)
+        self.assertNotIn("regulate", {call[0] for call in sdk.calls})
         self.assertIn(("pressure", 0, 120.0), sdk.calls)
         self.assertIn(("sensor_response", 1, 4), sdk.calls)
-        self.assertIn(("regulate", 1, 1, 0.0), sdk.calls)   # a flow channel stops at flow 0
+        self.assertIn(("custom_regulation", 0.0, 0.0, 40.0, 1), sdk.calls)   # a flow channel stops at flow 0
+        self.assertTrue(engine.polling_active)                               # the feed keeps it regulating
+
+    def test_admet_regulation_holds_pressure_on_negative_flow_instead_of_resetting(self):
+        from admet.engines.acquisition.fluidics.channels import ChannelManager
+
+        sdk = FakeControlSDK()
+        manager = ChannelManager(sdk)
+        manager.configure_channels([(0, 0), (1, 1)])
+        manager.set_regulation(admet=True, ranges={0: 1000.0, 1: 80.0})
+        manager.feed_regulation([0.0, 0.0])
+        manager.user_set_flow_regulation(1, 20.0)
+        manager.feed_regulation([0.0, 12.0])
+        manager.feed_regulation([0.0, -150.0])          # the unit reads backwards
+        manager.user_set_pressure(0, 50.0)              # a pressure channel is not fed
+
+        fed = [call for call in sdk.calls if call[0] == "custom_regulation"]
+        self.assertEqual(fed, [("custom_regulation", 0.0, 20.0, 80.0, 1),
+                               ("custom_regulation", 12.0, 20.0, 80.0, 1),
+                               ("custom_regulation", 20.0, 20.0, 80.0, 1)])   # on target: pressure held
+        self.assertNotIn(("pressure", 1, 0.0), sdk.calls)
+        manager.feed_regulation([0.0, 5.0])
+        self.assertEqual(len([call for call in sdk.calls if call[0] == "custom_regulation"]), 4)
 
     def test_camera_refresh_and_connect_are_nonfatal_without_device(self):
         engine = make_engine(FakeControlSDK())

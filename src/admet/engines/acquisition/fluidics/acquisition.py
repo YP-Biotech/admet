@@ -121,6 +121,7 @@ class AcquisitionThread(threading.Thread):
         data_queue: Queue[DataSnapshot],
         csv_logger: CsvLogger | None = None,
         *,
+        on_flows=None,
         interval_ms: int = ACQUISITION_INTERVAL_MS,
         stats_window_samples: int = STATS_WINDOW_SAMPLES,
         stability_window_samples: int = STABILITY_WINDOW_SAMPLES,
@@ -133,6 +134,7 @@ class AcquisitionThread(threading.Thread):
         self._sensor_count = sensor_count
         self._data_queue = data_queue
         self._csv_logger = csv_logger
+        self._on_flows = on_flows
         self._csv_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._start_time = 0.0
@@ -204,6 +206,9 @@ class AcquisitionThread(threading.Thread):
         timestamp = now.strftime("%H:%M:%S.%f")[:-3]
         pressures = [self._sdk.get_pressure(index) for index in range(self._pressure_count)]
         flows = [self._sdk.get_sensor_value(index) for index in range(self._sensor_count)]
+        if self._on_flows is not None:
+            # Regulation first: it must not wait on bookkeeping.
+            self._on_flows(flows)
 
         for index, pressure in enumerate(pressures):
             self._pressure_history[index].append(pressure)

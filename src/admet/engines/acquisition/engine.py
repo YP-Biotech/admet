@@ -419,6 +419,7 @@ class AcquisitionEngine:
             sensor_count=len(state.sensor_channels),
             data_queue=self.data_queue,
             csv_logger=self.csv_logger if self.recording_active else None,
+            on_flows=self.channel_manager.feed_regulation,
         )
         self._acquisition.start()
 
@@ -458,6 +459,7 @@ class AcquisitionEngine:
             detected = updated.get(sensor.index)
             sensor.smin = getattr(detected, "smin", None)
             sensor.smax = getattr(detected, "smax", None)
+        self._update_regulation_ranges()
         # New corrections change what the sensors report, so learned tails restart.
         self.tails.clear()
 
@@ -479,6 +481,8 @@ class AcquisitionEngine:
         self._require_fluidics_connected()
         self._manual_stop_rule(stop_after, stop_value)
         self._cancel_manual_stop(channel_index)
+        if self.channel_manager.admet_regulation:
+            self.start_polling()    # ADMET's regulation lasts only while each poll feeds it
         self.channel_manager.user_set_flow_regulation(channel_index, flow_ul_min)
         self._arm_manual_stop(channel_index, stop_after, stop_value)
 
@@ -631,6 +635,8 @@ class AcquisitionEngine:
         self._cancel_manual_stop()   # a protocol takes over from anything set by hand
         if not self.hardware.state.connected:
             raise RuntimeError("Fluidics hardware is not connected")
+        if self.channel_manager.admet_regulation:
+            self.start_polling()    # ADMET's regulation lasts only while each poll feeds it
         steps = self.build_pipeline_from_steps(steps)
         sensor_to_channel = {
             channel.sensor_index: channel_index
@@ -820,6 +826,13 @@ class AcquisitionEngine:
 
     def _configure_channels_from_state(self, state: Any) -> None:
         self.channel_manager.configure_channels(_pair_channels(state))
+        self._update_regulation_ranges()
+
+    def _update_regulation_ranges(self) -> None:
+        state = self.hardware.state
+        self.channel_manager.set_regulation(
+            admet=not state.simulated,
+            ranges={sensor.index: float(sensor.smax or 0.0) for sensor in state.sensor_channels})
 
     def _connect_camera(self, settings: dict[str, Any]) -> dict[str, Any]:
         return self._status_result("connect_camera", extra_metadata=self._camera.connect(settings))
