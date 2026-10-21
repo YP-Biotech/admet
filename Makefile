@@ -49,17 +49,11 @@ docs-build:
 
 UPSTREAM ?= git@github.com:YP-Biotech/admet.git
 
-# Push the committed master to UPSTREAM without the vendor folders, in every
-# commit. The rewrite is deterministic, so this is an ordinary fast-forward push.
+# Push master to UPSTREAM; the vendor folder is gitignored, so it never leaves this machine.
 # With TAG=v..., also tag that master and push the tag, which starts a release.
 publish-upstream:
-	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
-	git clone -q --no-local --single-branch --branch master . "$$tmp" && \
-	cd "$$tmp" && \
-	uvx git-filter-repo --path src/admet/vendor --path admet/vendor --invert-paths --force > /dev/null && \
-	if git log --name-only --format= | grep -q 'vendor/'; then echo "vendor paths remain; not pushing" >&2; exit 1; fi && \
-	git push $(UPSTREAM) master && \
-	if [ -n "$(TAG)" ]; then git tag -a "$(TAG)" -m "ADMET $(TAG)" master && git push $(UPSTREAM) "$(TAG)"; fi
+	git push $(UPSTREAM) master
+	@if [ -n "$(TAG)" ]; then git tag -a "$(TAG)" -m "ADMET $(TAG)" master && git push $(UPSTREAM) "$(TAG)"; fi
 
 clean:
 	rm -rf .pytest_cache .ruff_cache build dist *.egg-info docs/.vitepress/dist docs/.vitepress/cache
