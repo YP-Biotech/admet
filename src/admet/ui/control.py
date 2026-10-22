@@ -419,6 +419,7 @@ class ControlWindow(QMainWindow):
         self._correction_edits_applied = 0
         self._preflight: PreflightPanel | None = None
         self._calculations = None
+        self._review = None
 
         self.setWindowTitle("ADMET Qt" + (" — TEST SIMULATION" if api.simulated else ""))
         self.resize(1440, 920)
@@ -676,6 +677,10 @@ class ControlWindow(QMainWindow):
             self._calculations.setParent(None)
             self._calculations.hide()
             self._calculations.set_project(None)
+        if self._review is not None:
+            self._review.setParent(None)
+            self._review.hide()
+            self._review.set_project(None)
         if self._preflight is not None:
             for section in self._preflight.sections.values():
                 section.setParent(self._preflight)
@@ -992,6 +997,9 @@ class ControlWindow(QMainWindow):
         if "calculations" in stage.features and self._calculations is not None:
             self._calculations.setParent(None)
             self._calculations.hide()
+        if "review" in stage.features and self._review is not None:
+            self._review.setParent(None)
+            self._review.hide()
         if stage.id in self.protocol_editors:
             self.protocol_editors[stage.id].setParent(None)
         self._clear_layout(self.action_box_layout)
@@ -1037,6 +1045,8 @@ class ControlWindow(QMainWindow):
         if "calculations" in stage.features and self._calculations is not None:
             if not self._calculations.tasks.busy:
                 self._calculations.refresh()
+        if "review" in stage.features and self._review is not None:
+            self._review.refresh()
 
     def _render_sections(self, stage: Stage) -> None:
         """Mount this stage's planning sections, moving them off whatever held them.
@@ -1136,7 +1146,7 @@ class ControlWindow(QMainWindow):
         return controls
 
     def _render_main(self, stage: Stage) -> None:
-        offline = bool({"preflight", "calculations", "calibration"}.intersection(stage.features))
+        offline = bool({"preflight", "calculations", "calibration", "review"}.intersection(stage.features))
         self.main_panel.setVisible(not offline)
         if offline:
             return
@@ -1457,7 +1467,7 @@ class ControlWindow(QMainWindow):
         return table
 
     def _render_results(self, stage: Stage) -> None:
-        offline = bool({"preflight", "calculations", "calibration"}.intersection(stage.features))
+        offline = bool({"preflight", "calculations", "calibration", "review"}.intersection(stage.features))
         self.results_panel.setVisible(not offline)
         if offline:
             return
@@ -1517,6 +1527,16 @@ class ControlWindow(QMainWindow):
                 self._calculations.refresh()
             self.action_layout.addWidget(self._calculations)
             self._calculations.show()
+            return
+        if "review" in stage.features:
+            from admet.ui.review import ReviewPanel
+
+            self.action_panel.layout().itemAt(0).widget().setText("Review runs")
+            if self._review is None:
+                self._review = ReviewPanel()
+            self._review.set_project(self.api.workdir)
+            self.action_layout.addWidget(self._review)
+            self._review.show()
             return
         if "calibration" in stage.features:
             self.action_panel.layout().itemAt(0).widget().setText("Calibration")

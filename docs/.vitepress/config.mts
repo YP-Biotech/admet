@@ -36,6 +36,7 @@ export default defineConfig({
           { text: 'Running protocols', link: '/control/running' },
           { text: 'Manual control', link: '/control/manual' },
           { text: 'Calculations', link: '/control/calculations' },
+          { text: 'Review runs', link: '/control/review' },
           { text: 'Safety', link: '/control/safety' },
         ],
       },
