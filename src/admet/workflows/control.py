@@ -279,6 +279,13 @@ def create_control_workflow() -> Workflow:
                 actions=(StageAction("Continue", completes=True),),
                 show_settings=False,
             ),
+            Stage(
+                "review", "Review runs",
+                instructions=("Tick recorded runs to plot their pressure and flow. Reads saved files only.",),
+                features=("review",),
+                actions=(StageAction("Continue", completes=True),),
+                show_settings=False,
+            ),
             protocol_stage("wash", "Wash", builtin="wash"),
             Stage(
                 "cleanup",

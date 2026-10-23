@@ -64,6 +64,18 @@ SPACING = Spacing()
 TYPOGRAPHY = Typography()
 RADII = Radii()
 
+# Colours for data series told apart by colour (runs, files), in order, in both apps.
+CHART_COLORS = (
+    PALETTE.accent,
+    PALETTE.success,
+    PALETTE.warning,
+    PALETTE.danger,
+    PALETTE.accent_hover,
+    PALETTE.success_hover,
+    PALETTE.warning_hover,
+    PALETTE.danger_hover,
+)
+
 STATUS_COLORS = {
     "done": PALETTE.success,
     "processing": PALETTE.warning,
