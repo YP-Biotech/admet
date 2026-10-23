@@ -10,7 +10,8 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from datetime import datetime
 
 from PySide6.QtWidgets import (
@@ -25,7 +26,31 @@ from admet.workflows.calculation_inputs import recording_path
 from admet.workflows.calculations import recorded_runs
 
 # Runs are told apart by colour, as series are in analyze; channels by line style.
-CHANNEL_STYLES = ((Qt.PenStyle.SolidLine, "━━"), (Qt.PenStyle.DashLine, "╍╍"), (Qt.PenStyle.DotLine, "┅┅"))
+# Oil L solid, Cells M long dashes, Beads M dash-dot; dash lengths are in line widths.
+CHANNEL_DASHES = (None, (5.0, 2.5), (5.0, 2.0, 0.01, 2.0))
+LINE_WIDTH = 2.5
+
+
+def channel_pen(color: str, channel: int) -> QPen:
+    pen = QPen(QColor(color), LINE_WIDTH)
+    pen.setCosmetic(True)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    if CHANNEL_DASHES[channel]:
+        pen.setDashPattern(list(CHANNEL_DASHES[channel]))
+    return pen
+
+
+def channel_icon(channel: int) -> QIcon:
+    """A short sample of the channel's line, for its toggle."""
+    image = QPixmap(QSize(34, 12) * 2)
+    image.setDevicePixelRatio(2)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(channel_pen(Theme.TEXT_WHITE, channel))
+    painter.drawLine(3, 6, 31, 6)
+    painter.end()
+    return QIcon(image)
 
 
 def run_color(row: int) -> str:
@@ -165,6 +190,8 @@ class _Crosshair:
         self.ref_label = pg.TextItem(anchor=(0, 0), color=Theme.WARNING)
         for item in self.items():
             plot.addItem(item, ignoreBounds=True)
+        for item in (self.vline, self.hline, self.label):
+            item.setVisible(False)      # until the cursor is over a plot
 
     def items(self):
         return (self.vline, self.hline, self.label, self.ref_marker, self.ref_label)
@@ -176,6 +203,7 @@ class _Crosshair:
     def hover(self, x: float, y: float | None) -> None:
         """At (x, y) on this plot; y None follows the time only, for the plot not under the cursor."""
         self.vline.setPos(x)
+        self.vline.setVisible(True)
         self.hline.setVisible(y is not None)
         self.label.setVisible(y is not None)
         if y is None:
@@ -261,15 +289,15 @@ class ReviewPanel(QWidget):
         channels.addWidget(QLabel("Channels"))
         self.channel_boxes = []
         for index, label in enumerate(FLUIDIC_CHANNEL_LABELS):
-            box = QCheckBox(f"{label}  {CHANNEL_STYLES[index][1]}")
+            box = QCheckBox(label)
+            box.setIcon(channel_icon(index))
+            box.setIconSize(QSize(34, 12))
+            box.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
             box.setChecked(True)
             box.toggled.connect(self.redraw)
             channels.addWidget(box)
             self.channel_boxes.append(box)
         channels.addStretch(1)
-        hint = QLabel("Ctrl + wheel zooms · click pins a reference · double-click clears it")
-        hint.setObjectName("MutedText")
-        channels.addWidget(hint)
         root.addLayout(channels)
 
         self.pressure_plot = self._plot("Pressure", "mbar")
@@ -386,7 +414,7 @@ class ReviewPanel(QWidget):
                         if not len(t):
                             continue
                         points += len(t)
-                        curve = plot.plot(t, y, pen=pg.mkPen(color, width=1.5, style=CHANNEL_STYLES[channel][0]))
+                        curve = plot.plot(t, y, pen=channel_pen(color, channel))
                         curve.setDownsampling(auto=True, method="peak")
                         curve.setClipToView(True)
                 if mode == "stacked":
@@ -406,7 +434,8 @@ class ReviewPanel(QWidget):
                 self.table.item(row, 5).setText(f"{run.t[-1] - run.t[0]:.0f} s" if len(run.t) > 1 else "")
         self.table.blockSignals(False)
         bin_text = "off" if self.bin.value() <= 0 else f"{self.bin.value():g} s"
-        self.status.setText(f"{len(shown)} run(s) · {points:,} points · bin {bin_text}"
+        hint = "Ctrl + wheel zooms · click pins a reference · double-click clears it"
+        self.status.setText(f"{len(shown)} run(s) · {points:,} points · bin {bin_text} · {hint}"
                             if shown else "Tick a run to plot it.")
 
     def _reset_view(self) -> None:
