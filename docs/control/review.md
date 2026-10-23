@@ -14,9 +14,10 @@ saved files only; it needs no device and changes nothing on the rig.
   reading.
 - **Align** lines runs up on their first protocol step (▶ 1); a loaded file, which has
   no steps, on its first row:
-  - *To first run* keeps the top ticked run on its own clock and moves every other run
-    so its first step lands on the same point;
-  - *Stacked* puts every run's first step at 0;
+  - *To first run* lines up runs only: the top ticked run keeps its own clock and every
+    other run moves, whole, so its first step lands on the same point;
+  - *Stacked* lines up steps too: every step of every run, from its start to its end,
+    is drawn from 0, so steps and replicates overlay;
   - *Recorded time* shows each run as recorded, in seconds since ADMET began reading
     the Fluigent.
 - **Reset view** fits both plots to the data again.

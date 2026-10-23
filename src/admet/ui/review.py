@@ -50,16 +50,29 @@ class ReviewRun:
 ALIGN_MODES = (("first_run", "To first run"), ("stacked", "Stacked"), ("recorded", "Recorded time"))
 
 
-def offsets(runs: list[ReviewRun], mode: str) -> list[float]:
-    """Seconds to add to each run's times.
+def segments(run: ReviewRun) -> list[tuple[float, float]]:
+    """Each protocol step as (start, end), from its ▶ to its ■; a run without steps is one segment."""
+    starts = {label[2:]: at for at, label, _color in run.markers if label.startswith("▶ ")}
+    pieces = [(starts[label[2:]], at) for at, label, _color in run.markers
+              if label.startswith("■ ") and label[2:] in starts and at > starts[label[2:]]]
+    if pieces or not len(run.t):
+        return pieces
+    return [(float(run.t[0]), float(run.t[-1]))]
 
-    first_run: every run's first step lands on the first run's, on the first run's own clock.
-    stacked: every run's first step is at 0. recorded: as recorded, seconds since polling began.
+
+def placements(runs: list[ReviewRun], mode: str) -> list[list[tuple[float, float, float]]]:
+    """For each run, the parts to draw as (from, to, seconds to add).
+
+    first_run: whole runs, each moved so its first step lands on the first run's, on that run's clock.
+    stacked: every step of every run on its own, starting at 0, so steps and runs overlay.
+    recorded: whole runs as recorded, in seconds since polling began.
     """
-    if mode == "recorded" or not runs:
-        return [0.0] * len(runs)
-    target = runs[0].anchor if mode == "first_run" else 0.0
-    return [target - run.anchor for run in runs]
+    whole = (-math.inf, math.inf)
+    if mode == "stacked":
+        return [[(start, end, -start) for start, end in segments(run)] for run in runs]
+    if mode == "first_run" and runs:
+        return [[(*whole, runs[0].anchor - run.anchor)] for run in runs]
+    return [[(*whole, 0.0)] for run in runs]
 
 
 def read_fluidics_csv(path: Path) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
@@ -359,24 +372,30 @@ class ReviewPanel(QWidget):
                 plot.removeItem(item)
         shown, points = self.shown_runs(), 0
         rows = {self.table.item(row, 0).data(Qt.ItemDataRole.UserRole): row for row in range(self.table.rowCount())}
-        shifts = offsets([run for _key, run in shown], self.align.currentData())
-        for (key, run), shift in zip(shown, shifts):
+        mode = self.align.currentData()
+        parts = placements([run for _key, run in shown], mode)
+        for (key, run), pieces in zip(shown, parts):
             color = run_color(rows[key])
             for plot, series in ((self.pressure_plot, run.pressures), (self.flow_plot, run.flows)):
                 for channel, values in enumerate(series):
                     if not self.channel_boxes[channel].isChecked():
                         continue
-                    t, y = _bin(run.t + shift, values, self.bin.value())
-                    if not len(t):
-                        continue
-                    points += len(t)
-                    curve = plot.plot(t, y, pen=pg.mkPen(color, width=1.5, style=CHANNEL_STYLES[channel][0]))
-                    curve.setDownsampling(auto=True, method="peak")
-                    curve.setClipToView(True)
-                for at, label, color in run.markers:
-                    line = pg.InfiniteLine(at + shift, pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
+                    for start, end, shift in pieces:
+                        inside = (run.t >= start) & (run.t <= end)
+                        t, y = _bin(run.t[inside] + shift, values[inside], self.bin.value())
+                        if not len(t):
+                            continue
+                        points += len(t)
+                        curve = plot.plot(t, y, pen=pg.mkPen(color, width=1.5, style=CHANNEL_STYLES[channel][0]))
+                        curve.setDownsampling(auto=True, method="peak")
+                        curve.setClipToView(True)
+                if mode == "stacked":
+                    continue    # every step starts at 0; its curve ends where the step ended
+                shift = pieces[0][2]
+                for at, label, mark in run.markers:
+                    line = pg.InfiniteLine(at + shift, pen=pg.mkPen(mark, width=1, style=Qt.PenStyle.DashLine),
                                            label=label if plot is self.flow_plot else None,
-                                           labelOpts={"position": 0.92, "color": color})
+                                           labelOpts={"position": 0.92, "color": mark})
                     line.step_marker = True
                     plot.addItem(line)
         self.table.blockSignals(True)

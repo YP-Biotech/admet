@@ -68,18 +68,36 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(panel.flow_plot.listDataItems()), 0)
         self.assertIn("2 run(s)", panel.status.text())
 
-    def test_runs_align_on_their_first_step_or_their_first_row(self):
+    def test_first_run_moves_whole_runs_and_stacked_overlays_every_step(self):
+        import math
         import numpy as np
-        from admet.ui.review import ReviewRun, offsets
+        from admet.ui.review import ReviewRun, placements, segments
 
-        recorded = ReviewRun("run", np.arange(40.0, 400.0), [], [], [(100.0, "▶ 1", ""), (300.0, "■ 1", "")])
-        loaded = ReviewRun("file", np.arange(30.0, 300.0), [], [])                   # no steps: its first row
+        recorded = ReviewRun("run", np.arange(40.0, 500.0), [], [],
+                             [(100.0, "▶ 1", ""), (300.0, "■ 1", ""), (320.0, "▶ 2", ""), (420.0, "■ 2", "")])
+        loaded = ReviewRun("file", np.arange(30.0, 300.0), [], [])                   # no steps: one segment
+        whole = (-math.inf, math.inf)
 
         self.assertEqual((recorded.anchor, loaded.anchor), (100.0, 30.0))
-        self.assertEqual(offsets([recorded, loaded], "first_run"), [0.0, 70.0])      # file's start lands on step 1
-        self.assertEqual(offsets([loaded, recorded], "first_run"), [0.0, -70.0])     # the top ticked run leads
-        self.assertEqual(offsets([recorded, loaded], "stacked"), [-100.0, -30.0])
-        self.assertEqual(offsets([recorded, loaded], "recorded"), [0.0, 0.0])
+        self.assertEqual(segments(recorded), [(100.0, 300.0), (320.0, 420.0)])
+        # Between runs only: each run whole, its first step on the first run's first step.
+        self.assertEqual(placements([recorded, loaded], "first_run"), [[(*whole, 0.0)], [(*whole, 70.0)]])
+        # Within runs too: every step of every run starts at 0.
+        self.assertEqual(placements([recorded, loaded], "stacked"),
+                         [[(100.0, 300.0, -100.0), (320.0, 420.0, -320.0)], [(30.0, 299.0, -30.0)]])
+        self.assertEqual(placements([recorded, loaded], "recorded"), [[(*whole, 0.0)], [(*whole, 0.0)]])
+
+    def test_stacked_draws_one_curve_per_step(self):
+        panel = ReviewPanel()
+        self.addCleanup(panel.close)
+        panel.set_project(str(self.root))
+        panel.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        steps = len([1 for _t, label, _c in panel.shown_runs()[0][1].markers if label.startswith("■")])
+
+        self.assertEqual(len(panel.flow_plot.listDataItems()), 1)                   # first_run: the whole run
+        panel.align.setCurrentIndex(panel.align.findData("stacked"))
+        self.assertEqual(len(panel.flow_plot.listDataItems()), steps)
+        self.assertFalse([i for i in panel.flow_plot.items() if getattr(i, "step_marker", False)])
 
     def test_crosshair_reads_and_pins_a_reference(self):
         panel = ReviewPanel()
