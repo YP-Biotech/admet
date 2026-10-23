@@ -252,14 +252,27 @@ class _WheelGuard(QObject):
         super().__init__(scroll)
         self._scroll = scroll
 
+    # Ctrl (Meta on macOS, where Qt reports Cmd as Control) + wheel over a plot zooms it.
+    ZOOM_KEYS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() is not QEvent.Type.Wheel:
             return False
         viewport = self._scroll.viewport()
         if obj is viewport or not self._hijacks_wheel(obj):
             return False
+        if event.modifiers() & self.ZOOM_KEYS and self._in_plot(obj):
+            return False
         QApplication.sendEvent(viewport, event)
         return True
+
+    def _in_plot(self, obj: QObject) -> bool:
+        widget = obj if isinstance(obj, QWidget) else None
+        while widget is not None and widget is not self._scroll:
+            if isinstance(widget, QGraphicsView):
+                return True
+            widget = widget.parentWidget()
+        return False
 
     def _hijacks_wheel(self, obj: QObject) -> bool:
         widget = obj if isinstance(obj, QWidget) else None

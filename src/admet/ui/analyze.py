@@ -1987,20 +1987,8 @@ def _category_axis(labels: list[str], *, rotate: int) -> dict[str, Any]:
     }
 
 
-_CHART_COLORS = (
-    theme.PALETTE.accent,
-    theme.PALETTE.success,
-    theme.PALETTE.warning,
-    theme.PALETTE.danger,
-    theme.PALETTE.accent_hover,
-    theme.PALETTE.success_hover,
-    theme.PALETTE.warning_hover,
-    theme.PALETTE.danger_hover,
-)
-
-
 def _chart_color(index: int) -> str:
-    return _CHART_COLORS[index % len(_CHART_COLORS)]
+    return theme.CHART_COLORS[index % len(theme.CHART_COLORS)]
 
 
 def _cv_chart(summaries: list[RawSummary]) -> dict[str, Any]:

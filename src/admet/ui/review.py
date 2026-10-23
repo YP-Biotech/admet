@@ -10,22 +10,26 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+from datetime import datetime
+
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme as ui
+from admet.ui.tables import GridTable, fit_table_height
 from admet.ui.theme import Theme
 from admet.workflows.calculation_inputs import recording_path
 from admet.workflows.calculations import recorded_runs
 
-CHANNEL_COLORS = (Theme.ACCENT, Theme.DANGER_HOVER, Theme.SUCCESS_HOVER)
-# Runs are told apart by line style; channels keep the colours of the live plots.
-RUN_STYLES = (
-    (Qt.PenStyle.SolidLine, "━"), (Qt.PenStyle.DashLine, "╍"), (Qt.PenStyle.DotLine, "┅"),
-    (Qt.PenStyle.DashDotLine, "─·"), (Qt.PenStyle.DashDotDotLine, "─··"),
-)
+# Runs are told apart by colour, as series are in analyze; channels by line style.
+CHANNEL_STYLES = ((Qt.PenStyle.SolidLine, "━━"), (Qt.PenStyle.DashLine, "╍╍"), (Qt.PenStyle.DotLine, "┅┅"))
+
+
+def run_color(row: int) -> str:
+    return ui.CHART_COLORS[row % len(ui.CHART_COLORS)]
 
 
 @dataclass
@@ -35,6 +39,27 @@ class ReviewRun:
     pressures: list[np.ndarray]
     flows: list[np.ndarray]
     markers: list[tuple[float, str, str]] = field(default_factory=list)
+
+    @property
+    def anchor(self) -> float:
+        """Where the run is aligned: its first protocol step, else its first recorded row."""
+        starts = [at for at, label, _color in self.markers if label == "▶ 1"]
+        return starts[0] if starts else (float(self.t[0]) if len(self.t) else 0.0)
+
+
+ALIGN_MODES = (("first_run", "To first run"), ("stacked", "Stacked"), ("recorded", "Recorded time"))
+
+
+def offsets(runs: list[ReviewRun], mode: str) -> list[float]:
+    """Seconds to add to each run's times.
+
+    first_run: every run's first step lands on the first run's, on the first run's own clock.
+    stacked: every run's first step is at 0. recorded: as recorded, seconds since polling began.
+    """
+    if mode == "recorded" or not runs:
+        return [0.0] * len(runs)
+    target = runs[0].anchor if mode == "first_run" else 0.0
+    return [target - run.anchor for run in runs]
 
 
 def read_fluidics_csv(path: Path) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
@@ -109,8 +134,60 @@ def _bin(t: np.ndarray, y: np.ndarray, size: float) -> tuple[np.ndarray, np.ndar
     return np.bincount(index, weights=t)[used] / counts[used], np.bincount(index, weights=y)[used] / counts[used]
 
 
+COLUMNS = ("", "Colour", "Run", "Recorded", "State", "Duration")
+
+
+class _Crosshair:
+    """DropleGen's crosshair on one plot: dotted lines and a readout at the cursor, a pinned reference."""
+
+    def __init__(self, pg, plot, unit: str):
+        self.plot, self.unit = plot, unit
+        dotted = pg.mkPen(Theme.TEXT_MUTED, width=1, style=Qt.PenStyle.DotLine)
+        self.vline = pg.InfiniteLine(angle=90, pen=dotted)
+        self.hline = pg.InfiniteLine(angle=0, pen=dotted)
+        self.label = pg.TextItem(anchor=(0, 1), color=Theme.TEXT_WHITE)
+        self.ref = None
+        self.ref_marker = pg.ScatterPlotItem([], [], pen=pg.mkPen(Theme.WARNING), brush=pg.mkBrush(Theme.WARNING),
+                                             size=10, symbol="+")
+        self.ref_label = pg.TextItem(anchor=(0, 0), color=Theme.WARNING)
+        for item in self.items():
+            plot.addItem(item, ignoreBounds=True)
+
+    def items(self):
+        return (self.vline, self.hline, self.label, self.ref_marker, self.ref_label)
+
+    def view_point(self, scene_pos):
+        box = self.plot.getPlotItem().vb
+        return box.mapSceneToView(scene_pos) if box.sceneBoundingRect().contains(scene_pos) else None
+
+    def hover(self, x: float, y: float | None) -> None:
+        """At (x, y) on this plot; y None follows the time only, for the plot not under the cursor."""
+        self.vline.setPos(x)
+        self.hline.setVisible(y is not None)
+        self.label.setVisible(y is not None)
+        if y is None:
+            return
+        self.hline.setPos(y)
+        text = f"t={x:.2f} s  {y:.2f} {self.unit}"
+        if self.ref is not None:
+            text += f"\nΔt={x - self.ref[0]:.2f} s  Δ={y - self.ref[1]:.2f} {self.unit}"
+        self.label.setText(text)
+        self.label.setPos(x, y)
+
+    def pin(self, x: float, y: float) -> None:
+        self.ref = (x, y)
+        self.ref_marker.setData([x], [y])
+        self.ref_label.setText(f"ref {x:.2f} s, {y:.2f} {self.unit}")
+        self.ref_label.setPos(x, y)
+
+    def clear(self) -> None:
+        self.ref = None
+        self.ref_marker.setData([], [])
+        self.ref_label.setText("")
+
+
 class ReviewPanel(QWidget):
-    """Pick runs on the left; their pressure and flow overlay on two linked plots on the right."""
+    """The runs table on top, one row of view controls, then Pressure and Flow sharing the time axis."""
 
     def __init__(self):
         super().__init__()
@@ -119,81 +196,91 @@ class ReviewPanel(QWidget):
         self._pg = pg
         self.project = None
         self._runs: dict[str, ReviewRun] = {}
-        self._sources: dict[str, tuple[str, str]] = {}
-        self._reference = None
-        root = QHBoxLayout(self)
+        # key -> (kind, run name, recorded, state, duration): project runs, then files loaded by hand
+        self._sources: dict[str, tuple[str, str, str, str, str]] = {}
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(ui.spacing("default"))
 
-        side = QVBoxLayout()
-        side.setSpacing(ui.spacing("control"))
-        side.addWidget(_title("Runs"))
-        self.run_list = QListWidget()
-        self.run_list.setMinimumHeight(220)
-        self.run_list.itemChanged.connect(self._run_toggled)
-        side.addWidget(self.run_list)
+        self.table = GridTable(0, len(COLUMNS))
+        self.table.setObjectName("RawConfigTable")
+        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.table.verticalHeader().hide()
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(GridTable.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(GridTable.SelectionMode.NoSelection)
+        self.table.itemChanged.connect(self._run_toggled)
+        root.addWidget(self.table)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(ui.spacing("control"))
         load = ui.button("Load file…")
         load.clicked.connect(self._load_files)
-        side.addWidget(load)
-        side.addWidget(_title("Channels"))
-        self.channel_boxes = []
-        for index, label in enumerate(FLUIDIC_CHANNEL_LABELS):
-            box = QCheckBox(label)
-            box.setChecked(True)
-            box.setStyleSheet(f"color: {CHANNEL_COLORS[index]};")
-            box.toggled.connect(self.redraw)
-            side.addWidget(box)
-            self.channel_boxes.append(box)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Bin"))
+        actions.addWidget(load)
+        reset = ui.button("Reset view")
+        reset.clicked.connect(self._reset_view)
+        actions.addWidget(reset)
+        actions.addSpacing(ui.spacing("default"))
+        actions.addWidget(QLabel("Bin"))
         self.bin = QDoubleSpinBox()
         self.bin.setRange(0.0, 60.0)
         self.bin.setSingleStep(0.5)
         self.bin.setSuffix(" s")
         self.bin.setSpecialValueText("off")
+        self.bin.setMinimumWidth(110)
         self.bin.valueChanged.connect(self.redraw)
-        row.addWidget(self.bin, 1)
-        side.addLayout(row)
-        reset = ui.button("Reset view")
-        reset.clicked.connect(self._reset_view)
-        side.addWidget(reset)
-        self.readout = QLabel("Hover a plot; click to pin a reference, double-click to clear it.")
-        self.readout.setObjectName("MutedText")
-        self.readout.setWordWrap(True)
-        side.addWidget(self.readout)
-        side.addStretch(1)
-        sidebar = QWidget()
-        sidebar.setLayout(side)
-        sidebar.setFixedWidth(240)
-        root.addWidget(sidebar)
+        actions.addWidget(self.bin)
+        actions.addSpacing(ui.spacing("default"))
+        actions.addWidget(QLabel("Align"))
+        self.align = QComboBox()
+        for value, label in ALIGN_MODES:
+            self.align.addItem(label, value)
+        self.align.setToolTip("Runs are aligned on their first protocol step; a loaded file on its first row.")
+        self.align.currentIndexChanged.connect(self.redraw)
+        actions.addWidget(self.align)
+        actions.addStretch(1)
+        root.addLayout(actions)
 
-        plots = QVBoxLayout()
-        plots.setSpacing(ui.spacing("control"))
+        channels = QHBoxLayout()
+        channels.setSpacing(ui.spacing("default"))
+        channels.addWidget(QLabel("Channels"))
+        self.channel_boxes = []
+        for index, label in enumerate(FLUIDIC_CHANNEL_LABELS):
+            box = QCheckBox(f"{label}  {CHANNEL_STYLES[index][1]}")
+            box.setChecked(True)
+            box.toggled.connect(self.redraw)
+            channels.addWidget(box)
+            self.channel_boxes.append(box)
+        channels.addStretch(1)
+        hint = QLabel("Ctrl + wheel zooms · click pins a reference · double-click clears it")
+        hint.setObjectName("MutedText")
+        channels.addWidget(hint)
+        root.addLayout(channels)
+
         self.pressure_plot = self._plot("Pressure", "mbar")
         self.flow_plot = self._plot("Flow", "µL/min")
         self.flow_plot.setXLink(self.pressure_plot)
-        plots.addWidget(self.pressure_plot)
-        plots.addWidget(self.flow_plot)
+        self.crosshairs = {self.pressure_plot: _Crosshair(pg, self.pressure_plot, "mbar"),
+                           self.flow_plot: _Crosshair(pg, self.flow_plot, "µL/min")}
+        for plot in self.crosshairs:
+            plot.scene().sigMouseMoved.connect(self._hover)
+            plot.scene().sigMouseClicked.connect(lambda event, plot=plot: self._click(plot, event))
+            root.addWidget(plot)
         self.status = QLabel()
         self.status.setObjectName("MutedText")
-        plots.addWidget(self.status)
-        root.addLayout(plots, 1)
-        self.setMinimumHeight(560)
+        root.addWidget(self.status)
 
     def _plot(self, title: str, unit: str):
-        pg = self._pg
-        plot = pg.PlotWidget(title=title, labels={"left": unit, "bottom": "s"})
+        plot = self._pg.PlotWidget(title=title, labels={"left": unit, "bottom": "s"})
         plot.setBackground(Theme.BG_DARK)
         plot.showGrid(x=True, y=True, alpha=0.15)
-        line = pg.InfiniteLine(angle=90, pen=pg.mkPen(Theme.TEXT_MUTED, width=1, style=Qt.PenStyle.DotLine))
-        plot.addItem(line, ignoreBounds=True)
-        plot.cursor = line
-        plot.scene().sigMouseMoved.connect(lambda pos, plot=plot, unit=unit: self._hover(plot, unit, pos))
-        plot.scene().sigMouseClicked.connect(lambda event, plot=plot, unit=unit: self._click(plot, unit, event))
+        plot.setMinimumHeight(300)
         return plot
 
     def set_project(self, project) -> None:
-        if project == self.project and self.run_list.count():
+        if project == self.project and self.table.rowCount():
             return
         self.project = project
         self._runs.clear()
@@ -202,121 +289,136 @@ class ReviewPanel(QWidget):
 
     def refresh(self) -> None:
         """List the project's recorded runs, newest first, then any files loaded by hand."""
-        checked = {item.data(Qt.ItemDataRole.UserRole) for item in self._items() if item.checkState() == Qt.CheckState.Checked}
-        self.run_list.blockSignals(True)
-        self.run_list.clear()
+        checked = set(self.checked_keys())
+        project = {}
         for run in recorded_runs(self.project):
-            parts = (run["at"][:16].replace("T", " "), run["name"], run["state"])
-            self._sources[run["directory"]] = ("project", " · ".join(part for part in parts if part))
-        for key, (_kind, label) in self._sources.items():
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, key)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if key in checked else Qt.CheckState.Unchecked)
-            self.run_list.addItem(item)
-        self.run_list.blockSignals(False)
+            project[run["directory"]] = ("project", run["name"], run["at"][:16].replace("T", " "), run["state"],
+                                         _duration(Path(run["directory"])))
+        self._sources = project | {k: v for k, v in self._sources.items() if v[0] == "file"}
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self._sources))
+        for row, (key, (kind, name, recorded, state, duration)) in enumerate(self._sources.items()):
+            tick = QTableWidgetItem()
+            tick.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            tick.setCheckState(Qt.CheckState.Checked if key in checked else Qt.CheckState.Unchecked)
+            tick.setData(Qt.ItemDataRole.UserRole, key)
+            self.table.setItem(row, 0, tick)
+            for column, text in enumerate(("■", name, recorded or "—", state, duration), 1):
+                item = QTableWidgetItem(text)
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                item.setToolTip(key)
+                self.table.setItem(row, column, item)
+            swatch = self.table.item(row, 1)
+            swatch.setForeground(QColor(run_color(row)))
+            swatch.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table.blockSignals(False)
+        fit_table_height(self.table, max_rows=10)
         self.redraw()
 
-    def _items(self):
-        return [self.run_list.item(index) for index in range(self.run_list.count())]
+    def checked_keys(self) -> list[str]:
+        return [self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) for row in range(self.table.rowCount())
+                if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.CheckState.Checked]
 
     def _load_files(self) -> None:
         paths, _filter = QFileDialog.getOpenFileNames(self, "Load fluidics CSV", "", "CSV files (*.csv)")
         self.add_files(paths)
 
     def add_files(self, paths) -> None:
-        for path in paths:
-            self._sources.setdefault(str(Path(path).resolve()), ("file", Path(path).name))
+        keys = [str(Path(path).resolve()) for path in paths]
+        for key in keys:
+            modified = datetime.fromtimestamp(Path(key).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            self._sources.setdefault(key, ("file", Path(key).name, modified, "file", ""))
         self.refresh()
-        for item in self._items():
-            if item.data(Qt.ItemDataRole.UserRole) in {str(Path(p).resolve()) for p in paths}:
-                item.setCheckState(Qt.CheckState.Checked)
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) in keys:
+                self.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
 
     def _run_toggled(self, item) -> None:
+        if item.column() != 0:
+            return
         key = item.data(Qt.ItemDataRole.UserRole)
         if item.checkState() == Qt.CheckState.Checked and key not in self._runs:
             try:
-                kind, label = self._sources[key]
-                self._runs[key] = project_run(Path(key), label) if kind == "project" else file_run(Path(key))
+                kind, name, *_rest = self._sources[key]
+                self._runs[key] = project_run(Path(key), name) if kind == "project" else file_run(Path(key))
             except (OSError, ValueError, KeyError) as exc:
-                self.run_list.blockSignals(True)
+                self.table.blockSignals(True)
                 item.setCheckState(Qt.CheckState.Unchecked)
-                self.run_list.blockSignals(False)
-                self.status.setText(f"Could not read {item.text()}: {exc}")
+                self.table.blockSignals(False)
+                self.status.setText(f"Could not read {self._sources.get(key, (None, key))[1]}: {exc}")
                 return
         self.redraw()
 
     def shown_runs(self) -> list[tuple[str, ReviewRun]]:
-        return [(item.data(Qt.ItemDataRole.UserRole), self._runs[item.data(Qt.ItemDataRole.UserRole)])
-                for item in self._items()
-                if item.checkState() == Qt.CheckState.Checked and item.data(Qt.ItemDataRole.UserRole) in self._runs]
+        return [(key, self._runs[key]) for key in self.checked_keys() if key in self._runs]
 
     def redraw(self, *_args) -> None:
         pg = self._pg
-        for plot in (self.pressure_plot, self.flow_plot):
+        for plot in self.crosshairs:
             for item in list(plot.listDataItems()) + [i for i in plot.items() if getattr(i, "step_marker", False)]:
                 plot.removeItem(item)
         shown, points = self.shown_runs(), 0
-        for number, (_key, run) in enumerate(shown):
-            style = RUN_STYLES[number % len(RUN_STYLES)][0]
+        rows = {self.table.item(row, 0).data(Qt.ItemDataRole.UserRole): row for row in range(self.table.rowCount())}
+        shifts = offsets([run for _key, run in shown], self.align.currentData())
+        for (key, run), shift in zip(shown, shifts):
+            color = run_color(rows[key])
             for plot, series in ((self.pressure_plot, run.pressures), (self.flow_plot, run.flows)):
                 for channel, values in enumerate(series):
                     if not self.channel_boxes[channel].isChecked():
                         continue
-                    t, y = _bin(run.t, values, self.bin.value())
+                    t, y = _bin(run.t + shift, values, self.bin.value())
                     if not len(t):
                         continue
                     points += len(t)
-                    curve = plot.plot(t, y, pen=pg.mkPen(CHANNEL_COLORS[channel], width=1.5, style=style))
+                    curve = plot.plot(t, y, pen=pg.mkPen(color, width=1.5, style=CHANNEL_STYLES[channel][0]))
                     curve.setDownsampling(auto=True, method="peak")
                     curve.setClipToView(True)
-                    curve.setToolTip(f"{run.name} · {FLUIDIC_CHANNEL_LABELS[channel]}")
                 for at, label, color in run.markers:
-                    line = pg.InfiniteLine(at, pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
+                    line = pg.InfiniteLine(at + shift, pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
                                            label=label if plot is self.flow_plot else None,
                                            labelOpts={"position": 0.92, "color": color})
                     line.step_marker = True
                     plot.addItem(line)
-        # Each shown run's line style leads its name; relabelling must not re-trigger a redraw.
-        styles = {key: RUN_STYLES[number % len(RUN_STYLES)][1] for number, (key, _run) in enumerate(shown)}
-        self.run_list.blockSignals(True)
-        for item in self._items():
-            key = item.data(Qt.ItemDataRole.UserRole)
-            item.setText(f"{styles[key]}  {self._sources[key][1]}" if key in styles else self._sources[key][1])
-        self.run_list.blockSignals(False)
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            key = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if key in self._runs and not self._sources[key][4]:
+                run = self._runs[key]
+                self.table.item(row, 5).setText(f"{run.t[-1] - run.t[0]:.0f} s" if len(run.t) > 1 else "")
+        self.table.blockSignals(False)
         bin_text = "off" if self.bin.value() <= 0 else f"{self.bin.value():g} s"
         self.status.setText(f"{len(shown)} run(s) · {points:,} points · bin {bin_text}"
                             if shown else "Tick a run to plot it.")
 
     def _reset_view(self) -> None:
-        for plot in (self.pressure_plot, self.flow_plot):
+        for plot in self.crosshairs:
             plot.enableAutoRange()
 
-    def _hover(self, plot, unit: str, pos) -> None:
-        if not plot.sceneBoundingRect().contains(pos):
+    def _hover(self, pos) -> None:
+        for plot, crosshair in self.crosshairs.items():
+            point = crosshair.view_point(pos)
+            if point is None:
+                continue
+            for other in self.crosshairs.values():
+                other.hover(point.x(), point.y() if other is crosshair else None)
             return
-        point = plot.getViewBox().mapSceneToView(pos)
-        for each in (self.pressure_plot, self.flow_plot):
-            each.cursor.setPos(point.x())
-        text = f"t = {point.x():.2f} s · {point.y():.2f} {unit}"
-        if self._reference and self._reference[2] == unit:
-            text += f"\nΔt = {point.x() - self._reference[0]:.2f} s · Δ = {point.y() - self._reference[1]:.2f} {unit}"
-        self.readout.setText(text)
 
-    def _click(self, plot, unit: str, event) -> None:
-        if not plot.sceneBoundingRect().contains(event.scenePos()):
+    def _click(self, plot, event) -> None:
+        crosshair = self.crosshairs[plot]
+        point = crosshair.view_point(event.scenePos())
+        if point is None:
             return
         if event.double():
-            self._reference = None
-            self.readout.setText("Reference cleared.")
-            return
-        if event.button() == Qt.MouseButton.LeftButton:
-            point = plot.getViewBox().mapSceneToView(event.scenePos())
-            self._reference = (point.x(), point.y(), unit)
-            self.readout.setText(f"Reference pinned at t = {point.x():.2f} s · {point.y():.2f} {unit}")
+            crosshair.clear()
+        elif event.button() == Qt.MouseButton.LeftButton:
+            crosshair.pin(point.x(), point.y())
 
 
-def _title(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setObjectName("FieldLabel")
-    return label
+def _duration(directory: Path) -> str:
+    try:
+        summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+        start = datetime.fromisoformat(summary.get("executed_at"))
+        end = datetime.fromisoformat(summary.get("completed_at"))
+        return f"{(end - start).total_seconds():.0f} s"
+    except (OSError, ValueError, TypeError):
+        return ""
