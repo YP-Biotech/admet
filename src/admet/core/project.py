@@ -329,6 +329,23 @@ class ProjectStore:
         self.session = replace(self.session, items=tuple(items), metadata=session_metadata)
         self.save()
 
+    @_locked
+    def attach_encoded_video(self, video_path: str | Path) -> bool:
+        """List a recording's video once its encoding has finished and the file is there."""
+        recording_id = Path(video_path).stem
+        metadata_path = self.records_dir / "metadata.json"
+        metadata = _read_metadata(metadata_path, default={"recordings": []})
+        recordings = [item for item in metadata.get("recordings", []) if isinstance(item, dict)]
+        for index, entry in enumerate(recordings):
+            if entry.get("recording_id") == recording_id:
+                updated = self._normalize_control_recording({**entry, "video_path": str(video_path)})
+                recordings[index] = updated
+                metadata.update({"updated": _local_timestamp(), "recordings": recordings})
+                _write_metadata(metadata_path, metadata)
+                self._register_control_recording(updated)
+                return True
+        return False
+
     def _normalize_control_recording(self, recording: dict[str, Any]) -> dict[str, Any]:
         recording_id = str(recording.get("recording_id") or "").strip()
         if not recording_id:

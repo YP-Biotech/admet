@@ -213,13 +213,24 @@ class AcquisitionEngine:
         self._camera = CameraController()
         self._acquisition: AcquisitionThread | None = None
         self._pipeline: Any | None = None
+        base_writer_factory = video_writer_factory or _default_writer_factory
+        # Told when a video's encoding has finished, after the recording itself stopped.
+        self.on_video_finished: Callable[[str, bool, str], None] | None = None
+
+        def writer_factory(*args):
+            writer = base_writer_factory(*args)
+            if hasattr(writer, "on_finished"):
+                writer.on_finished = self._video_finished
+            return writer
+
+        self._writer_factory = writer_factory
+        self._video_writer_factory = writer_factory
         self._recordings = RecordingCoordinator(
             csv_logger=CsvLogger(),
             hardware_state=lambda: self.hardware.state,
             acquisition=lambda: self._acquisition,
-            writer_factory=video_writer_factory,
+            writer_factory=self._writer_factory,
         )
-        self._video_writer_factory = video_writer_factory or _default_writer_factory
         # Per-step video for the next protocol, then for the one running.
         self._step_video_target: dict[str, Any] | None = None
         self._step_video: StepVideo | None = None
@@ -626,6 +637,10 @@ class AcquisitionEngine:
 
     def stop_recording(self) -> dict[str, Any]:
         return self._recordings.stop_recording()
+
+    def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
+        if self.on_video_finished is not None:
+            self.on_video_finished(video_path, encoded, reason)
 
     def arm_step_video(self, video_dir: str | Path, label: str) -> None:
         """Let the next protocol record its record steps into video_dir, named after label."""
