@@ -121,6 +121,8 @@ def _fill_defaults(operation: Any, settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def _planned_step(index: int, step: Any) -> dict[str, Any]:
+    from admet.engines.acquisition.pipeline import RECORD_CAP_S
+
     params = deepcopy(step.trigger_params)
     timeout = step.timeout_s if step.timeout_s is not None else params.get("timeout_s")
     expected = params.get("duration_s")
@@ -145,6 +147,7 @@ def _planned_step(index: int, step: Any) -> dict[str, Any]:
         "expected_duration_s": expected,
         "on_complete": step.on_complete,
         "confirmation": step.confirm_message or None,
+        "record_s": min(step.record_max_s or RECORD_CAP_S, RECORD_CAP_S) if step.record else None,
     }
 
 
@@ -417,13 +420,14 @@ class Admet:
             )}
             for name in op.requires
         }
-        if operation_id == "run_json_protocol" and normalized.get("include_video"):
-            engine = self._engines.get("acquisition")
-            ready = bool(engine and engine.camera_live)
-            guards["camera_live"] = {"met": ready, "why_not": "" if ready else "Connect the camera and start Live"}
         channels = self._cached_channel_mapping()
         steps = expand_protocol_steps(build_protocol_steps(op, normalized, channels=channels))
         described_steps = [_planned_step(index, step) for index, step in enumerate(steps, 1)]
+        video_steps = [step["number"] for step in described_steps if step["record_s"]]
+        if video_steps:
+            engine = self._engines.get("acquisition")
+            ready = bool(engine and engine.camera_live)
+            guards["camera_live"] = {"met": ready, "why_not": "" if ready else "Connect the camera and start Live"}
         executable = {
             "operation_id": operation_id,
             "normalized_settings": normalized,
@@ -450,9 +454,9 @@ class Admet:
             ],
             "recording": {
                 "required": operation_id == "run_json_protocol",
-                "include_video": bool(normalized.get("include_video", False)),
+                "video_steps": video_steps,
             },
-            "camera_required": bool(normalized.get("include_video", False)),
+            "camera_required": bool(video_steps),
             "abort_conditions": [
                 "fluidics disconnects or required telemetry becomes unavailable",
                 "protocol reports an error",
@@ -530,9 +534,12 @@ class Admet:
                 # A protocol's recording lasts as long as the protocol: a frame or
                 # time limit would close the fluidics CSV while it still runs.
                 recording = self.do("start_recording", {
-                    "recording_label": plan["run_id"], "include_video": plan["recording"]["include_video"],
+                    "recording_label": plan["run_id"], "include_video": False,
                     "recording_max_frames": 0, "recording_max_seconds": 0,
                 })
+                if plan["recording"]["video_steps"]:
+                    # Video is per step, opened and closed by the steps themselves.
+                    engine.arm_step_video(self.project.records_dir / "camera", plan["run_id"])
                 artifact = self._run_artifacts[plan_id]
                 artifact["recording"] = True
                 artifact["artifacts"]["fluidics_csv"] = recording.get("csv_path")
@@ -583,11 +590,19 @@ class Admet:
         artifact = self._run_artifacts.get(plan["plan_id"])
         try:
             if artifact and artifact["recording"]:
-                recording = self.do("stop_recording")
-                if plan["recording"]["include_video"]:
-                    artifact["artifacts"]["video_path"] = recording.get("video_path")
-                    artifact["artifacts"]["recording"] = recording.get("recording")
+                self.do("stop_recording")
                 artifact["artifacts"]["recording_closed"] = True
+                engine = self._engines.get("acquisition")
+                videos = engine.step_videos() if engine is not None and plan["recording"]["video_steps"] else []
+                if videos:
+                    root = self.project.path.resolve()
+                    artifact["artifacts"]["videos"] = [
+                        {**video, "video_path": Path(video["video_path"]).resolve().relative_to(root).as_posix()
+                         if video["video_path"] else ""}
+                        for video in videos]
+                    for video in videos:
+                        if video["video_path"]:
+                            self._keep_recording(video)
         finally:
             self._save_plan(plan)
             store = self._plan_store(plan["plan_id"])

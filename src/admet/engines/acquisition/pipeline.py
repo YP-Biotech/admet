@@ -32,6 +32,10 @@ log = logging.getLogger(__name__)
 ON_COMPLETE = ("hold", "zero", "revert")
 
 
+# The longest a step may record video, in seconds, whatever the protocol asks for.
+RECORD_CAP_S = 100.0
+
+
 @dataclass(frozen=True)
 class ProtocolStep:
     name: str
@@ -44,6 +48,8 @@ class ProtocolStep:
     repeat: int = 1
     group: str = ""
     timeout_s: float | None = None
+    record: bool = False
+    record_max_s: float | None = None
 
 
 def expand_protocol_steps(steps: list[ProtocolStep]) -> list[ProtocolStep]:
@@ -100,6 +106,8 @@ class PipelineStep:
     pressure_setpoints: dict[int, float] = field(default_factory=dict)
     on_complete: str = "hold"
     confirm_message: str = ""
+    record: bool = False
+    record_max_s: float | None = None
     status: StepStatus = StepStatus.PENDING
     error_msg: str = ""
 
@@ -532,6 +540,8 @@ def build_pipeline_steps(steps: list[ProtocolStep]) -> list[PipelineStep]:
             pressure_setpoints=dict(step.pressure_setpoints),
             on_complete=step.on_complete,
             confirm_message=step.confirm_message,
+            record=step.record,
+            record_max_s=step.record_max_s,
         )
         for step in expand_protocol_steps(steps)
     ]

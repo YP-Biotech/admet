@@ -414,6 +414,9 @@ STEP_LIST_SCHEMA = {
             "repeat": {"type": "integer", "minimum": 1},
             "group": {"type": "string", "description": "Steps sharing a group repeat together"},
             "timeout_s": {"type": "number", "exclusiveMinimum": 0},
+            "record": {"type": "boolean", "description": "Record camera video while this step runs"},
+            "record_max_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 100,
+                             "description": "Stop this step's video after this many seconds (100 at most)"},
         },
         "required": ["name", "trigger_type"],
         "additionalProperties": False,
@@ -466,7 +469,24 @@ def _step_from(entry: dict[str, Any], index: int) -> ProtocolStep:
         repeat=int(entry.get("repeat") or 1),
         group=str(entry.get("group") or ""),
         timeout_s=float(entry["timeout_s"]) if entry.get("timeout_s") is not None else None,
+        **_recording(entry, index),
     )
+
+
+def _recording(entry: dict[str, Any], index: int) -> dict[str, Any]:
+    """A step's video: off unless it says record, and never longer than RECORD_CAP_S."""
+    from admet.engines.acquisition.pipeline import RECORD_CAP_S
+
+    record = entry.get("record", False)
+    if not isinstance(record, bool):
+        raise Refused(f"step {index}: record must be true or false")
+    limit = entry.get("record_max_s")
+    if limit is not None:
+        if not record:
+            raise Refused(f"step {index}: record_max_s needs record: true")
+        if type(limit) not in (int, float) or not 0 < limit <= RECORD_CAP_S:
+            raise Refused(f"step {index}: record_max_s must be above 0 and at most {RECORD_CAP_S:g} s")
+    return {"record": record, "record_max_s": float(limit) if limit is not None else None}
 
 
 def build_protocol_steps(
@@ -529,7 +549,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         "run_json_protocol", "Run a JSON protocol", "Plan a reusable JSON protocol.",
-        kind=START, params=(TICK, Param("include_video", "Record camera", ParamKind.BOOLEAN, default=False)),
+        kind=START, params=(TICK,),
         raw={"protocol": {"type": "object"}},
         requires=("project", "fluidics", "corrections", "idle"),
         starts_protocol=True, run=_run_json_protocol,

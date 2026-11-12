@@ -15,7 +15,7 @@ experiment.admetp/
       measurements.json             # values typed in during the run, when declared
       calculations/                 # one file per calculated result
     fluidics/<run>.csv              # pressure and flow of every channel over time
-    camera/<run>.avi                # video, in Camera + fluidics mode
+    camera/<run>_stepNN_<time>.avi  # video of a step with "record": true
   analysis/                         # what admet analyze ran on this project
 ```
 

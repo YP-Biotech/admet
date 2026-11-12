@@ -236,64 +236,84 @@ class DesktopBackendTests(unittest.TestCase):
             plan = self.plan()
         self.assertEqual(plan["state"], "planned")
 
-    def test_acquisition_mode_persists_and_invalidates_unexecuted_preview(self):
+    def test_acquisition_mode_persists_and_a_record_step_needs_a_live_camera(self):
         self.assertEqual(self.backend.acquisition_mode, "fluidics_only")
         first = self.backend.preview("experiment_1", definition())
         self.assertFalse(first["camera_required"])
         self.backend.set_acquisition_mode("camera_fluidics")
         with self.assertRaises(LookupError):
             self.backend.call("planned_protocols", {"plan_id": first["plan_id"]})
-        plan = self.backend.preview("experiment_1", definition())
-        self.assertTrue(plan["recording"]["include_video"])
+        recorded = definition()
+        recorded["steps"][0]["record"] = True
+        plan = self.backend.preview("experiment_1", recorded)
+        self.assertEqual(plan["recording"]["video_steps"], [1])
+        self.assertEqual(plan["steps"][0]["record_s"], 100)
         self.assertIn("camera_live", plan["unmet_guards"])
         self.backend.open_project(self.backend.workdir)
         self.assertEqual(self.backend.acquisition_mode, "camera_fluidics")
 
-    def test_combined_run_uses_existing_recorder_and_archives_video(self):
+    def camera_fake(self):
         import numpy as np
         from tests.test_control_engine import FakeCameraAcquisition, FakeVideoWriter
 
         self.connect()
-        self.backend.engine._recordings._writer_factory = FakeVideoWriter
+        self.backend.engine._video_writer_factory = FakeVideoWriter
         camera = FakeCameraAcquisition()
         self.backend.engine._camera._acquisition = camera
         self.addCleanup(setattr, self.backend.engine._camera, "_acquisition", None)
         self.backend.engine._camera._on_frame(np.zeros((12, 16), dtype=np.uint8))
-        self.backend.set_acquisition_mode("camera_fluidics")
-        plan = self.backend.preview("experiment_1", definition())
+        return camera
+
+    def test_a_record_step_archives_its_own_video_and_nothing_else_records(self):
+        camera = self.camera_fake()
+        recorded = definition(duration=1.0)
+        recorded["steps"][0]["record"] = True
+        plan = self.backend.preview("experiment_1", recorded)
         self.assertEqual(plan["unmet_guards"], [])
         with patch.object(camera, "is_alive", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "start Live"):
                 self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.assertFalse(self.backend.engine.recording_active)
+        plan = self.backend.preview("experiment_1", recorded)
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
-        self.assertTrue(camera.recording)
-        with self.assertRaises(RuntimeError):
-            self.backend.set_acquisition_mode("fluidics_only")
-        self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
+        self.assertFalse(camera.recording)                                  # waiting at the gate: no video
+        self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 0.1})
+        deadline = time.monotonic() + 3
+        while not camera.recording and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(camera.recording)                                   # the record step is running
         completed = self.wait_completed(plan["plan_id"])
-        summary = json.loads((Path(self.backend.workdir) / "records/protocols" / completed["run_id"] / "summary.json").read_text())
-        self.assertTrue(summary["normalized_settings"]["include_video"])
-        self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["video_path"]).is_file())
-        self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
         self.assertFalse(camera.recording)
+        summary = json.loads((Path(self.backend.workdir) / "records/protocols" / completed["run_id"] / "summary.json").read_text())
+        videos = summary["artifacts"]["videos"]
+        self.assertEqual([(v["step"], v["part"], v["stopped_by"]) for v in videos], [(1, 1, "completed")])
+        self.assertTrue((Path(self.backend.workdir) / videos[0]["video_path"]).is_file())
+        self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
+        indexed = json.loads((Path(self.backend.workdir) / "records/metadata.json").read_text())["recordings"]
+        self.assertIn(Path(videos[0]["video_path"]).stem, [r.get("recording_id") for r in indexed])
 
-    def test_camera_start_failure_never_starts_protocol(self):
-        from tests.test_control_engine import FakeCameraAcquisition, FakeVideoWriter
-
-        self.connect()
-        camera = FakeCameraAcquisition()
-        self.backend.engine._camera._acquisition = camera
-        self.addCleanup(setattr, self.backend.engine._camera, "_acquisition", None)
-        self.backend.engine._recordings._writer_factory = FakeVideoWriter
-        self.backend.set_acquisition_mode("camera_fluidics")
-        plan = self.backend.preview("experiment_1", definition())
+    def test_a_camera_that_cannot_start_pauses_the_protocol_with_channels_at_zero(self):
+        camera = self.camera_fake()
+        recorded = definition(duration=5)
+        recorded["steps"][0]["record"] = True
+        plan = self.backend.preview("experiment_1", recorded)
         with patch.object(camera, "start_recording", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "Failed to start camera"):
-                self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
-        self.assertFalse(self.backend.engine.recording_active)
-        self.assertEqual(self.backend.engine.pipeline_state, "idle")
-        self.assertTrue(all(c.mode == "off" for c in self.backend.engine.channel_manager.channels))
+            self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
+            self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
+            deadline = time.monotonic() + 3
+            while self.backend.engine.pipeline_state != "paused" and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertEqual(self.backend.engine.pipeline_state, "paused")
+        self.assertTrue(all(c.active_setpoint == 0 for c in self.backend.engine.channel_manager.channels))
+        self.backend.call("control_protocol", {"action": "abort", "timeout_s": 1})
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            aborted = self.backend.call("planned_protocols", {"plan_id": plan["plan_id"]})["plans"][0]
+            if aborted["state"] == "failed":
+                break
+            time.sleep(0.01)
+        summary = json.loads((Path(self.backend.workdir) / "records/protocols" / aborted["run_id"] / "summary.json").read_text())
+        self.assertEqual(summary["artifacts"]["videos"][0]["stopped_by"], "camera failed to start")
 
     def test_one_transient_preview_per_scope_and_run_id_only_on_execution(self):
         self.connect()

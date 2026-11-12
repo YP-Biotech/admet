@@ -37,7 +37,8 @@ Each channel also has its own manual controls — see [Manual control](./manual)
 On **1. Setup**, choose:
 
 - **Fluidics only** (default) — records the fluidics CSV; no camera needed.
-- **Camera + fluidics** — also records synchronised video. Requires a live camera.
+- **Camera + fluidics** — shows the camera; protocol steps marked `"record": true`
+  record video. Requires a live camera.
 
 The mode is saved in the project and frozen into each plan, so changing it
 discards unexecuted previews.
