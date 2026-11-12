@@ -134,4 +134,6 @@ class StepVideo:
             "started_at": segment["started_at"], "stopped_at": datetime.now().isoformat(timespec="seconds"),
             "duration_s": round(duration, 3), "frames_recorded": frames, "stopped_by": reason,
             "width": width, "height": height, "converted_fps": self._fps,
+            # The rate the camera actually delivered, as whole-run recordings report it.
+            "acquisition_fps": round(frames / duration, 3) if frames and duration > 0 else 0.0,
         })
