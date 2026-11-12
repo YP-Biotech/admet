@@ -49,5 +49,6 @@ A new run starts with an empty table. To review or correct an earlier run, use
 ## Recording
 
 Every run records fluidics (pressure and flow of each channel) to
-`records/fluidics/`. In *Camera + fluidics* mode it also records video. The run's
+`records/fluidics/`. Steps marked `"record": true` also record video, one file per
+step (see [Video](../protocols/format#video)). The run's
 `summary.json` points at both and holds the rig mapping and corrections in force.

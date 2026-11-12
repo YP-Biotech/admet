@@ -8,6 +8,7 @@ from collections import deque
 from dataclasses import asdict
 from queue import Queue
 from statistics import mean, stdev
+from pathlib import Path
 from typing import Any, Callable
 
 from admet.core.engine import READ, ActionSpec, ParamSchema, validate_action_settings
@@ -32,8 +33,10 @@ from admet.engines.acquisition.fluidics.config import (
 from admet.engines.acquisition.recording import (
     RecordingCoordinator,
     WriterFactory,
+    _default_writer_factory,
 )
 from admet.engines.acquisition.pipeline import PipelineEngine, ProtocolStep, build_pipeline_steps
+from admet.engines.acquisition.step_video import StepVideo
 from admet.engines.acquisition.triggers import ConditionTrigger, TimeTrigger, VolumeTrigger
 from admet.engines.acquisition.settings import CONTROL_ENGINE_SETTINGS, CORRECTION_PARAM_NAMES, MANUAL_STOPS
 
@@ -216,6 +219,10 @@ class AcquisitionEngine:
             acquisition=lambda: self._acquisition,
             writer_factory=video_writer_factory,
         )
+        self._video_writer_factory = video_writer_factory or _default_writer_factory
+        # Per-step video for the next protocol, then for the one running.
+        self._step_video_target: dict[str, Any] | None = None
+        self._step_video: StepVideo | None = None
         self._corrected_sensors: set[int] = set()
         self._action_preparers = self._build_action_preparers()
         self._private_action_settings = self._build_private_action_settings()
@@ -620,6 +627,14 @@ class AcquisitionEngine:
     def stop_recording(self) -> dict[str, Any]:
         return self._recordings.stop_recording()
 
+    def arm_step_video(self, video_dir: str | Path, label: str) -> None:
+        """Let the next protocol record its record steps into video_dir, named after label."""
+        self._step_video_target = {"video_dir": Path(video_dir), "label": label}
+
+    def step_videos(self) -> list[dict[str, Any]]:
+        """The videos the last protocol recorded, one per step part."""
+        return list(self._step_video.videos) if self._step_video is not None else []
+
     def start_pipeline(self, steps: list[ProtocolStep], *, tick_s: float = 0.2, on_event=None) -> None:
         """Run the steps handed to it.
 
@@ -632,6 +647,20 @@ class AcquisitionEngine:
         if not self.hardware.state.connected:
             raise RuntimeError("Fluidics hardware is not connected")
         steps = self.build_pipeline_from_steps(steps)
+        target, self._step_video_target = self._step_video_target, None
+        self._step_video = None
+        if any(step.record for step in steps):
+            if target is None:
+                raise RuntimeError("this protocol records video but no recording folder was set")
+            if not self.camera_live:
+                raise RuntimeError("this protocol records video; connect the camera and start Live first")
+            self._step_video = StepVideo(
+                steps, self._camera.acquisition, video_dir=target["video_dir"], label=target["label"],
+                frame_size=self._camera.recording_frame_size({"camera_width": 640, "camera_height": 480}),
+                fps=24.0, writer_factory=self._video_writer_factory,
+                on_failure=lambda _message: self.pause_pipeline(),
+            )
+        step_video = self._step_video
         sensor_to_channel = {
             channel.sensor_index: channel_index
             for channel_index, channel in enumerate(self.channel_manager.channels)
@@ -642,6 +671,11 @@ class AcquisitionEngine:
                 volume.tail_source = lambda sensor=volume.sensor_index: self.tails.k(sensor)
 
         def publish(event):
+            if step_video is not None:
+                try:
+                    step_video.on_event(event)
+                except Exception:
+                    log.exception("step video failed")
             try:
                 if on_event is not None:
                     on_event(event)
@@ -726,25 +760,13 @@ class AcquisitionEngine:
             self._pipeline = None
 
     def pause_pipeline(self) -> None:
+        # The pause event closes a step's video; resuming the step opens a new part.
         if self._pipeline:
             self._pipeline.pause()
-        # A paused protocol is not producing sample, so recording it only burns disk
-        # -- and a pause waiting on an operator confirmation is open ended.
-        self._set_recording_paused(True)
 
     def resume_pipeline(self) -> None:
         if self._pipeline:
             self._pipeline.resume()
-        self._set_recording_paused(False)
-
-    def _set_recording_paused(self, paused: bool) -> None:
-        acquisition = self._camera.acquisition
-        if acquisition is None or not acquisition.recording:
-            return
-        if paused:
-            acquisition.pause_recording()
-        else:
-            acquisition.resume_recording()
 
     def skip_pipeline_step(self) -> None:
         if self._pipeline:
@@ -958,6 +980,12 @@ class AcquisitionEngine:
             stopped["channels_zeroed"] = True
         except Exception as exc:
             errors.append(f"zeroing channels: {exc}")
+
+        try:
+            if self._step_video is not None:
+                self._step_video.close("emergency stop")
+        except Exception as exc:
+            errors.append(f"closing the step video: {exc}")
 
         try:
             was_running = self.pipeline_state in {"running", "paused", "stopping"}

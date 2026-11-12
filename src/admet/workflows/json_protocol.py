@@ -240,7 +240,7 @@ def resolve(document):
                     flows = [v for v in step.get("sensor_setpoints", {}).values() if type(v) in (int, float) and v > 0]
                     if flows:
                         step_values = {**values, "step_min_flow": min(flows)}
-            for key in ("timeout_s", "repeat"):
+            for key in ("timeout_s", "repeat", "record_max_s"):
                 if key in step:
                     step[key] = expression(step[key], step_values)
             for key in ("name", "confirm_message", "group", "trigger_type", "on_complete"):

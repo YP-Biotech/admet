@@ -34,10 +34,23 @@ executing a reviewed plan does.
 | `on_complete` | `zero` (default), `hold` or `revert` |
 | `confirm_message` | A gate: the step waits for **Confirm** before applying its targets |
 | `repeat`, `group` | Repeat the step; group steps in the plan |
+| `record` | `true` records camera video while this step runs (off by default) |
+| `record_max_s` | Stops this step's video after this many seconds; 100 at most |
 
 Channel keys are channel indices (`"0"`, `"1"`, `"2"`). Channels in one step run
 at the same time. A channel cannot be flow- and pressure-controlled in the same
 step. Targets are non-negative and must fit the ranges the hardware reports.
+
+### Video
+
+Only steps with `"record": true` record video, each into its own file, from when
+the step starts until it ends. Nothing is recorded while a step waits at its gate.
+A pause closes the file; resuming the step opens a new part (`…_part2_…`). Stop,
+skip, an error, a timeout and E-STOP all close it. No step records more than 100 s
+in total over its parts, or less if `record_max_s` says so; at that point the video
+stops and the step carries on. If the camera cannot start, the protocol pauses with
+all channels at zero, so a step that asked for video never runs on without it unless
+you resume it.
 
 ### Triggers
 
