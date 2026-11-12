@@ -229,6 +229,33 @@ class PipelineEngineTests(unittest.TestCase):
         self.assertEqual(step.status, StepStatus.COMPLETED)
         self.assertGreaterEqual(time.monotonic() - started, 0.7)   # 0.2 s of flow plus the pause
 
+    def test_the_whole_pause_is_left_out_however_long_the_tick(self):
+        # Measured from the next tick, a pause lost up to one tick of itself to the step.
+        class NotedShifts(TimeTrigger):
+            def __init__(self, duration_s):
+                super().__init__(duration_s)
+                self.shifted = 0.0
+
+            def shift(self, seconds):
+                self.shifted += seconds
+                super().shift(seconds)
+
+        trigger = NotedShifts(0.3)
+        step = PipelineStep("timed", {0: 5.0}, trigger, on_complete="zero")
+        engine = PipelineEngine([step], FakeChannelManager(), FakeAcquisition(), Queue(), {0: 2}, tick_s=0.1)
+        engine.start()
+        time.sleep(0.15)                                  # mid-tick
+        before_pause = time.monotonic()
+        engine.pause()
+        time.sleep(0.2)
+        engine.resume()
+        after_resume = time.monotonic()
+        engine.join(timeout=2.0)
+
+        self.assertEqual(step.status, StepStatus.COMPLETED)
+        self.assertGreaterEqual(trigger.shifted, 0.2)
+        self.assertLessEqual(trigger.shifted, after_resume - before_pause)
+
     def test_a_stability_step_that_gives_up_is_recorded_not_fatal(self):
         manager = FakeChannelManager()
         events: Queue[PipelineEvent] = Queue()

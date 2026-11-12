@@ -210,6 +210,10 @@ class PipelineEngine(threading.Thread):
         self._gate_message = ""
         self._flowing_step: PipelineStep | None = None
         self._flowing_lock = threading.Lock()
+        # Paused time is measured from the pause to the resume, not from the next tick:
+        # the step's clock is moved on by exactly that much.
+        self._paused_since: float | None = None
+        self._paused_s = 0.0
 
     @property
     def state(self) -> PipelineState:
@@ -225,6 +229,7 @@ class PipelineEngine(threading.Thread):
 
     def pause(self) -> None:
         if self._state == PipelineState.RUNNING:
+            self._paused_since = time.monotonic()
             self._pause_event.clear()
             self._state = PipelineState.PAUSED
             self._channel_manager.pipeline_zero_all()
@@ -238,6 +243,9 @@ class PipelineEngine(threading.Thread):
             with self._flowing_lock:
                 if self._flowing_step is not None:
                     self._apply_setpoints(self._flowing_step)
+            if self._paused_since is not None:
+                self._paused_s += time.monotonic() - self._paused_since
+                self._paused_since = None
             self._pause_event.set()
             self._state = PipelineState.RUNNING
             self._emit_event()
@@ -375,11 +383,11 @@ class PipelineEngine(threading.Thread):
 
     def _run_trigger(self, step: PipelineStep) -> None:
         step.trigger.reset()
+        self._paused_s = 0.0          # pauses before the step started are not its own
         while not self._stop_event.is_set() and not self._skip_event.is_set():
-            waited_from = time.monotonic()
             self._pause_event.wait()
-            paused_s = time.monotonic() - waited_from
-            if paused_s > 0.001:
+            paused_s, self._paused_s = self._paused_s, 0.0
+            if paused_s > 0:
                 step.trigger.shift(paused_s)
             if self._stop_event.is_set():
                 break
