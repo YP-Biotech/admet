@@ -149,6 +149,7 @@ class AnalyzeWorkflowView:
         self._run_progress = 0
         self._run_step_progress = 0
         self.show_overlay = True
+        self.show_stages = False
         # What each project last had saved, so an unchanged screen writes nothing.
         self._saved_setup: dict[str, dict[str, Any]] = {}
         self.notice = "Open a project, then add files to the batch matrix."
@@ -417,6 +418,9 @@ class AnalyzeWorkflowView:
         preview = self._refs.get("opencv_preview")
         if target is not None and preview is not None:
             preview.content = self._opencv_preview_html(target)
+        stages = self._refs.get("opencv_stages")
+        if target is not None and stages is not None:
+            stages.content = self._opencv_stages_html(target)
         target = self._selected_row_for_engine("cellpose")
         preview = self._refs.get("cellpose_preview")
         if target is not None and preview is not None:
@@ -646,11 +650,14 @@ class AnalyzeWorkflowView:
                         "editor-note"
                     )
                 analysis = self._stored_analysis(target)
-                if analysis is not None:
-                    with ui.row().classes("items-center gap-2"):
+                with ui.row().classes("items-center gap-x-4 gap-y-1"):
+                    if analysis is not None:
                         ui.checkbox("Show analysis: droplets and trajectories", value=self.show_overlay,
                                     on_change=lambda event: self._toggle_overlay(event.value))
                         ui.label(f"from the analysis of {analysis['analyzed']}").classes("muted text-xs")
+                    ui.checkbox("Show detection stages", value=self.show_stages,
+                                on_change=lambda event: self._toggle_stages(event.value))
+                self._refs["opencv_stages"] = ui.html(self._opencv_stages_html(target)).classes("w-full")
                 for warning in _video_setting_warnings(target, frames, width, height):
                     ui.label(warning).classes("editor-note editor-warning")
                 low, high = (start, end - 1) if end > start else (0, frames - 1)
@@ -712,6 +719,38 @@ class AnalyzeWorkflowView:
     def _toggle_overlay(self, show: bool) -> None:
         self.show_overlay = bool(show)
         self._sync_previews()
+
+    def _toggle_stages(self, show: bool) -> None:
+        self.show_stages = bool(show)
+        self._sync_previews()
+
+    def _opencv_stages_html(self, target: MatrixRow) -> str:
+        """Each detection stage of the preview frame, with this row's settings, in a grid."""
+        if not self.show_stages:
+            return ""
+        from admet.engines.opencv.debug import detection_stages
+
+        source = self._resolve_media_path(target.source_path, target.project_path)
+        try:
+            stages = detection_stages(source, self._engine_settings(target), _preview_frame_index(target))
+        except Exception as exc:
+            stages = {"error": f"Detection stages failed: {exc}"}
+        if stages["error"]:
+            return f'<div class="editor-note editor-warning">{html.escape(stages["error"])}</div>'
+        seg = stages["segmentation"]
+        captions = {
+            "original": "1 · Original (crop)",
+            "background": "2 · Background, from sampled frames",
+            "removed": "3 · Background removed",
+            "threshold": f"4 · Threshold: {stages['threshold_method'] or 'value'} = {stages['threshold']}",
+            "morphology": f"5 · Morphology: closing {seg['closing_t']}, erosion {seg['closing_e']}",
+            "contours": f"6 · Contours: {stages['kept']} kept (green), {stages['dropped']} dropped (red)",
+        }
+        tiles = "".join(
+            f'<figure class="stage-tile"><img src="{_png_src(stages["images"][name])}" alt="{html.escape(caption)}">'
+            f"<figcaption>{html.escape(caption)}</figcaption></figure>"
+            for name, caption in captions.items())
+        return f'<div class="stage-grid">{tiles}</div>'
 
     def _stored_analysis(self, row: MatrixRow) -> dict[str, Any] | None:
         """The latest stored analysis of this file: where its rows are and the crop it ran with."""
@@ -2494,6 +2533,14 @@ def _compact_path(value: str, *, max_parts: int = 4) -> str:
     return str(Path("...").joinpath(*parts[-max_parts:]))
 
 
+def _png_src(image: Any) -> str:
+    """An image as a PNG data URL: lossless, so a binary stage stays crisp."""
+    import cv2
+
+    ok, encoded = cv2.imencode(".png", image)
+    return f"data:image/png;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}" if ok else ""
+
+
 def _friendly_video_error(message: str) -> str:
     if "cannot open video" in message.lower():
         return "OpenCV cannot open this video. Re-locate the file or verify the codec."
@@ -2868,6 +2915,30 @@ def _style() -> str:
     .opencv-preview {
       display: block;
       width: 100%;
+    }
+    .stage-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .stage-tile { margin: 0; min-width: 0; }
+    .stage-tile img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--text);
+      image-rendering: pixelated;
+    }
+    .stage-tile figcaption {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 900px) {
+      .stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     .editor-slider-grid {
       display: grid;

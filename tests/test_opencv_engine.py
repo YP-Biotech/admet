@@ -121,5 +121,37 @@ class OpenCVEngineTests(unittest.TestCase):
             self.assertEqual(rows[0]["kind"], "frame")
             self.assertTrue(result.metadata["cache_dir"])
 
+class DetectionStagesTests(unittest.TestCase):
+    def test_each_stage_of_a_frame_with_the_row_settings(self):
+        import cv2
+        import numpy as np
+
+        from admet.engines.opencv.debug import STAGES, detection_stages
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "droplets.avi"
+            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 24, (320, 120), isColor=False)
+            for index in range(40):
+                frame = np.full((120, 320), 90, np.uint8)
+                for droplet in range(3):
+                    cv2.circle(frame, ((index * 4 + droplet * 100) % 320, 70), 12, 200, -1)
+                cv2.circle(frame, ((index * 4 + 50) % 320, 20), 2, 200, -1)     # a speck, too small to keep
+                writer.write(frame)
+            writer.release()
+            settings = {"microns_per_pixel": 1.0, "fps": 24.0, "start_frame": 0, "end_frame": None,
+                        "roi_x": 0, "roi_y": 10, "roi_width": 320, "roi_height": 100}
+
+            stages = detection_stages(path, settings, 12)
+            missing = detection_stages(Path(tmp) / "gone.avi", settings, 0)
+
+        self.assertEqual(stages["error"], "")
+        self.assertEqual(tuple(stages["images"]), STAGES)
+        self.assertTrue(all(image.shape[:2] == (100, 320) for image in stages["images"].values()))   # the crop
+        self.assertIn(stages["threshold_method"], {"BTVS", "Otsu"})
+        self.assertGreaterEqual(stages["kept"], 2)
+        self.assertGreaterEqual(stages["dropped"], 1)
+        self.assertIn("not readable", missing["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
