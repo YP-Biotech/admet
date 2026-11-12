@@ -110,6 +110,24 @@ class JsonProtocolTests(unittest.TestCase):
         self.assertEqual(plan["expected_duration_s"], 90)
         self.assertEqual(plan["steps"][0]["flow_setpoints_ul_min"], {"0": 300, "1": 40, "2": 40})
 
+    def test_dropseq_records_each_collection_only_when_asked(self):
+        document = template_documents()["dropseq"]
+        self.assertEqual([step.get("record") for step in resolve(document)["steps"]], [False, False, False, None])
+        self.assertTrue(all("record_max_s" not in step for step in resolve(document)["steps"]))
+        document["parameter_values"].update({"record_video": True, "record_s": 60})
+        steps = resolve(document)["steps"]
+
+        self.assertEqual([(s.get("record"), s.get("record_max_s")) for s in steps],
+                         [(True, 60), (True, 60), (True, 60), (None, None)])        # never the finish gate
+        admet = Admet()
+        with patch.object(admet, "engine_action", side_effect=AssertionError("planning actuated")):
+            plan = admet.plan_protocol(operation_id="run_json_protocol", settings={"protocol": document})
+        self.assertEqual(plan["recording"]["video_steps"], [1, 2, 3])
+        self.assertIn("camera_live", plan["unmet_guards"])
+        document["steps"][0]["record"] = "{oil_control}"
+        with self.assertRaisesRegex(ValueError, "record must be true or false"):
+            resolve(document)
+
     def test_control_puts_each_channel_under_flow_or_pressure(self):
         document = template_documents()["dropseq"]
         document["parameter_values"].update({"oil_control": "pressure", "oil_value": 1300})

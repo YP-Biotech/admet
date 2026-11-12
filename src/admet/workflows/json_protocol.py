@@ -240,6 +240,14 @@ def resolve(document):
                     flows = [v for v in step.get("sensor_setpoints", {}).values() if type(v) in (int, float) and v > 0]
                     if flows:
                         step_values = {**values, "step_min_flow": min(flows)}
+            if isinstance(step.get("record"), str):
+                # A boolean parameter can switch a step's video: "record": "{record_video}".
+                text = interpolate(step["record"], values)
+                if text not in ("true", "false"):
+                    raise ValueError(f"record must be true or false, got {text!r}")
+                step["record"] = text == "true"
+            if step.get("record") is False:
+                step.pop("record_max_s", None)     # a step that does not record has no video limit
             for key in ("timeout_s", "repeat", "record_max_s"):
                 if key in step:
                     step[key] = expression(step[key], step_values)

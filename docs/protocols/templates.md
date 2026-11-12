@@ -98,6 +98,9 @@ volume, then a last gate finishes the run.
 | Beads M2 control / setpoint | flow, 40 |
 | Stop when Oil L has delivered | 150 µL |
 | Replicate timeout | 120 s |
+| Record video during each collection | off |
+| Video limit per collection | 100 s (100 at most) |
 
 Each channel's control is *flow* (setpoint in µL/min) or *pressure* (setpoint in
-mbar). L counts the delivered volume under either.
+mbar). L counts the delivered volume under either. With video on, each collection
+records from its start to its end, never at its gate, and needs a live camera.

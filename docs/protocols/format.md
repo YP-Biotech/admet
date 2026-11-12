@@ -34,7 +34,7 @@ executing a reviewed plan does.
 | `on_complete` | `zero` (default), `hold` or `revert` |
 | `confirm_message` | A gate: the step waits for **Confirm** before applying its targets |
 | `repeat`, `group` | Repeat the step; group steps in the plan |
-| `record` | `true` records camera video while this step runs (off by default) |
+| `record` | `true` records camera video while this step runs (off by default); a boolean parameter, `"{record_video}"`, can switch it |
 | `record_max_s` | Stops this step's video after this many seconds; 100 at most |
 
 Channel keys are channel indices (`"0"`, `"1"`, `"2"`). Channels in one step run

@@ -8,7 +8,9 @@
     "beads_control": {"type": "choice", "label": "Beads M2 control", "default": "flow", "options": ["flow", "pressure"]},
     "beads_value": ["Beads M2 setpoint (µL/min or mbar)", 40],
     "target_ul": ["Stop when Oil L has delivered, µL", 150],
-    "max_s": ["Replicate timeout, s", 120]
+    "max_s": ["Replicate timeout, s", 120],
+    "record_video": {"type": "boolean", "label": "Record video during each collection", "default": false},
+    "record_s": {"type": "number", "label": "Video limit per collection, s (100 at most)", "default": 100, "min": 1, "max": 100}
   },
   "steps": [
     {
@@ -20,6 +22,8 @@
       "trigger_params": {"sensor_index": 0, "target_volume_ul": "target_ul"},
       "timeout_s": "max_s",
       "on_complete": "zero",
+      "record": "{record_video}",
+      "record_max_s": "record_s",
       "confirm_message": "Replicate 1 of 3: fresh collection in place? Oil L {oil_control} {oil_value}, Cells M1 {cells_control} {cells_value}, Beads M2 {beads_control} {beads_value}; stops at {target_ul} uL on Oil L."
     },
     {
@@ -31,6 +35,8 @@
       "trigger_params": {"sensor_index": 0, "target_volume_ul": "target_ul"},
       "timeout_s": "max_s",
       "on_complete": "zero",
+      "record": "{record_video}",
+      "record_max_s": "record_s",
       "confirm_message": "Replicate 2 of 3: fresh collection in place?"
     },
     {
@@ -42,6 +48,8 @@
       "trigger_params": {"sensor_index": 0, "target_volume_ul": "target_ul"},
       "timeout_s": "max_s",
       "on_complete": "zero",
+      "record": "{record_video}",
+      "record_max_s": "record_s",
       "confirm_message": "Replicate 3 of 3: fresh collection in place?"
     },
     {
