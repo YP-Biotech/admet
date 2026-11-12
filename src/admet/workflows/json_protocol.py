@@ -142,6 +142,19 @@ def expression(value, values):
         raise ValueError(f"invalid expression {value!r}: {exc}") from exc
 
 
+def _control(value, values):
+    """A step's "control": channel -> flow or pressure, after parameters are filled in."""
+    if not isinstance(value, dict):
+        raise ValueError("control must map channels to flow or pressure")
+    result = {}
+    for channel, mode in value.items():
+        mode = interpolate(mode, values)
+        if not re.fullmatch(r"0|[1-9][0-9]*", str(channel)) or mode not in ("flow", "pressure"):
+            raise ValueError(f"control: channel {channel} must be flow or pressure, got {mode!r}")
+        result[str(channel)] = mode
+    return result
+
+
 def unit_mask(value):
     """The channels a units mask names, read right to left: 001 L, 010 M1, 100 M2, 110 M1 and M2."""
     if not isinstance(value, str) or not re.fullmatch(r"[01]+", value) or "1" not in value:
@@ -203,6 +216,9 @@ def resolve(document):
                 raise ValueError("each step must be an object")
             # "units" keeps only the setpoints of the channels its mask names.
             units = unit_mask(interpolate(step.pop("units"), values)) if "units" in step else None
+            # "control" puts each channel under flow or pressure: it is dropped from the other map.
+            control = _control(step.pop("control"), values) if "control" in step else {}
+            dropped = {"sensor_setpoints": "pressure", "pressure_setpoints": "flow"}
             step_values = values
             for key in ("sensor_setpoints", "pressure_setpoints", "trigger_params"):
                 if isinstance(step.get(key), dict):
@@ -211,6 +227,8 @@ def resolve(document):
                         target_key = interpolate(k, values) if key != "trigger_params" else k
                         if (units is not None and key != "trigger_params"
                                 and target_key.isdigit() and int(target_key) not in units):
+                            continue
+                        if key in dropped and control.get(target_key) == dropped[key]:
                             continue
                         if target_key in compiled:
                             raise ValueError("channel parameters resolve to duplicate targets")

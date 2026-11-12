@@ -50,6 +50,27 @@ A channel key can come from a parameter, so one protocol runs on any channel:
 "sensor_setpoints": {"{channel}": "working_flow"}
 ```
 
+## Flow or pressure per channel
+
+A step's `control` puts each channel under `flow` or `pressure`. List the channel's
+value in both maps; `control` drops it from the other one. With a choice parameter
+per channel, the parameter table switches it:
+
+```json
+"parameters": {
+  "oil_control": {"type": "choice", "label": "Oil L control", "default": "flow", "options": ["flow", "pressure"]},
+  "oil_value": ["Oil L setpoint (µL/min or mbar)", 300]
+},
+"steps": [{
+  "control": {"0": "{oil_control}"},
+  "sensor_setpoints": {"0": "oil_value"},
+  "pressure_setpoints": {"0": "oil_value"}
+}]
+```
+
+Any other value than `flow` or `pressure` is refused. A channel `control` does not
+name stays in whichever map lists it.
+
 ## Units masks: several channels at once
 
 For protocols that can run one channel or several together, a `units` parameter

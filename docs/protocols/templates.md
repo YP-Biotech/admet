@@ -87,12 +87,17 @@ Calculation: [Flow scout](../calculations/other#flow-stability-scout).
 
 ## Drop-Seq
 
-One Drop-Seq collection: oil on L at 300 µL/min, cells on M1 and beads on M2 at
-40 µL/min each, all at once after a start gate. It stops when L has delivered
-150 µL. Edit the step's flows and target to run other conditions.
+Three Drop-Seq collections in one set: oil on L, cells on M1 and beads on M2, all at
+once after a gate for each collection. Each stops when L has delivered the target
+volume, then a last gate finishes the run.
 
-| Channel | Flow |
+| Parameter | Default |
 |---|---|
-| 0 — Oil L | 300 µL/min |
-| 1 — Cells M1 | 40 µL/min |
-| 2 — Beads M2 | 40 µL/min |
+| Oil L control / setpoint | flow, 300 |
+| Cells M1 control / setpoint | flow, 40 |
+| Beads M2 control / setpoint | flow, 40 |
+| Stop when Oil L has delivered | 150 µL |
+| Replicate timeout | 120 s |
+
+Each channel's control is *flow* (setpoint in µL/min) or *pressure* (setpoint in
+mbar). L counts the delivered volume under either.

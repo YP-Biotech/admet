@@ -1,21 +1,55 @@
 {
   "name": "dropseq",
+  "parameters": {
+    "oil_control": {"type": "choice", "label": "Oil L control", "default": "flow", "options": ["flow", "pressure"]},
+    "oil_value": ["Oil L setpoint (µL/min or mbar)", 300],
+    "cells_control": {"type": "choice", "label": "Cells M1 control", "default": "flow", "options": ["flow", "pressure"]},
+    "cells_value": ["Cells M1 setpoint (µL/min or mbar)", 40],
+    "beads_control": {"type": "choice", "label": "Beads M2 control", "default": "flow", "options": ["flow", "pressure"]},
+    "beads_value": ["Beads M2 setpoint (µL/min or mbar)", 40],
+    "target_ul": ["Stop when Oil L has delivered, µL", 150],
+    "max_s": ["Replicate timeout, s", 120]
+  },
   "steps": [
     {
-      "name": "Run set01_rep01",
-      "sensor_setpoints": {"0": 300, "1": 40, "2": 40},
+      "name": "set01_rep01",
+      "control": {"0": "{oil_control}", "1": "{cells_control}", "2": "{beads_control}"},
+      "sensor_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
+      "pressure_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
       "trigger_type": "volume",
-      "trigger_params": {"sensor_index": 0, "target_volume_ul": 150},
-      "timeout_s": 120,
+      "trigger_params": {"sensor_index": 0, "target_volume_ul": "target_ul"},
+      "timeout_s": "max_s",
       "on_complete": "zero",
-      "confirm_message": "Confirm 0 = Oil L, 1 = Cells M1, 2 = Beads M2 and collection is ready. Start all three at 300/40/40 uL/min until Oil L measures 150 uL?"
+      "confirm_message": "Replicate 1 of 3: fresh collection in place? Oil L {oil_control} {oil_value}, Cells M1 {cells_control} {cells_value}, Beads M2 {beads_control} {beads_value}; stops at {target_ul} uL on Oil L."
     },
     {
-      "name": "Confirm set01_rep01",
+      "name": "set01_rep02",
+      "control": {"0": "{oil_control}", "1": "{cells_control}", "2": "{beads_control}"},
+      "sensor_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
+      "pressure_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
+      "trigger_type": "volume",
+      "trigger_params": {"sensor_index": 0, "target_volume_ul": "target_ul"},
+      "timeout_s": "max_s",
+      "on_complete": "zero",
+      "confirm_message": "Replicate 2 of 3: fresh collection in place?"
+    },
+    {
+      "name": "set01_rep03",
+      "control": {"0": "{oil_control}", "1": "{cells_control}", "2": "{beads_control}"},
+      "sensor_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
+      "pressure_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
+      "trigger_type": "volume",
+      "trigger_params": {"sensor_index": 0, "target_volume_ul": "target_ul"},
+      "timeout_s": "max_s",
+      "on_complete": "zero",
+      "confirm_message": "Replicate 3 of 3: fresh collection in place?"
+    },
+    {
+      "name": "Finish set01",
       "trigger_type": "time",
       "trigger_params": {"duration_s": 0},
       "on_complete": "zero",
-      "confirm_message": "Collection complete; all channels commanded to zero. Confirm to finish this run."
+      "confirm_message": "Three collections done; all channels commanded to zero. Confirm to finish this run."
     }
   ]
 }

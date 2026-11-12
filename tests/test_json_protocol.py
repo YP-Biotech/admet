@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from admet.core.service import Admet
-from admet.workflows.json_protocol import normalize, template_documents, validate_channels
+from admet.workflows.json_protocol import normalize, resolve, template_documents, validate_channels
 
 
 DOCUMENT = {
@@ -92,23 +92,34 @@ class JsonProtocolTests(unittest.TestCase):
             with patch("importlib.resources.files", return_value=Path(tmp)):
                 self.assertEqual(set(template_documents()), {"short_run"})
 
-    def test_dropseq_template_preserves_existing_recipe_with_bounded_execution(self):
+    def test_dropseq_template_runs_three_replicates_with_bounded_execution(self):
         document = template_documents()["dropseq"]
-        self.assertEqual(len(document["steps"]), 2)
-        self.assertEqual(document["steps"][0]["trigger_type"], "volume")
-        self.assertEqual(document["steps"][0]["trigger_params"], {"sensor_index": 0, "target_volume_ul": 150})
-        self.assertEqual(document["steps"][1]["sensor_setpoints"], {})
-        self.assertEqual(document["steps"][1]["trigger_type"], "time")
-        self.assertEqual(document["steps"][1]["trigger_params"], {"duration_s": 0})
-        for step in document["steps"]:
+        steps = resolve(document)["steps"]
+        self.assertEqual([step["name"] for step in steps], ["set01_rep01", "set01_rep02", "set01_rep03", "Finish set01"])
+        for step in steps[:3]:
+            self.assertEqual((step["trigger_type"], step["trigger_params"], step["timeout_s"]),
+                             ("volume", {"sensor_index": 0, "target_volume_ul": 150}, 120))
+            self.assertEqual((step["sensor_setpoints"], step["pressure_setpoints"]), ({"0": 300, "1": 40, "2": 40}, {}))
+        self.assertEqual((steps[3]["sensor_setpoints"], steps[3]["trigger_type"]), ({}, "time"))
+        for step in steps:
             self.assertEqual(step["on_complete"], "zero")
             self.assertTrue(step["confirm_message"])
-        self.assertEqual(document["steps"][0]["timeout_s"], 120)
         admet = Admet()
         with patch.object(admet, "engine_action", side_effect=AssertionError("planning actuated")):
             plan = admet.plan_protocol(operation_id="run_json_protocol", settings={"protocol": document})
-        self.assertEqual(plan["expected_duration_s"], 30)
+        self.assertEqual(plan["expected_duration_s"], 90)
         self.assertEqual(plan["steps"][0]["flow_setpoints_ul_min"], {"0": 300, "1": 40, "2": 40})
+
+    def test_control_puts_each_channel_under_flow_or_pressure(self):
+        document = template_documents()["dropseq"]
+        document["parameter_values"].update({"oil_control": "pressure", "oil_value": 1300})
+        step = resolve(document)["steps"][0]
+
+        self.assertEqual((step["sensor_setpoints"], step["pressure_setpoints"]), ({"1": 40, "2": 40}, {"0": 1300}))
+        self.assertIn("Oil L pressure 1300", step["confirm_message"])
+        document["steps"][0]["control"]["0"] = "hold"
+        with self.assertRaisesRegex(ValueError, "must be flow or pressure"):
+            resolve(document)
 
     def test_normalization_is_detached_and_rejects_unknown_fields(self):
         document = deepcopy(DOCUMENT)
