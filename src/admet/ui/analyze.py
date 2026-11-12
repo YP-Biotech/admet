@@ -1415,6 +1415,8 @@ class AnalyzeWorkflowView:
             self._refresh()
             return
         jobs = tuple(self._target_to_run(row) for row in targets)
+        # Taken now: the refresh below deletes the button whose slot this handler runs in.
+        page = ui.context.client
         # Run the batch off the event loop so heavy cellpose/opencv work does not
         # freeze the UI. A timer polls per-file progress reported by the runner and
         # drives the action-box progress bar live.
@@ -1424,10 +1426,8 @@ class AnalyzeWorkflowView:
         self._log(f"analysis: running {engine or 'all'} ({len(jobs)} file(s))")
         self._refresh()
         progress = self._refs.get("action_progress")
-        timer = ui.timer(
-            0.25,
-            lambda: self._sync_run_progress(progress),
-        )
+        with page.layout:                      # the page's outer layout, never redrawn
+            timer = ui.timer(0.25, lambda: self._sync_run_progress(progress))
         try:
             report = await run.io_bound(self._run_batch, jobs)
         except Exception as exc:
