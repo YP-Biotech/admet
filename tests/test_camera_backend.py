@@ -1,4 +1,3 @@
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -191,28 +190,59 @@ class CameraTests(unittest.TestCase):
 
 
 class VideoWorkerTests(unittest.TestCase):
-    def test_writes_raw_frames_and_uses_injected_encoder(self):
+    def test_writes_one_raw_file_and_encodes_it_once_every_frame_is_written(self):
+        import json
+        import threading
+
         encoded = {}
 
-        def fake_encoder(frames_dir, video_path, width, height, fps):
-            raw_frames = sorted(frames_dir.glob("*.raw"))
-            encoded["count"] = len(raw_frames)
-            encoded["first_bytes"] = raw_frames[0].read_bytes()
+        def fake_encoder(raw, video, width, height, fps):
+            encoded["bytes"] = raw.read_bytes()
             encoded["shape"] = (width, height, fps)
-            video_path.write_bytes(b"AVI")
-            shutil.rmtree(frames_dir)
-            return str(video_path)
+            video.write_bytes(b"AVI")
+            return True, ""
 
+        finished = threading.Event()
         with tempfile.TemporaryDirectory() as tmpdir:
             worker = VideoWorker(tmpdir, "sample", 2, 2, 30.0, encoder=fake_encoder)
+            worker.on_finished = lambda path, ok, reason: finished.set()
             self.assertTrue(worker.start())
             self.assertTrue(worker.write(np.array([[0, 256], [512, 1024]], dtype=np.uint16)))
+            self.assertTrue(worker.write(np.array([[3, 3], [3, 3]], dtype=np.uint8)))
             path = Path(worker.stop())
+            self.assertTrue(finished.wait(5))
 
             self.assertTrue(path.exists())
-            self.assertEqual(encoded["count"], 1)
-            self.assertEqual(encoded["first_bytes"], bytes([0, 1, 2, 4]))
+            self.assertEqual(encoded["bytes"], bytes([0, 1, 2, 4, 3, 3, 3, 3]))
             self.assertEqual(encoded["shape"], (2, 2, 30.0))
+            self.assertFalse((Path(tmpdir) / "sample.raw").exists())          # gone once the video is whole
+            info = json.loads((Path(tmpdir) / "sample.video.json").read_text())
+            self.assertEqual((info["status"], info["frames_written"], info["frames_dropped"]), ("done", 2, 0))
+
+    def test_a_recording_left_unencoded_is_finished_later_with_its_whole_frames(self):
+        import json
+
+        from admet.engines.acquisition.camera.video import encode_leftovers
+
+        seen = {}
+
+        def fake_encoder(raw, video, width, height, fps):
+            seen["size"] = raw.stat().st_size
+            video.write_bytes(b"AVI")
+            return True, ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            camera = Path(tmpdir)
+            (camera / "cut.raw").write_bytes(bytes(4 * 3 + 2))                 # three whole 2x2 frames, then half
+            (camera / "cut.video.json").write_text(json.dumps(
+                {"video": "cut.avi", "raw": "cut.raw", "width": 2, "height": 2, "fps": 24.0, "status": "recording"}))
+            done = encode_leftovers(camera, encoder=fake_encoder)
+
+            self.assertEqual(done, [str(camera / "cut.avi")])
+            self.assertEqual(seen["size"], 12)
+            info = json.loads((camera / "cut.video.json").read_text())
+            self.assertEqual((info["status"], info["frames_written"]), ("done", 3))
+            self.assertEqual(encode_leftovers(camera, encoder=fake_encoder), [])   # nothing left
 
 
 class FakeRecordingCamera:

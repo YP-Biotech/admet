@@ -17,6 +17,7 @@ manifest mentions and nothing can find again.
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import time
@@ -34,6 +35,8 @@ from admet.core.project import ProjectStore
 from admet.core.run import RunJob, RunResult
 from admet.core.session import PROJECT_EXTENSION, session_path
 from admet.workflows.operations import operation as find_operation
+
+log = logging.getLogger(__name__)
 
 # Which engine registry each engine belongs to.
 ENGINE_GROUPS = {
@@ -195,6 +198,7 @@ class Admet:
         if not (path / "manifest.json").is_file():
             raise NoProject(f"{path} is not a project: no manifest.json in it")
         self.project = ProjectStore(path)
+        self._encode_leftovers()
         return self.project
 
     def close_project(self) -> None:
@@ -267,8 +271,30 @@ class Admet:
                 raise LookupError(f"unknown engine {engine_id!r}; this build has: {known}")
             from admet.engines import create_engine_registry
 
-            self._engines[engine_id] = create_engine_registry(group).create(engine_id)
+            engine = create_engine_registry(group).create(engine_id)
+            if hasattr(engine, "on_video_finished"):
+                engine.on_video_finished = self._video_finished
+            self._engines[engine_id] = engine
         return self._engines[engine_id]
+
+    def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
+        """A video finished encoding after its recording stopped: list it with its recording."""
+        project = self.project
+        if not encoded or project is None or Path(video_path).parent != project.records_dir / "camera":
+            return
+        try:
+            project.attach_encoded_video(video_path)
+        except Exception:
+            log.exception("could not list the encoded video %s", video_path)
+
+    def _encode_leftovers(self) -> None:
+        """Finish, in the background, encodings a previous session left unfinished."""
+        from admet.engines.acquisition.camera.video import encode_leftovers
+
+        camera = self.project.records_dir / "camera"
+        if any(camera.glob("*.video.json")):
+            threading.Thread(target=encode_leftovers, args=(camera, self._video_finished),
+                             name="EncodeLeftovers", daemon=True).start()
 
     def describe(self, target: str = "") -> dict[str, Any]:
         """What exists, at whichever level was asked about.
