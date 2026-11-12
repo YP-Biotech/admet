@@ -194,8 +194,7 @@ class DesktopBackendTests(unittest.TestCase):
     def test_dropseq_template_simulated_collection_gates_and_artifacts(self):
         self.connect()
         document = template_documents()["dropseq"]
-        document["steps"][0]["trigger_params"]["target_volume_ul"] = 5
-        document["steps"][0]["confirm_message"] = "Collect a 5 uL test aliquot?"
+        document["parameter_values"]["target_ul"] = 5                          # a 5 uL test aliquot per replicate
         saved = self.backend.call("save_protocol", {"protocol": document})
         plan = self.backend.plan_file(saved["path"])
         observed = self.backend.call("observe")
@@ -205,21 +204,21 @@ class DesktopBackendTests(unittest.TestCase):
             "action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1,
         })
         self.assertEqual(started["yield"]["reason"], "confirmation_required")
-        self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 0.1})
-        deadline = time.monotonic() + 10
-        running_targets_seen = False
+        deadline = time.monotonic() + 20
+        running_targets_seen, gates = False, 0
         while time.monotonic() < deadline:
             observed = self.backend.call("observe")
             running_targets_seen |= [c["requested_flow_ul_min"] for c in observed["channels"]] == [300, 40, 40]
-            if observed["protocol"]["confirmation_message"] == document["steps"][1]["confirm_message"]:
+            if observed["protocol"]["confirmation_message"]:
+                gates += 1
+                self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 0.1})
+            if self.backend.call("planned_protocols", {"plan_id": plan["plan_id"]})["plans"][0]["state"] == "completed":
                 break
             time.sleep(0.05)
         else:
-            self.fail("simulated Drop-Seq did not reach the completion gate")
+            self.fail("simulated Drop-Seq did not complete")
         self.assertTrue(running_targets_seen)
-        self.assertTrue(all(c["requested_flow_ul_min"] in (None, 0) for c in observed["channels"]))
-        self.assertTrue(observed["recording"]["active"])
-        self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
+        self.assertEqual(gates, 4)                                              # three replicates, then finish
         completed = self.wait_completed(plan["plan_id"])
         self.assertFalse(self.backend.call("observe")["recording"]["active"])
         directory = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
@@ -227,8 +226,9 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(json.loads((directory / "protocol.json").read_text()), document)
         self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
         events = self.backend.call("protocol_events", {"limit": 1000})["events"]
-        completed = next(e for e in events if e["step_name"] == "Run set01_rep01" and e["outcome"] == "completed")
-        self.assertGreaterEqual(float(completed["step_volumes"][0]), 5)
+        for name in ("set01_rep01", "set01_rep02", "set01_rep03"):
+            done = next(e for e in events if e["step_name"] == name and e["outcome"] == "completed")
+            self.assertGreaterEqual(float(done["step_volumes"][0]), 5)
 
     def test_planning_never_invokes_engine_run(self):
         self.connect()
