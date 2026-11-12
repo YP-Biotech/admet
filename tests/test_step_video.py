@@ -55,6 +55,9 @@ class StepVideoTests(unittest.TestCase):
         self.assertEqual([(v["step"], v["part"], v["stopped_by"]) for v in video.videos], [(2, 1, "completed")])
         self.assertTrue(Path(video.videos[0]["video_path"]).name.startswith("run_ab12_step02_"))
         self.assertTrue(Path(video.videos[0]["video_path"]).is_file())
+        recorded = video.videos[0]                                          # the fake camera reports 3 frames
+        self.assertGreater(recorded["acquisition_fps"], 0)
+        self.assertAlmostEqual(recorded["acquisition_fps"] * recorded["duration_s"], 3, delta=3)  # duration is rounded
 
     def test_pause_closes_the_file_and_resuming_opens_a_second_part(self):
         video = self.video([step("collect", record=True)])
