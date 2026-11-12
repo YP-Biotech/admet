@@ -79,43 +79,7 @@ class OpenCVAnalysisEngine:
         *,
         cache_dir: Path | None,
     ) -> dict[str, Any]:
-        config: dict[str, Any] = {
-            "background": {"sample_frames": 80},
-            "threshold": {"method": "btvs", "sample_frames": 5},
-            "segmentation": {
-                "min_area": 50,
-                "max_area": 10000,
-                "min_circularity": 0.3,
-                "max_aspect_ratio": 4.0,
-            },
-            "tracking": {"max_distance": 30, "min_count": 3, "max_miss": 2},
-            "analysis": {"microns_per_pixel": settings["microns_per_pixel"]},
-        }
-        if cache_dir is not None:
-            config["processing"] = {"cache_dir": str(cache_dir)}
-        video_config: dict[str, Any] = {}
-        if settings["start_frame"]:
-            video_config["start_frame"] = settings["start_frame"]
-        if settings["end_frame"] is not None:
-            video_config["end_frame"] = settings["end_frame"]
-        roi_width = int(settings["roi_width"] or 0)
-        roi_height = int(settings["roi_height"] or 0)
-        if roi_width or roi_height:
-            if not roi_width or not roi_height:
-                video_width, video_height = _video_dimensions(Path(str(settings["video_path"])))
-                roi_width = roi_width or video_width
-                roi_height = roi_height or video_height
-            video_config["roi"] = (
-                settings["roi_x"],
-                settings["roi_y"],
-                roi_width,
-                roi_height,
-            )
-        if video_config:
-            config["video"] = video_config
-        if settings["fps"]:
-            config["analysis"]["fps"] = settings["fps"]
-        return config
+        return pipeline_config(settings, cache_dir=cache_dir)
 
     def _write_raw_rows(self, job: RunJob | None, result: dict[str, Any]) -> int:
         if job is None or job.sink is None:
@@ -228,3 +192,44 @@ def _opencv_context(result: dict[str, Any]) -> dict[str, Any]:
         "trajectory": result.get("trajectory", {}),
         "true_stats": result.get("true_stats", {}),
     }
+
+
+def pipeline_config(settings: dict[str, Any], *, cache_dir: Path | None = None) -> dict[str, Any]:
+    """The droplet pipeline's config for a run's settings; analyze's debug view uses the same."""
+    config: dict[str, Any] = {
+        "background": {"sample_frames": 80},
+        "threshold": {"method": "btvs", "sample_frames": 5},
+        "segmentation": {
+            "min_area": 50,
+            "max_area": 10000,
+            "min_circularity": 0.3,
+            "max_aspect_ratio": 4.0,
+        },
+        "tracking": {"max_distance": 30, "min_count": 3, "max_miss": 2},
+        "analysis": {"microns_per_pixel": settings["microns_per_pixel"]},
+    }
+    if cache_dir is not None:
+        config["processing"] = {"cache_dir": str(cache_dir)}
+    video_config: dict[str, Any] = {}
+    if settings["start_frame"]:
+        video_config["start_frame"] = settings["start_frame"]
+    if settings["end_frame"] is not None:
+        video_config["end_frame"] = settings["end_frame"]
+    roi_width = int(settings["roi_width"] or 0)
+    roi_height = int(settings["roi_height"] or 0)
+    if roi_width or roi_height:
+        if not roi_width or not roi_height:
+            video_width, video_height = _video_dimensions(Path(str(settings["video_path"])))
+            roi_width = roi_width or video_width
+            roi_height = roi_height or video_height
+        video_config["roi"] = (
+            settings["roi_x"],
+            settings["roi_y"],
+            roi_width,
+            roi_height,
+        )
+    if video_config:
+        config["video"] = video_config
+    if settings["fps"]:
+        config["analysis"]["fps"] = settings["fps"]
+    return config
