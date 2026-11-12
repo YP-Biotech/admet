@@ -47,11 +47,13 @@ class ThresholdFinder:
         # Check for manual override
         manual = self.config.get("manual_threshold")
         if manual is not None:
+            self.method_used = "manual"
             self.threshold_value = manual
             logger.info(f"Using manual threshold: {manual}")
             return manual
 
         if not frames:
+            self.method_used = "default"
             self.threshold_value = 128
             logger.warning("No frames for BTVS, using 128")
             return self.threshold_value
@@ -74,6 +76,7 @@ class ThresholdFinder:
         keep = max(1, int(np.ceil(len(eligible) * self.config["top_fraction"])))
         medians = [g["median"] for g in eligible[:keep]]
 
+        self.method_used = "BTVS"
         self.threshold_value = int(np.median(medians))
         logger.info(
             f"BTVS threshold: {self.threshold_value} from {len(eligible)} groups"
@@ -81,6 +84,7 @@ class ThresholdFinder:
         return self.threshold_value
 
     def _otsu_threshold(self, frames: List[np.ndarray]) -> int:
+        self.method_used = "Otsu"
         pixels = []
         for frame in frames[:5]:
             pixels.extend(frame.flatten())
