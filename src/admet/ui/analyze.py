@@ -635,9 +635,7 @@ class AnalyzeWorkflowView:
             preview = _read_video_frame(source, _preview_frame_index(target))
             with ui.column().classes("w-full gap-2"):
                 ui.label(target.sample_id or Path(target.source_path).stem).classes("text-sm font-semibold")
-                ui.label(_compact_path(target.source_path)).classes("muted text-xs path-label").props(
-                    f'title="{html.escape(target.source_path)}"'
-                )
+                _path_label(target.source_path)
                 self._refs["opencv_preview"] = ui.html(self._opencv_preview_html(target, preview)).classes(
                     "opencv-preview w-full"
                 )
@@ -2492,6 +2490,19 @@ def _compact_path(value: str, *, max_parts: int = 4) -> str:
     if len(parts) <= max_parts:
         return value
     return str(Path("...").joinpath(*parts[-max_parts:]))
+
+
+def _path_label(path: str):
+    """The short path, with the full one on hover.
+
+    The title is set, not passed in a props string: NiceGUI parses that as Python, and
+    a Windows path's "\\U" in C:\\Users reads there as a broken unicode escape.
+    """
+    from nicegui import ui
+
+    label = ui.label(_compact_path(path)).classes("muted text-xs path-label")
+    label.props["title"] = path
+    return label
 
 
 def _friendly_video_error(message: str) -> str:

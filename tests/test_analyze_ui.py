@@ -68,5 +68,19 @@ class MatrixChangeTargetingTests(unittest.TestCase):
         self.assertIn(view.matrix[1].uid, second_signature)
 
 
+class PathLabelTests(unittest.TestCase):
+    def test_a_windows_path_is_shown_whole_on_hover(self):
+        from nicegui import Client
+        from nicegui.page import page
+
+        from admet.ui.analyze import _path_label
+
+        path = r"C:\Users\ADMIN\Projects\admet\projects\p.admetp\records\camera\run_ab12_step01_20261112_171440.avi"
+        with Client(page(""), request=None):
+            label = _path_label(path)
+        self.assertEqual(label.props["title"], path)
+
+
 if __name__ == "__main__":
     unittest.main()
+
