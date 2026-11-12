@@ -147,3 +147,40 @@ class DropletDetector:
             "circularity": circularity,
             "equivalent_diameter": diameter,
         }
+
+
+def separate_touching(binary: np.ndarray, relief: np.ndarray, *, max_area: float, gap: int,
+                      min_seed: int = 20) -> np.ndarray:
+    """Packed droplets as separate shapes, each grown from the middle of its outline.
+
+    Against an empty-channel background a droplet shows as a closed outline whose middle
+    looks like the channel. Each middle the outline encloses seeds a watershed over the
+    relief, so the line between two touching droplets falls on the outlines they share.
+    The lines are drawn gap wide, so the closing that follows cannot join them again.
+    """
+    ellipse = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, ellipse)
+    # Padded with background, so everything reachable from the edge is outside.
+    padded = cv2.copyMakeBorder(closed, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    mask = np.zeros((padded.shape[0] + 2, padded.shape[1] + 2), np.uint8)
+    cv2.floodFill(padded, mask, (0, 0), 255)
+    middles = cv2.bitwise_not(padded)[1:-1, 1:-1]
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(middles)
+    markers = np.zeros(binary.shape, np.int32)
+    seeds = 0
+    for label in range(1, count):
+        if min_seed <= stats[label, cv2.CC_STAT_AREA] <= max_area:
+            seeds += 1
+            markers[labels == label] = seeds + 1
+    if not seeds:
+        return cv2.bitwise_or(closed, middles)
+    markers[(closed == 0) & (middles == 0)] = 1
+    cv2.watershed(cv2.cvtColor(cv2.GaussianBlur(relief, (5, 5), 1.5), cv2.COLOR_GRAY2BGR), markers)
+
+    shapes = np.where(markers > 1, 255, 0).astype(np.uint8)
+    lines = np.where(markers == -1, 255, 0).astype(np.uint8)
+    lines[0, :] = lines[-1, :] = lines[:, 0] = lines[:, -1] = 0       # the watershed also marks the frame's edge
+    lines = cv2.dilate(lines, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (gap, gap)))
+    shapes[lines > 0] = 0
+    return shapes

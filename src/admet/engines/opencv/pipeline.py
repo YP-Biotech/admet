@@ -11,7 +11,7 @@ from .logger import get_logger
 from .io import VideoReader
 from .beo import BackgroundExtractor
 from .btvf import ThresholdFinder
-from .detect import DropletDetector
+from .detect import DropletDetector, separate_touching
 
 logger = get_logger("Pipeline")
 
@@ -148,6 +148,18 @@ class DropletPipeline:
     def _compute_background(self) -> bool:
         """Compute background"""
         try:
+            empty = self.config.get("background", {}).get("frames")
+            if empty:
+                frames = self.video_reader.read_sampled_frames(
+                    min(60, empty[1] - empty[0]), seed=11, start_frame=empty[0], end_frame=empty[1]
+                )
+                if not frames:
+                    logger.error("No frames in the background range")
+                    return False
+                self.background_extractor.empty_background(frames)
+                self.background = self.background_extractor.background
+                self.video_reader.seek_frame(0)
+                return True
             n_frames = self.config.get("background", {}).get("sample_frames", 80)
             start_frame, end_frame = self._frame_range(self.video_reader.total_frames)
             frames = self.video_reader.read_sampled_frames(
@@ -300,6 +312,14 @@ class DropletPipeline:
 
         # Threshold: processed images use bright droplets on dark background.
         binary = self.threshold_finder.apply_threshold(processed)
+        segmentation = self.config.get("segmentation", {})
+        if segmentation.get("separate_touching"):
+            # Unfilled: the middle of each droplet's outline is what tells packed droplets apart.
+            binary = separate_touching(
+                self.threshold_finder._raw_threshold(processed), processed,
+                max_area=segmentation.get("max_area", 10000),
+                gap=2 * int(self.detector.config["closing_t"]) + 3,
+            )
         result["binary"] = binary.copy()
 
         # Detect

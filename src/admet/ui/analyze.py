@@ -669,6 +669,11 @@ class AnalyzeWorkflowView:
                     self._slider_editor(target, "roi_y", "ROI Y", 0, height - 1)
                     self._slider_editor(target, "roi_width", "ROI W (0 = full)", 0, width)
                     self._slider_editor(target, "roi_height", "ROI H (0 = full)", 0, height)
+                    self._slider_editor(target, "background_from", "Background from frame", 0, frames - 1)
+                    self._slider_editor(target, "background_to", "Background to frame (0 = sampled)", 0, frames)
+                ui.checkbox("Separate touching droplets", value=_row_bool(target, "separate_touching", False),
+                            on_change=lambda event, row=target: self._set_row_flag(row, "separate_touching",
+                                                                                   event.value))
 
     def _slider_editor(self, row: MatrixRow, key: str, label: str, minimum: int, maximum: int,
                        *, default: int | None = None) -> None:
@@ -720,6 +725,11 @@ class AnalyzeWorkflowView:
         self.show_overlay = bool(show)
         self._sync_previews()
 
+    def _set_row_flag(self, row: MatrixRow, key: str, value: bool) -> None:
+        row.settings[key] = bool(value)
+        self.selected_uid = row.uid
+        self._settings_edited()
+
     def _toggle_stages(self, show: bool) -> None:
         self.show_stages = bool(show)
         self._sync_previews()
@@ -738,11 +748,15 @@ class AnalyzeWorkflowView:
         if stages["error"]:
             return f'<div class="editor-note editor-warning">{html.escape(stages["error"])}</div>'
         seg = stages["segmentation"]
+        empty_from, empty_to = _row_int(target, "background_from", 0), _row_int(target, "background_to", 0)
+        background = (f"frames {empty_from}–{empty_to}, empty channel" if empty_to > empty_from
+                      else "from sampled frames")
+        separated = ", touching droplets separated" if seg.get("separate_touching") else ""
         captions = {
             "original": "1 · Original (crop)",
-            "background": "2 · Background, from sampled frames",
-            "removed": "3 · Background removed",
-            "threshold": f"4 · Threshold: {stages['threshold_method'] or 'value'} = {stages['threshold']}",
+            "background": f"2 · Background, {background}",
+            "removed": "3 · Background removed" + (": difference" if empty_to > empty_from else ""),
+            "threshold": f"4 · Threshold: {stages['threshold_method'] or 'value'} = {stages['threshold']}{separated}",
             "morphology": f"5 · Morphology: closing {seg['closing_t']}, erosion {seg['closing_e']}",
             "contours": f"6 · Contours: {stages['kept']} kept (green), {stages['dropped']} dropped (red)",
         }
@@ -1556,6 +1570,9 @@ class AnalyzeWorkflowView:
             "roi_y": 0,
             "roi_width": 0,
             "roi_height": 0,
+            "background_from": _row_int(row, "background_from", 0),
+            "background_to": _row_int(row, "background_to", 0),
+            "separate_touching": _row_bool(row, "separate_touching", False),
         }
         if roi_width or roi_height:
             settings.update(

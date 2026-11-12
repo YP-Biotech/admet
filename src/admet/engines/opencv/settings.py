@@ -14,5 +14,11 @@ OPENCV_SETTINGS = ParamSchema(
         Param("roi_y", "ROI Y", ParamKind.INTEGER, default=0, minimum=0),
         Param("roi_width", "ROI Width", ParamKind.INTEGER, default=0, minimum=0),
         Param("roi_height", "ROI Height", ParamKind.INTEGER, default=0, minimum=0),
+        Param("background_from", "Background From Frame", ParamKind.INTEGER, default=0, minimum=0,
+              description="With Background To, frames of the empty channel to use as background"),
+        Param("background_to", "Background To Frame", ParamKind.INTEGER, default=0, minimum=0,
+              description="0 builds the background from frames sampled across the video"),
+        Param("separate_touching", "Separate Touching Droplets", ParamKind.BOOLEAN, default=False,
+              description="Split packed droplets, each from the middle of its outline"),
     )
 )

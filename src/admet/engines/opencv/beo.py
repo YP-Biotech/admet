@@ -20,7 +20,17 @@ class BackgroundExtractor:
         self.background = None
         self.i_min = 0
         self.i_max = 255
+        # "sampled": built from frames with droplets, removed by division.
+        # "empty": frames of the empty channel; droplets are what differs from it.
+        self.mode = "sampled"
         logger.debug("BackgroundExtractor initialized")
+
+    def empty_background(self, frames: List[np.ndarray]) -> np.ndarray:
+        """The median of frames of the channel with no droplets in it."""
+        self.background = np.median(np.stack(frames), axis=0).astype(np.uint8)
+        self.mode = "empty"
+        logger.info(f"Background from {len(frames)} frames of the empty channel")
+        return self.background
 
     def compute_background(self, frames: List[np.ndarray]) -> np.ndarray:
         """
@@ -219,6 +229,11 @@ class BackgroundExtractor:
             bg = cv2.resize(self.background, (frame.shape[1], frame.shape[0]))
         else:
             bg = self.background
+
+        if self.mode == "empty":
+            # Droplets differ from the empty channel, darker or brighter: both count.
+            difference = cv2.absdiff(frame, bg)
+            return difference if invert else 255 - difference
 
         # Use division method for background removal
         result = self._pbr_division(frame, bg)

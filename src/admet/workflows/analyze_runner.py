@@ -493,6 +493,9 @@ _CACHE_KEY_FIELDS = (
     "roi_y",
     "roi_width",
     "roi_height",
+    "background_from",
+    "background_to",
+    "separate_touching",
 )
 
 

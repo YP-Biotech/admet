@@ -232,4 +232,9 @@ def pipeline_config(settings: dict[str, Any], *, cache_dir: Path | None = None) 
         config["video"] = video_config
     if settings["fps"]:
         config["analysis"]["fps"] = settings["fps"]
+    empty_from, empty_to = int(settings.get("background_from") or 0), int(settings.get("background_to") or 0)
+    if empty_to > empty_from:
+        config["background"]["frames"] = [empty_from, empty_to]
+    if settings.get("separate_touching"):
+        config["segmentation"]["separate_touching"] = True
     return config
