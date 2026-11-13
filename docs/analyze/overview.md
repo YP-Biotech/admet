@@ -64,6 +64,16 @@ passes once); **satellite size**, **min droplet area** and **threshold × noise*
 Tick *Show detection stages* to see each step on the preview frame. *Reset file
 settings* puts the selected file back to the defaults, keeping its µm/px and FPS.
 
+## Setting an image folder up
+
+Image folders are grouped into frames by name (`…_z01_…a01f001d4.tif`: z-slice and
+frame), min-projected over z and segmented with Cellpose. The editor shows each
+image with the stored droplets drawn over it: a circle per droplet with its
+inclusion count. Corrections are made on the image: **click** a droplet to switch
+it off (or back on), **shift-click** to add an inclusion, **alt-click** to remove
+one. They are saved with the project and count on **3. Results** and in the export;
+the stored rows stay as found, and *Clear corrections* drops them.
+
 ## Results
 
 The table has one row per ticked file: droplets, diameter, area, CV, generation
