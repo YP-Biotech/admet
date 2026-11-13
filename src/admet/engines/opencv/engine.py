@@ -48,7 +48,11 @@ class OpenCVAnalysisEngine:
                 "cache_dir": data.get("cache_dir"),
                 "frames_processed": data.get("frames_processed", 0),
                 "total_detections": data.get("total_detections", 0),
+                "total_droplets": data.get("total_droplets", 0),
                 "threshold": data.get("threshold"),
+                "frequency_hz": data.get("frequency_hz"),
+                "generation": data.get("generation", {}),
+                "speed_px_frame": data.get("speed_px_frame"),
             },
         )
 
@@ -187,49 +191,49 @@ def _video_dimensions(path: Path) -> tuple[int, int]:
 def _opencv_context(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "analysis": result.get("analysis", {}),
+        "detection": result.get("detection", {}),
         "threshold": result.get("threshold"),
-        "threshold_groups": result.get("threshold_groups", []),
+        "noise_sigma": result.get("noise_sigma"),
+        "generation": result.get("generation", {}),
+        "speed_px_frame": result.get("speed_px_frame"),
+        "frequency_hz": result.get("frequency_hz"),
         "trajectory": result.get("trajectory", {}),
         "true_stats": result.get("true_stats", {}),
     }
 
 
 def pipeline_config(settings: dict[str, Any], *, cache_dir: Path | None = None) -> dict[str, Any]:
-    """The droplet pipeline's config for a run's settings; analyze's debug view uses the same."""
+    """The droplet pipeline's config for a run's settings; analyze's stages view uses the same."""
     config: dict[str, Any] = {
-        "background": {"sample_frames": 80},
-        "threshold": {"method": "btvs", "sample_frames": 5},
-        "segmentation": {
-            "min_area": 50,
-            "max_area": 10000,
-            "min_circularity": 0.3,
-            "max_aspect_ratio": 4.0,
+        "background": {"sample_frames": 120, "percentile": 85},
+        "detection": {
+            "k_sigma": float(settings.get("k_sigma") or 4.0),
+            "satellite": int(settings.get("satellite_px") or 13),
+            "min_area": float(settings.get("min_area") or 150.0),
+            "skip_left_pct": float(settings.get("skip_left_pct") or 0.0),
+            "skip_right_pct": float(settings.get("skip_right_pct") or 0.0),
+            "gate_pct": float(settings.get("gate_pct") if settings.get("gate_pct") is not None else 50.0),
         },
-        "tracking": {"max_distance": 30, "min_count": 3, "max_miss": 2},
+        "tracking": {"min_count": 3, "max_miss": 2},
         "analysis": {"microns_per_pixel": settings["microns_per_pixel"]},
     }
     if cache_dir is not None:
         config["processing"] = {"cache_dir": str(cache_dir)}
     video_config: dict[str, Any] = {}
-    if settings["start_frame"]:
+    if settings.get("start_frame"):
         video_config["start_frame"] = settings["start_frame"]
-    if settings["end_frame"] is not None:
+    if settings.get("end_frame") is not None:
         video_config["end_frame"] = settings["end_frame"]
-    roi_width = int(settings["roi_width"] or 0)
-    roi_height = int(settings["roi_height"] or 0)
+    roi_width = int(settings.get("roi_width") or 0)
+    roi_height = int(settings.get("roi_height") or 0)
     if roi_width or roi_height:
         if not roi_width or not roi_height:
             video_width, video_height = _video_dimensions(Path(str(settings["video_path"])))
             roi_width = roi_width or video_width
             roi_height = roi_height or video_height
-        video_config["roi"] = (
-            settings["roi_x"],
-            settings["roi_y"],
-            roi_width,
-            roi_height,
-        )
+        video_config["roi"] = (settings.get("roi_x") or 0, settings.get("roi_y") or 0, roi_width, roi_height)
     if video_config:
         config["video"] = video_config
-    if settings["fps"]:
+    if settings.get("fps"):
         config["analysis"]["fps"] = settings["fps"]
     return config
