@@ -290,6 +290,11 @@ QLabel#MutedText,
 QLabel#StageSummary {{
     color: {Theme.TEXT_MUTED};
 }}
+QLabel#CameraStrip {{
+    color: {Theme.TEXT_MUTED};
+    font-size: 12px;
+    padding-left: 2px;
+}}
 /* Boxes in the fluidic scheme: sources, sensors, the chip and the collection
    tube, with the tubing fields sitting on the runs between them. */
 QLabel#SchemeNode {{

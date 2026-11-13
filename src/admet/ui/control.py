@@ -84,6 +84,7 @@ from admet.ui.theme import STATUS_COLORS, Theme
 from admet.ui.window import (
     connected_devices,
     log_state,
+    camera_strip,
     panel_specs,
     structure_changed,
     structure_signature,
@@ -559,9 +560,19 @@ class ControlWindow(QMainWindow):
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("TopPanel")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 11, 16, 11)
+        rows = QVBoxLayout(bar)
+        rows.setContentsMargins(16, 9, 16, 9)
+        rows.setSpacing(4)
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
+        rows.addWidget(row)
+        # The camera's facts live here, the width of the window, not over the frame.
+        self.camera_strip = QLabel(camera_strip({}))
+        self.camera_strip.setObjectName("CameraStrip")
+        self.camera_strip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rows.addWidget(self.camera_strip)
 
         title = QLabel("admet control")
         title.setObjectName("AppTitle")
@@ -2057,6 +2068,7 @@ class ControlWindow(QMainWindow):
         was_running = self.last_metadata.get("pipeline_state")
         self.last_metadata = dict(result.metadata)
         self._refresh_runtime_state()
+        self._sync_camera_strip()
         self._sync_preview_overlay()
         self._protocol_changed()
         if self.last_metadata.get("pipeline_state") != was_running:
@@ -2221,21 +2233,20 @@ class ControlWindow(QMainWindow):
         if callable(acknowledge):
             acknowledge()
 
+    def _sync_camera_strip(self) -> None:
+        strip = getattr(self, "camera_strip", None)
+        if strip is not None:
+            strip.setText(camera_strip(self.last_metadata, self._camera_name()))
+
+    def _camera_name(self) -> str:
+        cameras = self.last_metadata.get("cameras") or ()
+        index = int(self.values.get("camera_index") or 0)
+        return str(cameras[index]) if 0 <= index < len(cameras) else ""
+
     def _sync_preview_overlay(self) -> None:
-        if self.preview is None:
-            return
-        elapsed = self.last_metadata.get("camera_record_elapsed")
-        fps = self.last_metadata.get("camera_fps")
-        frames = self.last_metadata.get("camera_recorded_frames")
-        state = "recording" if self.last_metadata.get("camera_recording") else "live"
-        self.preview.set_overlay(
-            (
-                state,
-                f"time {_measurement(elapsed)} s",
-                f"fps {_measurement(fps)}",
-                f"frames {'—' if frames is None else frames}",
-            )
-        )
+        # Only the one word that must be seen on the frame itself; the rest is in the top bar.
+        if self.preview is not None:
+            self.preview.set_overlay(("REC",) if self.last_metadata.get("camera_recording") else ())
 
     def _emergency_stop(self) -> None:
         self._set_status("Emergency stop requested", "danger")
@@ -3876,14 +3887,11 @@ class PreviewDisplay(QWidget):
         painter.drawImage(self.frame_rect, scaled)
         if self._overlay_lines:
             text = "\n".join(self._overlay_lines)
-            overlay_rect = QRect(self.frame_rect.x() + 10, self.frame_rect.y() + 10, 168, 76)
-            painter.fillRect(overlay_rect, QColor(0, 0, 0, 145))
+            box = painter.fontMetrics().boundingRect(QRect(0, 0, 400, 200), Qt.AlignmentFlag.AlignLeft, text)
+            overlay_rect = QRect(self.frame_rect.x() + 8, self.frame_rect.y() + 8, box.width() + 14, box.height() + 8)
+            painter.fillRect(overlay_rect, QColor(180, 20, 30, 190))
             painter.setPen(Qt.GlobalColor.white)
-            painter.drawText(
-                overlay_rect.adjusted(8, 7, -8, -7),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                text,
-            )
+            painter.drawText(overlay_rect, Qt.AlignmentFlag.AlignCenter, text)
         self.frame_painted.emit()
 
 
