@@ -33,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="an operation or engine id; omit for everything",
     )
 
+    check = sub.add_parser("check", help="say what would stop a project from saving; --fix mends it")
+    check.add_argument("project", help="the .admetp project folder")
+    check.add_argument("--fix", action="store_true", help="take dangling file names out of the items")
+
     sdk = sub.add_parser(
         "install-sdk", help="download Fluigent's SDK from its official GitHub into ADMET's vendor folder"
     )
@@ -58,6 +62,17 @@ def main(argv: list[str] | None = None) -> int:
         from admet.core.service import Admet
 
         return _attempt(lambda: Admet().describe(args.target))
+
+    if args.command == "check":
+        from admet.core.check import check_project, mend_project
+
+        report = mend_project(args.project) if args.fix else check_project(args.project)
+        print("\n".join(report.lines()))
+        if args.fix and not report.clean and not report.unreadable:
+            print(f"mended; the manifest as it was is kept as {report.manifest.with_suffix('.json.bak').name}")
+        elif not report.clean and not report.unreadable:
+            print("Run again with --fix to take these names out of the items.")
+        return 0 if report.clean or args.fix else 1
 
     if args.command == "install-sdk":
         from admet.engines.acquisition.fluidics.sdk import FLUIGENT_SDK_VERSION, install_sdk
