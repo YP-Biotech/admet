@@ -260,12 +260,19 @@ class ProjectStore:
     def remove_analysis_file(self, source_path: str | Path) -> bool:
         """Forget a file analyze added; a recording made by control is not analyze's to remove."""
         resolved = Path(source_path).resolve()
-        kept = tuple(file for file in self.session.files
-                     if file.role not in {"analysis_video", "analysis_image_dir"}
-                     or self.resolve_file_path(file).resolve() != resolved)
-        if len(kept) == len(self.session.files):
+        gone = {file.id for file in self.session.files
+                if file.role in {"analysis_video", "analysis_image_dir"}
+                and self.resolve_file_path(file).resolve() == resolved}
+        if not gone:
             return False
-        self.session = replace(self.session, files=kept)
+        # A sample made from that file alone goes with it; one that spans other files keeps those.
+        items = []
+        for item in self.session.items:
+            files = tuple(file_id for file_id in item.files if file_id not in gone)
+            if files or not item.files:
+                items.append(replace(item, files=files))
+        self.session = replace(self.session, files=tuple(file for file in self.session.files if file.id not in gone),
+                               items=tuple(items))
         self.save()
         return True
 

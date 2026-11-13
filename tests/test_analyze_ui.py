@@ -1,10 +1,12 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 from admet.core.engine import EngineRegistry
 from admet.core.project import ProjectStore
+from admet.core.session import SessionItem
 from admet.ui.analyze import (
     AnalyzeWorkflowView,
     MatrixRow,
@@ -143,13 +145,20 @@ class ProjectTests(unittest.TestCase):
             view = _make_view()
             view._load_project(store.path)
             view._append_source(video)
+            store = ProjectStore(store.path)
+            clip = next(file for file in store.session.files if file.role == "analysis_video")
+            # An analysis run leaves a sample item pointing at the file; it must go with the file.
+            store.session = replace(store.session, items=(SessionItem("clip", "analysis", "opencv", files=(clip.id,)),))
+            store.save()
 
             self.assertEqual([row.removable for row in view.matrix], [False, True])
             view._remove_row(view.matrix[1])
             view._remove_row(view.matrix[0])
 
             self.assertEqual([Path(row.source_path).name for row in view.matrix], ["cam.avi"])
-            self.assertEqual([file.role for file in ProjectStore(store.path).session.files], ["control_video"])
+            store = ProjectStore(store.path)
+            self.assertEqual([file.role for file in store.session.files], ["control_video"])
+            self.assertEqual(store.session.items, ())
 
 
 class FileDialogTests(unittest.TestCase):
