@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import html
 import itertools
+import json
+import math
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -37,6 +39,9 @@ from admet.ui.analyze_matrix import (
 from admet.ui.analyze_results import (
     FileResult,
     StoredRun,
+    correction_key,
+    corrected_inclusions,
+    corrections_summary,
     export_csv_zip,
     file_results,
     load_stored_runs,
@@ -222,7 +227,8 @@ class AnalyzeWorkflowView:
         # clear() deletes the elements inside these bodies; drop their refs so nothing
         # writes to a deleted element. Stages that need them create them again below.
         for key in ("action_progress", "action_progress_text", "log", "frame_image", "frame_caption",
-                    "stages", "crop_label", "editor_warnings", "image_preview", "files_hint"):
+                    "stages", "crop_label", "editor_warnings", "image_preview", "image_image", "image_caption",
+                    "corrections_table", "files_hint"):
             self._refs.pop(key, None)
         self._table_refs = {}
         self._button_refs = []
@@ -379,6 +385,23 @@ class AnalyzeWorkflowView:
         preview = self._refs.get("image_preview")
         if target is not None and preview is not None and target.engine == "cellpose":
             preview.content = self._image_preview_html(target)
+        image = self._refs.get("image_image")
+        if target is not None and image is not None and target.engine == "cellpose":
+            source = self._resolve_media_path(target.source_path, target.project_path)
+            index = _row_int(target, "image_frame", 1)
+            shown = _read_image_source(source, index)
+            if not shown["error"]:
+                frame_id = _frame_id_at(source, index)
+                image.set_source(shown["src"])
+                image.set_content(self._image_overlay_svg(target, frame_id, shown["width"], shown["height"]))
+                caption = self._refs.get("image_caption")
+                if caption is not None:
+                    caption.set_text(f"image {index} of {_image_count(source)} · frame {frame_id} · "
+                                     f"{shown['width']}×{shown['height']} px")
+            table = self._refs.get("corrections_table")
+            if table is not None:
+                table.rows = _corrections_rows(target)
+                table.update()
 
     def _sync_log(self) -> None:
         log = self._refs.get("log")
@@ -790,13 +813,38 @@ class AnalyzeWorkflowView:
         return f'<div class="stage-grid">{tiles}</div>'
 
     def _render_image_editor(self, target: MatrixRow) -> None:
+        """The image with the stored droplets over it; a click on a droplet corrects it."""
         from nicegui import ui
 
         source = self._resolve_media_path(target.source_path, target.project_path)
         _path_label(target.source_path)
+        index = _row_int(target, "image_frame", 1)
+        shown = _read_image_source(source, index)
         with ui.element("div").classes("editor-grid w-full"):
             with ui.column().classes("gap-1 min-w-0"):
-                self._refs["image_preview"] = ui.html(self._image_preview_html(target)).classes("w-full")
+                if shown["error"]:
+                    ui.label(shown["error"]).classes("editor-note editor-warning")
+                else:
+                    frame_id = _frame_id_at(source, index)
+                    image = ui.interactive_image(
+                        shown["src"], content=self._image_overlay_svg(target, frame_id, shown["width"], shown["height"]),
+                        on_mouse=self._image_click(target), events=["click"], cross=False,
+                    ).classes("admet-frame admet-frame-still").style(f"max-width:{shown['width']}px")
+                    self._refs["image_image"] = image
+                    self._refs["image_caption"] = ui.label(
+                        f"image {index} of {_image_count(source)} · frame {frame_id} · "
+                        f"{shown['width']}×{shown['height']} px").classes("muted text-xs")
+                analysis = self._stored_analysis(target)
+                with ui.row().classes("items-center gap-x-4 gap-y-1"):
+                    if analysis is not None:
+                        ui.checkbox("Show the stored analysis", value=self.show_overlay,
+                                    on_change=lambda event: self._toggle_overlay(event.value))
+                        ui.label(f"from {analysis['analyzed']}").classes("muted text-xs")
+                if analysis is not None:
+                    ui.label("Click a droplet to switch it off or on · shift-click adds an inclusion · "
+                             "alt-click removes one").classes("muted text-xs")
+                else:
+                    ui.label("Run the file to see its droplets here and correct them.").classes("muted text-xs")
                 self._slider_editor(target, "image_frame", "Image", 1, _image_count(source), default=1)
             with ui.column().classes("gap-2 min-w-0 editor-settings"):
                 ui.label("Segmentation").classes("muted text-xs font-semibold uppercase")
@@ -808,12 +856,61 @@ class AnalyzeWorkflowView:
                 ui.checkbox("Detect inclusions", value=_row_bool(target, "detect_inclusions", True),
                             on_change=lambda e: self._set_setting(target, "detect_inclusions", bool(e.value)))
                 ui.label("Corrections").classes("muted text-xs font-semibold uppercase mt-2")
-                ui.table(columns=[{"name": "item", "label": "Correction", "field": "item", "align": "left"},
-                                  {"name": "value", "label": "Value", "field": "value", "align": "right"}],
-                         rows=[{"item": "Disabled droplets", "value": _row_int(target, "disabled_droplets", 0)},
-                               {"item": "Added inclusions", "value": _row_int(target, "added_inclusions", 0)}],
-                         ).classes("w-full").props("dense flat hide-bottom")
-                ui.label("Corrections apply to the droplet rows shown on 3. Results.").classes("muted text-xs")
+                self._refs["corrections_table"] = ui.table(
+                    columns=[{"name": "item", "label": "Correction", "field": "item", "align": "left"},
+                             {"name": "value", "label": "Count", "field": "value", "align": "right"}],
+                    rows=_corrections_rows(target)).classes("w-full").props("dense flat hide-bottom")
+                ui.button("Clear corrections", on_click=lambda: self._clear_corrections(target)).props(
+                    "dense no-caps outline")
+                ui.label("Corrections count on 3. Results and in the export; the stored rows stay as found."
+                         ).classes("muted text-xs")
+
+    def _image_overlay_svg(self, target: MatrixRow, frame_id: int, width: int, height: int) -> str:
+        """The stored droplets of this image as circles with their inclusion counts, corrections applied."""
+        parts = []
+        analysis = self._stored_analysis(target) if self.show_overlay else None
+        if analysis is not None and analysis["raw_path"].is_file():
+            raw = analysis["raw_path"]
+            fixes = target.settings.get("corrections") or {}
+            for droplet in _overlay_index(str(raw), raw.stat().st_mtime, analysis["file_id"])["frames"].get(frame_id, []):
+                cx, cy, radius = _droplet_circle(droplet)
+                fix = fixes.get(correction_key(frame_id, droplet.get("droplet_id")))
+                if fix and fix.get("disabled"):
+                    parts.append(f'<circle class="ov-off" cx="{cx:.1f}" cy="{cy:.1f}" r="{radius:.1f}"/>')
+                    continue
+                parts.append(f'<circle class="ov-droplet" cx="{cx:.1f}" cy="{cy:.1f}" r="{radius:.1f}"/>')
+                count = corrected_inclusions(droplet, fix)
+                tag = "ov-count ov-count-fixed" if fix else "ov-count"
+                parts.append(f'<text class="{tag}" x="{cx:.1f}" y="{cy:.1f}">{count}</text>')
+        return (f'<svg class="admet-overlay" viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+                + "".join(parts) + "</svg>")
+
+    def _image_click(self, target: MatrixRow):
+        """A click on a droplet switches it off or on; with shift or alt it changes its inclusions."""
+        def handler(event: Any) -> None:
+            analysis = self._stored_analysis(target)
+            if analysis is None or not analysis["raw_path"].is_file():
+                return
+            source = self._resolve_media_path(target.source_path, target.project_path)
+            frame_id = _frame_id_at(source, _row_int(target, "image_frame", 1))
+            raw = analysis["raw_path"]
+            droplets = _overlay_index(str(raw), raw.stat().st_mtime, analysis["file_id"])["frames"].get(frame_id, [])
+            hit = _droplet_at(droplets, event.image_x, event.image_y)
+            if hit is None:
+                return
+            fixes = dict(target.settings.get("corrections") or {})
+            key = correction_key(frame_id, hit.get("droplet_id"))
+            fixes[key] = apply_click(fixes.get(key), shift=event.shift, alt=event.alt)
+            if not fixes[key]:
+                del fixes[key]
+            target.settings["corrections"] = fixes
+            self._settings_edited(target)
+
+        return handler
+
+    def _clear_corrections(self, target: MatrixRow) -> None:
+        target.settings.pop("corrections", None)
+        self._settings_edited(target)
 
     def _image_preview_html(self, target: MatrixRow) -> str:
         source = self._resolve_media_path(target.source_path, target.project_path)
@@ -935,13 +1032,19 @@ class AnalyzeWorkflowView:
                     self._chart_refs.append((name, chart))
 
     def _results(self) -> list[FileResult]:
-        """Stored results of the ticked files, not everything ever analysed."""
+        """Stored results of the ticked files, not everything ever analysed, with the hand corrections."""
         ticked = {(Path(row.project_path).name, row.engine, row.sample_id) for row in self.matrix if row.active}
+        fixes = json.dumps({f"{engine}/{sample}": value for (engine, sample), value in self._corrections().items()},
+                           sort_keys=True)
         results = []
         for run in self._stored_runs():
-            results.extend(result for result in _cached_results(run)
+            results.extend(result for result in _cached_results(run, fixes)
                            if (result.project, result.engine, result.sample_id) in ticked)
         return results
+
+    def _corrections(self) -> dict[tuple[str, str], dict[str, Any]]:
+        return {(row.engine, row.sample_id): row.settings["corrections"]
+                for row in self.matrix if row.settings.get("corrections")}
 
     def _export_csv(self) -> None:
         from nicegui import ui
@@ -951,7 +1054,8 @@ class AnalyzeWorkflowView:
             self._notify("Nothing to export yet.", "warning")
             self._mount_sidebar()
             return
-        ui.download.content(export_csv_zip(self._stored_runs(), results), f"{self._project_name()}_analysis.zip")
+        ui.download.content(export_csv_zip(self._stored_runs(), results, self._corrections()),
+                            f"{self._project_name()}_analysis.zip")
         self._log(f"export: {len(results)} result(s) as CSV")
         self._notify(f"Exported {_count(len(results), 'result')} as CSV.", "success")
         self._sync_stage()
@@ -1552,20 +1656,21 @@ class AnalyzeWorkflowView:
 # -- stored results, read once per version of the raw file ------------------------------
 
 @lru_cache(maxsize=16)
-def _results_of(project_path: str, raw_path: str, _mtime: float, run_id: str) -> tuple[FileResult, ...]:
+def _results_of(project_path: str, raw_path: str, _mtime: float, run_id: str, fixes: str) -> tuple[FileResult, ...]:
     run = next((run for run in load_stored_runs([Path(project_path)]) if run.run_id == run_id), None)
     if run is None:
         return ()
-    return tuple(file_results(run, read_raw_rows(run.project_path, run.raw_path)))
+    corrections = {tuple(key.split("/", 1)): value for key, value in json.loads(fixes).items()}
+    return tuple(file_results(run, read_raw_rows(run.project_path, run.raw_path), corrections))
 
 
-def _cached_results(run: StoredRun) -> tuple[FileResult, ...]:
+def _cached_results(run: StoredRun, fixes: str = "{}") -> tuple[FileResult, ...]:
     raw = run.raw_path if run.raw_path.is_absolute() else run.project_path / run.raw_path
     try:
         mtime = raw.stat().st_mtime
     except OSError:
         return ()
-    return _results_of(str(run.project_path), str(raw), mtime, run.run_id)
+    return _results_of(str(run.project_path), str(raw), mtime, run.run_id, fixes)
 
 
 _cached_results.cache_clear = _results_of.cache_clear  # type: ignore[attr-defined]
@@ -1705,6 +1810,57 @@ def _image_at(path: Path, index: int) -> tuple[Any | None, str]:
     return read_image_8bit(image_path), str(image_path)
 
 
+def _frame_id_at(source: Path, index: int) -> int:
+    """The frame number the engine gives the image at slider position INDEX (from 1)."""
+    if source.is_dir():
+        groups = CellposeDetection(use_cache=False).load_and_group_images(source)
+        if groups:
+            ids = sorted(groups)
+            return ids[max(0, min(index - 1, len(ids) - 1))]
+    return index
+
+
+def _droplet_circle(droplet: dict[str, Any]) -> tuple[float, float, float]:
+    """Centre and radius of a stored imaging droplet, in image pixels."""
+    cx = float(droplet.get("center_x", droplet.get("centroid_x", 0)) or 0)
+    cy = float(droplet.get("center_y", droplet.get("centroid_y", 0)) or 0)
+    diameter = float(droplet.get("diameter_px") or 0) or 2 * math.sqrt(float(droplet.get("area_px") or 0) / math.pi)
+    return cx, cy, diameter / 2
+
+
+def _droplet_at(droplets: list[dict[str, Any]], x: float, y: float) -> dict[str, Any] | None:
+    """The droplet under a point: the nearest one whose circle holds it."""
+    best, best_distance = None, None
+    for droplet in droplets:
+        cx, cy, radius = _droplet_circle(droplet)
+        distance = math.hypot(x - cx, y - cy)
+        if distance <= radius and (best_distance is None or distance < best_distance):
+            best, best_distance = droplet, distance
+    return best
+
+
+def apply_click(fix: dict[str, Any] | None, *, shift: bool = False, alt: bool = False) -> dict[str, Any]:
+    """What a click does to one droplet's correction: shift adds an inclusion, alt removes one,
+    a plain click switches the droplet off or back on. Empty means no correction is left."""
+    fix = dict(fix or {})
+    if shift or alt:
+        fix["inclusions"] = int(fix.get("inclusions") or 0) + (1 if shift else -1)
+        if not fix["inclusions"]:
+            del fix["inclusions"]
+    else:
+        fix["disabled"] = not fix.get("disabled")
+        if not fix["disabled"]:
+            del fix["disabled"]
+    return fix
+
+
+def _corrections_rows(target: MatrixRow) -> list[dict[str, Any]]:
+    summary = corrections_summary(target.settings.get("corrections") or {})
+    return [{"item": "Droplets switched off", "value": summary["disabled"]},
+            {"item": "Inclusions added", "value": summary["added"]},
+            {"item": "Inclusions removed", "value": summary["removed"]}]
+
+
 def _png_src(image: Any) -> str:
     """An image as a PNG data URL: lossless, so a binary stage stays crisp."""
     import cv2
@@ -1730,23 +1886,21 @@ def _recorded_capture_fps(row: MatrixRow) -> float:
 
 @lru_cache(maxsize=4)
 def _overlay_index(raw_path: str, _mtime: float, file_id: str) -> dict[str, Any]:
-    """One file's detections by frame and each droplet's path, read once per version of the raw file."""
-    import json
-
+    """One file's droplets by frame and each tracked droplet's path, read once per version of the raw file."""
     frames: dict[int, list[dict[str, Any]]] = {}
     paths: dict[int, list[tuple[int, float, float]]] = {}
     marker = f'"file_id": "{file_id}"'
     with open(raw_path, encoding="utf-8") as handle:
         for line in handle:
-            if marker not in line or '"detection"' not in line:
+            if marker not in line or ('"detection"' not in line and '"droplet"' not in line):
                 continue
             row = json.loads(line)
-            if row.get("kind") != "detection":
+            if row.get("kind") not in {"detection", "droplet"}:
                 continue
             values = row.get("values") or {}
             frame = int(values.get("frame", -1))
             frames.setdefault(frame, []).append(values)
-            if values.get("droplet_id") is not None:
+            if row.get("kind") == "detection" and values.get("droplet_id") is not None:
                 paths.setdefault(int(values["droplet_id"]), []).append(
                     (frame, float(values.get("centroid_x", 0)), float(values.get("centroid_y", 0))))
     for path in paths.values():
@@ -2021,6 +2175,10 @@ def _style() -> str:
     .admet-overlay .ov-droplet { fill: none; stroke: #39d353; stroke-width: 1; vector-effect: non-scaling-stroke; }
     .admet-overlay .ov-path { fill: none; stroke: #ffd166; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
     .admet-overlay .ov-label { fill: #ffd166; font: 9px Menlo, Consolas, monospace; }
+    .admet-overlay .ov-off { fill: rgba(255, 90, 95, 0.18); stroke: #ff5a5f; stroke-width: 2; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+    .admet-overlay .ov-count { fill: #ffd166; font: 600 22px Menlo, Consolas, monospace; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(0,0,0,0.55); stroke-width: 3px; }
+    .admet-overlay .ov-count-fixed { fill: #4cc9f0; }
+    .admet-frame-still { cursor: pointer; }
     .stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
     .stage-tile { margin: 0; min-width: 0; }
     .stage-tile img { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); background: var(--text); image-rendering: pixelated; }

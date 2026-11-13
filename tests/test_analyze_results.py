@@ -85,6 +85,21 @@ class FileResultTests(unittest.TestCase):
         self.assertEqual(len(result.detections), 4)
         self.assertEqual(result.rate_hz, 0.0)
 
+    def test_hand_corrections_switch_droplets_off_and_change_inclusions(self):
+        rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
+                 "values": {"frame": 1, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
+                            "diameter_um": 140.0, "area_um2": 15000.0, "inclusions": 1}}
+                for droplet in (0, 1, 2)]
+        run = StoredRun(Path("/p/study.admetp"), "analysis", Path("analysis/raw.jsonl"),
+                        jobs=({"engine": "cellpose", "sample_id": "imgs", "file_id": "f2", "status": "complete",
+                               "metadata": {"droplet_count": 3}},))
+        fixes = {("cellpose", "imgs"): {"1:0": {"disabled": True}, "1:2": {"inclusions": 2}}}
+
+        result, = file_results(run, rows, fixes)
+
+        self.assertEqual(result.droplets, 2)
+        self.assertEqual(result.inclusion_counts, (1, 3))
+
     def test_the_table_holds_the_numbers_and_their_sparklines(self):
         result, = file_results(_run(Path("/p/study.admetp")), _rows())
 
@@ -149,6 +164,23 @@ class ExportTests(unittest.TestCase):
             droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
             self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,equivalent_diameter,area")
             self.assertEqual(len(droplets), 10)
+
+    def test_csv_export_leaves_out_droplets_switched_off_and_keeps_the_raw_count(self):
+        rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
+                 "values": {"frame": 1, "droplet_id": droplet, "inclusions": 1}} for droplet in (0, 1)]
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "study.admetp"
+            (project / "analysis").mkdir(parents=True)
+            (project / "analysis" / "raw.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+            run = StoredRun(project, "analysis", project / "analysis" / "raw.jsonl",
+                            jobs=({"engine": "cellpose", "sample_id": "imgs", "file_id": "f2", "status": "complete",
+                                   "metadata": {}},))
+            fixes = {("cellpose", "imgs"): {"1:0": {"disabled": True}, "1:1": {"inclusions": 1}}}
+
+            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([run], file_results(run, rows, fixes), fixes)))
+
+            lines = archive.read("droplets/study_imgs_cellpose.csv").decode().splitlines()
+            self.assertEqual(lines, ["kind,frame,droplet_id,inclusions,inclusions_raw", "droplet,1,1,2,1"])
 
 
 if __name__ == "__main__":

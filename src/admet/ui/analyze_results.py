@@ -128,8 +128,13 @@ def read_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = 50_
     return rows
 
 
-def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]:
-    """Each file's result from one run's rows: distributions per droplet, rate and speed."""
+def file_results(run: StoredRun, rows: list[dict[str, Any]],
+                 corrections: dict[tuple[str, str], dict[str, Any]] | None = None) -> list[FileResult]:
+    """Each file's result from one run's rows: distributions per droplet, rate and speed.
+
+    CORRECTIONS, by (engine, sample id), are what the user changed by hand on imaging
+    droplets: a droplet switched off is left out, an inclusion count is taken as corrected.
+    """
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     contexts: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
@@ -146,6 +151,7 @@ def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]
         analysis = _as_dict(context.get("analysis"))
         job = jobs.get(key, {})
         meta = _as_dict(job.get("metadata"))
+        fixes = (corrections or {}).get(key, {})
         scale = _num(analysis.get("microns_per_pixel")) or 1.0
         fps = _num(analysis.get("fps")) or 0.0
         per_droplet: dict[int, dict[str, list[float]]] = {}
@@ -162,6 +168,9 @@ def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]
             frame = _num(values.get("frame"))
             if frame is not None:
                 frames.add(int(frame))
+            fix = fixes.get(correction_key(frame, values.get("droplet_id"))) if kind == "droplet" and fixes else None
+            if fix and fix.get("disabled"):
+                continue
             diameter = _num(values.get("diameter_um"))
             if diameter is None:
                 pixels = _num(values.get("equivalent_diameter") or values.get("diameter"))
@@ -171,7 +180,7 @@ def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]
                 pixels = _num(values.get("area"))
                 area = pixels * scale * scale if pixels is not None else None
             if kind == "droplet":
-                inclusion_counts.append(int(_num(values.get("inclusions")) or 0))
+                inclusion_counts.append(corrected_inclusions(values, fix))
             cx = _num(values.get("centroid_x", values.get("center_x")))
             cy = _num(values.get("centroid_y", values.get("center_y")))
             if frame is not None and cx is not None and cy is not None and len(detections) < 6000:
@@ -227,7 +236,8 @@ def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]
             fps=fps,
             scale=scale,
             frames=len(frames),
-            droplets=(int(_num(meta.get("total_droplets") or meta.get("droplet_count")) or 0)
+            droplets=(len(loose_diameters) if fixes else
+                      int(_num(meta.get("total_droplets") or meta.get("droplet_count")) or 0)
                       or len(per_droplet) or len(loose_diameters)),
             rate_hz=float(rate or 0.0),
             speed_mm_s=float(speed or 0.0),
@@ -261,6 +271,23 @@ def settings_summary(settings: dict[str, Any]) -> str:
         if settings.get(key) not in {None, ""}:
             parts.append(f"{label} {_fmt(settings[key])}{unit}")
     return " · ".join(parts)
+
+
+def correction_key(frame: Any, droplet_id: Any) -> str:
+    """How a correction names one imaging droplet: its image and its number in that image."""
+    return f"{int(_num(frame) or 0)}:{int(_num(droplet_id) or 0)}"
+
+
+def corrected_inclusions(values: dict[str, Any], fix: dict[str, Any] | None) -> int:
+    count = int(_num(values.get("inclusions")) or 0)
+    return max(0, count + int(_num((fix or {}).get("inclusions")) or 0))
+
+
+def corrections_summary(fixes: dict[str, Any]) -> dict[str, int]:
+    """How many droplets were switched off and how many inclusions were added or removed."""
+    deltas = [int(_num(fix.get("inclusions")) or 0) for fix in fixes.values() if not fix.get("disabled")]
+    return {"disabled": sum(1 for fix in fixes.values() if fix.get("disabled")),
+            "added": sum(d for d in deltas if d > 0), "removed": -sum(d for d in deltas if d < 0)}
 
 
 # -- the per-file table ----------------------------------------------------------------
@@ -492,8 +519,13 @@ def _empty_chart(title: str) -> dict[str, Any]:
 
 # -- export ----------------------------------------------------------------------------
 
-def export_csv_zip(runs: list[StoredRun], results: list[FileResult]) -> bytes:
-    """A zip: summary.csv over the results, and every droplet row of each file as its own CSV."""
+def export_csv_zip(runs: list[StoredRun], results: list[FileResult],
+                   corrections: dict[tuple[str, str], dict[str, Any]] | None = None) -> bytes:
+    """A zip: summary.csv over the results, and every droplet row of each file as its own CSV.
+
+    Imaging droplets switched off by hand are left out; corrected inclusion counts are written
+    with the raw count beside them.
+    """
     wanted = {(result.project, result.engine, result.sample_id) for result in results}
     files: dict[str, bytes] = {"summary.csv": _summary_csv(results)}
     for run in runs:
@@ -504,7 +536,8 @@ def export_csv_zip(runs: list[StoredRun], results: list[FileResult]) -> bytes:
         for (engine, sample_id), rows in sorted(groups.items()):
             if (run.project_path.name, engine, sample_id) not in wanted:
                 continue
-            files[f"droplets/{_safe(run.project_path.stem)}_{_safe(sample_id)}_{engine}.csv"] = _rows_csv(rows)
+            fixes = (corrections or {}).get((engine, sample_id), {})
+            files[f"droplets/{_safe(run.project_path.stem)}_{_safe(sample_id)}_{engine}.csv"] = _rows_csv(rows, fixes)
     return zip_bytes(files)
 
 
@@ -532,17 +565,26 @@ def _summary_csv(results: list[FileResult]) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
-def _rows_csv(rows: list[dict[str, Any]]) -> bytes:
+def _rows_csv(rows: list[dict[str, Any]], fixes: dict[str, Any] | None = None) -> bytes:
     keys: list[str] = []
     for row in rows:
         for key in _values(row):
             if key not in keys and not key.startswith("contour"):
                 keys.append(key)
+    if fixes and "inclusions" in keys:
+        keys.append("inclusions_raw")
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["kind", *keys])
     for row in rows:
-        values = _values(row)
+        values = dict(_values(row))
+        if fixes and row.get("kind") == "droplet":
+            fix = fixes.get(correction_key(values.get("frame"), values.get("droplet_id")))
+            if fix and fix.get("disabled"):
+                continue
+            if fix:
+                values["inclusions_raw"] = values.get("inclusions")
+                values["inclusions"] = corrected_inclusions(values, fix)
         writer.writerow([row.get("kind", ""), *(_cell(values.get(key)) for key in keys)])
     return out.getvalue().encode("utf-8")
 

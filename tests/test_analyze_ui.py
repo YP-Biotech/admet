@@ -12,8 +12,10 @@ from admet.ui.analyze import (
     MatrixRow,
     _addable,
     _browser_entries,
+    _droplet_at,
     _roi_from_drag,
     _uid,
+    apply_click,
 )
 from admet.workflows import create_analyze_workflow
 
@@ -182,6 +184,24 @@ class CropTests(unittest.TestCase):
         self.assertEqual(_roi_from_drag(50, 40, 10, 90, 640, 120), (10, 40, 40, 50))
         self.assertEqual(_roi_from_drag(600, 100, 700, 200, 640, 120), (600, 100, 40, 20))
         self.assertIsNone(_roi_from_drag(50, 40, 52, 41, 640, 120))
+
+
+class ImagingCorrectionTests(unittest.TestCase):
+    def test_clicks_switch_a_droplet_off_and_on_and_change_its_inclusions(self):
+        fix = apply_click(None)
+        self.assertEqual(fix, {"disabled": True})
+        self.assertEqual(apply_click(fix), {})                                   # back on: nothing left
+        fix = apply_click(None, shift=True)
+        fix = apply_click(fix, shift=True)
+        self.assertEqual(fix, {"inclusions": 2})
+        self.assertEqual(apply_click(apply_click(fix, alt=True), alt=True), {})
+
+    def test_the_droplet_under_the_pointer_is_the_nearest_one_holding_it(self):
+        droplets = [{"droplet_id": 0, "center_x": 100, "center_y": 100, "diameter_px": 60},
+                    {"droplet_id": 1, "center_x": 150, "center_y": 100, "diameter_px": 60}]
+        self.assertEqual(_droplet_at(droplets, 128, 100)["droplet_id"], 1)
+        self.assertEqual(_droplet_at(droplets, 80, 90)["droplet_id"], 0)
+        self.assertIsNone(_droplet_at(droplets, 300, 300))
 
 
 class PathLabelTests(unittest.TestCase):
