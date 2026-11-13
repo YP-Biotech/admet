@@ -172,11 +172,14 @@ def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]
                 area = pixels * scale * scale if pixels is not None else None
             if kind == "droplet":
                 inclusion_counts.append(int(_num(values.get("inclusions")) or 0))
-            cx, cy = _num(values.get("centroid_x")), _num(values.get("centroid_y"))
+            cx = _num(values.get("centroid_x", values.get("center_x")))
+            cy = _num(values.get("centroid_y", values.get("center_y")))
             if frame is not None and cx is not None and cy is not None and len(detections) < 6000:
                 detections.append((frame, round(cx, 1), round(cy, 1), round(area or 0.0, 2)))
-            droplet_id = _num(values.get("droplet_id") if values.get("droplet_id") is not None
-                              else values.get("track_id"))
+            # A "droplet" row is one droplet in one image; its id only counts within that image,
+            # so it is not followed across frames the way a tracked detection is.
+            droplet_id = None if kind == "droplet" else _num(
+                values.get("droplet_id") if values.get("droplet_id") is not None else values.get("track_id"))
             if droplet_id is None:
                 if diameter:
                     loose_diameters.append(diameter)
@@ -224,7 +227,8 @@ def file_results(run: StoredRun, rows: list[dict[str, Any]]) -> list[FileResult]
             fps=fps,
             scale=scale,
             frames=len(frames),
-            droplets=int(_num(meta.get("total_droplets")) or 0) or len(per_droplet) or len(loose_diameters),
+            droplets=(int(_num(meta.get("total_droplets") or meta.get("droplet_count")) or 0)
+                      or len(per_droplet) or len(loose_diameters)),
             rate_hz=float(rate or 0.0),
             speed_mm_s=float(speed or 0.0),
             diameters=tuple(diameters),

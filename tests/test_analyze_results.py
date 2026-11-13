@@ -67,6 +67,24 @@ class FileResultTests(unittest.TestCase):
         self.assertEqual(result.settings["fps"], 100.0)
         self.assertIn("µm/px 2", settings_summary(result.settings))
 
+    def test_an_imaging_droplet_counts_once_per_image(self):
+        """Cellpose numbers droplets from 0 in every image; the same id in two images is two droplets."""
+        rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
+                 "values": {"frame": frame, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
+                            "diameter_um": 140.0 + droplet, "area_um2": 15000.0, "inclusions": frame + droplet}}
+                for frame in (1, 2) for droplet in (0, 1)]
+        run = StoredRun(Path("/p/study.admetp"), "analysis", Path("analysis/raw.jsonl"),
+                        jobs=({"engine": "cellpose", "sample_id": "imgs", "file_id": "f2", "status": "complete",
+                               "metadata": {"droplet_count": 4}},))
+
+        result, = file_results(run, rows)
+
+        self.assertEqual(result.droplets, 4)
+        self.assertEqual(result.diameters, (140.0, 141.0, 140.0, 141.0))
+        self.assertEqual(result.inclusion_counts, (1, 2, 2, 3))
+        self.assertEqual(len(result.detections), 4)
+        self.assertEqual(result.rate_hz, 0.0)
+
     def test_the_table_holds_the_numbers_and_their_sparklines(self):
         result, = file_results(_run(Path("/p/study.admetp")), _rows())
 
