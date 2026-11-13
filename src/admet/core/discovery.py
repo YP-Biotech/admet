@@ -30,9 +30,8 @@ def project_ref_label(ref: ProjectRef) -> str:
         opened = datetime.fromisoformat(ref.last_opened).astimezone().strftime("%Y-%m-%d %H:%M")
     except ValueError:
         opened = "—"
-    return (
-        f"{ref.project_id} · {ref.run_count} runs · last opened: {opened}"
-    )
+    runs = "1 run" if ref.run_count == 1 else f"{ref.run_count} runs"
+    return f"{ref.project_id} · {runs} · last opened: {opened}"
 
 
 def projects_root(explicit: str | Path | None = None) -> Path:

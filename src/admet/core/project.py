@@ -257,6 +257,19 @@ class ProjectStore:
         )
 
     @_locked
+    def remove_analysis_file(self, source_path: str | Path) -> bool:
+        """Forget a file analyze added; a recording made by control is not analyze's to remove."""
+        resolved = Path(source_path).resolve()
+        kept = tuple(file for file in self.session.files
+                     if file.role not in {"analysis_video", "analysis_image_dir"}
+                     or self.resolve_file_path(file).resolve() != resolved)
+        if len(kept) == len(self.session.files):
+            return False
+        self.session = replace(self.session, files=kept)
+        self.save()
+        return True
+
+    @_locked
     def register_analysis_file(
         self,
         source_path: str | Path,
