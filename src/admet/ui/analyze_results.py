@@ -470,20 +470,46 @@ def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
     }
 
 
+def cv_chart(results: list[FileResult]) -> dict[str, Any]:
+    """One bar per sample: the spread of its droplet diameters, as CV in percent."""
+    plotted = [result for result in results if result.diameters]
+    return {
+        "title": _title("CV of diameter per sample (%)"),
+        "animation": False,
+        "tooltip": {"trigger": "axis"},
+        "grid": _grid(bottom=58),
+        "xAxis": {"type": "category", "data": [result.sample_id for result in plotted],
+                  "axisLabel": {"rotate": 25, "fontSize": 10, "hideOverlap": True}},
+        "yAxis": _value_axis("CV %"),
+        "series": [{"type": "bar", "barMaxWidth": 36,
+                    "data": [{"value": round(result.cv_percent, 2), "itemStyle": {"color": chart_color(index)}}
+                             for index, result in enumerate(plotted)],
+                    "label": {"show": True, "position": "top", "fontSize": 10, "formatter": "{c} %"}}],
+    }
+
+
 def inclusions_chart(results: list[FileResult]) -> dict[str, Any]:
-    counts: dict[int, int] = {}
-    for result in results:
+    """How many droplets of each sample hold 0, 1, 2 ... inclusions; empty for samples without any."""
+    keys = sorted({count for result in results for count in result.inclusion_counts})
+    series = []
+    for index, result in enumerate(results):
+        if not result.inclusion_counts:
+            continue
+        counts = {key: 0 for key in keys}
         for value in result.inclusion_counts:
-            counts[value] = counts.get(value, 0) + 1
-    keys = sorted(counts)
+            counts[value] += 1
+        series.append({"name": result.sample_id, "type": "bar", "barMaxWidth": 24,
+                       "data": [counts[key] for key in keys], "itemStyle": {"color": chart_color(index)}})
     return {
         "title": _title("Inclusions per droplet"),
-        "tooltip": {},
+        "animation": False,
+        "tooltip": {"trigger": "axis"},
+        "legend": _legend(),
         "grid": _grid(bottom=44),
-        "xAxis": {"type": "category", "data": [str(key) for key in keys], "axisLabel": {"fontSize": 10}},
+        "xAxis": {"type": "category", "data": [str(key) for key in keys], "name": "inclusions",
+                  "nameLocation": "middle", "nameGap": 22, "axisLabel": {"fontSize": 10}},
         "yAxis": _value_axis("droplets"),
-        "series": [{"type": "bar", "data": [counts[key] for key in keys],
-                    "itemStyle": {"color": theme.PALETTE.success_hover}}],
+        "series": series,
     }
 
 
@@ -492,11 +518,19 @@ def has_inclusions(results: list[FileResult]) -> bool:
 
 
 def result_charts(results: list[FileResult]) -> list[tuple[str, dict[str, Any]]]:
-    """The plots of the Results stage, named for export."""
-    charts = [("diameter_distribution", diameter_chart(results)), ("droplet_timeline", timeline_chart(results)),
-              ("droplet_positions", positions_chart(results)), ("area_along_x", area_x_chart(results))]
-    if has_inclusions(results):
-        charts.append(("inclusions_per_droplet", inclusions_chart(results)))
+    """The plots of the Results stage, named for export: only those the ticked files have data for.
+
+    A video has tracks, positions and areas along the channel; an image folder has inclusions;
+    both have diameters. A plot with nothing to show is not shown.
+    """
+    builders = (("diameter_distribution", diameter_chart), ("cv_per_sample", cv_chart),
+                ("droplet_timeline", timeline_chart), ("droplet_positions", positions_chart),
+                ("area_along_x", area_x_chart), ("inclusions_per_droplet", inclusions_chart))
+    charts = []
+    for name, build in builders:
+        chart = build(results)
+        if any(series.get("data") for series in chart.get("series", ())):
+            charts.append((name, chart))
     return charts
 
 

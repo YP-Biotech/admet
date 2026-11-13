@@ -11,10 +11,13 @@ from admet.ui.analyze_results import (
     FileResult,
     StoredRun,
     bin_labels,
+    cv_chart,
     diameter_chart,
     export_csv_zip,
     file_results,
     histogram_edges,
+    inclusions_chart,
+    result_charts,
     results_table_html,
     scatter_chart,
     settings_summary,
@@ -132,6 +135,33 @@ class ChartTests(unittest.TestCase):
         self.assertEqual([series["name"] for series in chart["series"]], ["a", "b"])
         self.assertNotEqual(chart["series"][0]["itemStyle"]["color"], chart["series"][1]["itemStyle"]["color"])
         self.assertEqual(sum(chart["series"][0]["data"]), 3)
+
+    def test_cv_chart_has_one_bar_per_sample_in_its_colour(self):
+        chart = cv_chart([_result(sample_id="a", diameters=(10.0, 10.0, 12.0)),
+                          _result(sample_id="b", diameters=(20.0, 20.0)), _result(sample_id="none")])
+
+        self.assertEqual(chart["xAxis"]["data"], ["a", "b"])
+        values = [point["value"] for point in chart["series"][0]["data"]]
+        self.assertAlmostEqual(values[0], 8.84, places=2)
+        self.assertEqual(values[1], 0.0)
+        self.assertNotEqual(chart["series"][0]["data"][0]["itemStyle"]["color"],
+                            chart["series"][0]["data"][1]["itemStyle"]["color"])
+
+    def test_only_plots_with_data_for_the_ticked_files_are_shown(self):
+        video = _result(sample_id="v", diameters=(10.0, 11.0), spans=((1, 0, 5),), detections=((0, 1.0, 2.0, 3.0),))
+        imaging = _result(sample_id="i", engine="cellpose", diameters=(140.0, 141.0), inclusion_counts=(0, 1, 1, 3),
+                          detections=((1, 10.0, 20.0, 15000.0),))
+
+        self.assertEqual([name for name, _ in result_charts([video])],
+                         ["diameter_distribution", "cv_per_sample", "droplet_timeline", "droplet_positions",
+                          "area_along_x"])
+        self.assertEqual([name for name, _ in result_charts([imaging])],
+                         ["diameter_distribution", "cv_per_sample", "droplet_positions", "area_along_x",
+                          "inclusions_per_droplet"])
+        self.assertEqual(result_charts([]), [])
+        chart = inclusions_chart([imaging])
+        self.assertEqual(chart["xAxis"]["data"], ["0", "1", "3"])
+        self.assertEqual(chart["series"][0]["data"], [1, 2, 1])
 
     def test_timeline_uses_line_segments_per_droplet(self):
         chart = timeline_chart([_result(sample_id="a", spans=((1, 0, 12), (2, 3, 18)))])
