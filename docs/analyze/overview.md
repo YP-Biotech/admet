@@ -23,32 +23,32 @@ one's work is left half-written.
 
 ## The workflow
 
+The last project opened comes back by itself; pick another at the top or browse for it.
+
 | Stage | What you do there |
 |---|---|
-| **Import** | Pick a project and add sources — the run's videos and imaging folders. They form the **batch matrix**. |
-| **Video (OpenCV)** | Detect and track droplets in videos. |
-| **Imaging (Cellpose)** | Segment droplets and inclusions in images. |
-| **View** | Inspect stored analysis runs, droplet counts and plots. |
-| **Export** | Export figures and tables from the stored raw data. |
+| **1. Files** | Add the videos and image folders to analyse. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. |
+| **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. |
+| **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 
-## The batch matrix
+Image folders are analysed with Cellpose and videos with OpenCV; both go through the
+same three stages.
 
-Each row is one source with its engine, settings and status. The **Use** column
-selects which rows run; the **Analyzed** column shows when a row was last
-analysed. Settings in the matrix are the real settings — the preview sliders
-follow them and edit them.
+## The file list
 
-For videos recorded by `admet control`, the matrix is prefilled from the
-recording: frame rate, frame count and crop. Values you change are kept.
+Each row is one file with its sample name, engine and when it was last analysed.
+**Use** decides which files run and which results are shown; **✕** takes a file
+analyze added off the list and out of the project (recordings made by `admet
+control` stay). The list and every file's settings are saved with the project, so
+reopening it restores where you were.
 
-The matrix, settings and progress are saved with the project, so reopening it
-restores where you were.
+## Setting a video up
 
-## Video analysis (OpenCV)
-
-The preview shows the video at its native size, scaled down to fit. Set the crop
-and frame limits on it. After a run, the preview draws the detected droplet
-contours and their trajectories over the video, clipped to the crop.
+The preview shows the frame at its native size, scaled down to fit. **Drag on the
+frame to crop**; *Full frame* clears the crop. The bar under it sets the frames
+analysed (start–end, end exclusive); the slider below it picks the preview frame.
+After a run, *Show the stored analysis* draws the detected droplets and their paths
+over the frame.
 
 Droplets are found as what is darker than the empty channel. The background is the
 bright side of each pixel over frames sampled across the video, each frame is matched
@@ -58,16 +58,20 @@ opening the size of a satellite droplet keeps satellites, wall lines and specks 
 the main droplets. Droplets are then followed from frame to frame and counted once
 each as they pass a gate line, which gives the generation rate.
 
-Key settings: microns per pixel, frame rate (taken from the recording when
-known), crop and frame limit; **skip left / right** (% of the width left out, where
+Detection settings, per file: **skip left / right** (% of the width left out, where
 droplets form and where they leave); **gate** (% of the width, where every droplet
 passes once); **satellite size**, **min droplet area** and **threshold × noise**.
-Tick *Show detection stages* to see each step on the preview frame.
+Tick *Show detection stages* to see each step on the preview frame. *Reset file
+settings* puts the selected file back to the defaults, keeping its µm/px and FPS.
 
-## Imaging (Cellpose)
+## Results
 
-Runs Cellpose segmentation on imaging folders, with optional inclusion detection.
-Corrections made after a run apply to the raw droplet rows shown in **View**.
+The table has one row per ticked file: droplets, diameter, area, CV, generation
+rate and speed, each with a small histogram of its distribution (one value per
+droplet), and when the file was analysed with which settings. The plots show the
+diameter distribution, the droplet timeline, positions and area along the channel,
+with the files overlaid. **Export CSV** downloads a zip with a summary and every
+droplet row per file; **Export plots** downloads the plots as PNG.
 
 ## Where results go
 
