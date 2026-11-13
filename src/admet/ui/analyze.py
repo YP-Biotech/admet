@@ -33,12 +33,17 @@ from admet.ui.analyze_matrix import (
     files_columns,
     files_row,
     matrix_field_kind,
+    results_columns,
     wire_analyse_table,
     wire_files_table,
+    wire_results_table,
 )
 from admet.ui.analyze_results import (
+    RESULT_FIELDS,
+    RESULT_LABELS,
     FileResult,
     StoredRun,
+    chart_color,
     correction_key,
     corrected_inclusions,
     corrections_summary,
@@ -49,7 +54,7 @@ from admet.ui.analyze_results import (
     read_raw_rows,
     resolve_project_path,
     result_charts,
-    results_table_html,
+    results_cells,
     zip_bytes,
 )
 from admet.ui.window import log_state, panel_specs, settings_panel_state, structure_signature
@@ -326,15 +331,26 @@ class AnalyzeWorkflowView:
                 self._render_files_table()
 
     def _mount_main_window(self) -> None:
-        body = self._refs["main_body"]
+        with self._refs["main_body"]:
+            self._mount_main_window_content()
+
+    def _mount_main_window_content(self) -> None:
+        kind = self._stage().editor.kind if self._stage().editor is not None else ""
+        if kind == "file_facts":
+            self._render_file_facts()
+        elif kind == "file_editor":
+            self._render_file_editor()
+        else:
+            self._render_results_plots()
+
+    def _remount_main(self) -> None:
+        body = self._refs.get("main_body")
+        if body is None:
+            return
+        body.clear()
+        self._chart_refs = []
         with body:
-            kind = self._stage().editor.kind if self._stage().editor is not None else ""
-            if kind == "file_facts":
-                self._render_file_facts()
-            elif kind == "file_editor":
-                self._render_file_editor()
-            else:
-                self._render_results_plots()
+            self._mount_main_window_content()
 
     def _mount_log(self) -> None:
         from nicegui import ui
@@ -343,7 +359,7 @@ class AnalyzeWorkflowView:
             self._refs["log"] = ui.html("").classes("log-text w-full")
 
     def _sync_tables(self) -> None:
-        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows}
+        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._results_rows}
         for key, tables in self._table_refs.items():
             tables[:] = [table for table in tables if not table.is_deleted]
             source = row_sources.get(key)
@@ -1007,14 +1023,34 @@ class AnalyzeWorkflowView:
     # -- 3. Results -----------------------------------------------------------------------
 
     def _render_results_table(self) -> None:
+        """One row per analysed file, with Use: an unticked file stays here but leaves the plots and export."""
         from nicegui import ui
 
-        results = self._results()
+        rows = self._results_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
-            if not results:
-                ui.label("Nothing analysed yet for the ticked files.").classes("muted text-xs")
+            if not rows:
+                ui.label("Nothing analysed yet.").classes("muted text-xs")
                 return
-            ui.html(results_table_html(results)).classes("w-full results-wrap")
+            fields = tuple(f for f in RESULT_FIELDS
+                           if f != "inclusions" or any(r.inclusion_counts for r in self._results(ticked_only=False)))
+            table = ui.table(columns=results_columns(fields, RESULT_LABELS), rows=rows, row_key="uid").classes(
+                "slim-table matrix-table results-table w-full").props("dense flat hide-bottom")
+            self._register_table("results", table)
+            wire_results_table(table, self._handle_matrix_change, fields)
+
+    def _results_rows(self) -> list[dict[str, Any]]:
+        """Every listed file that has a stored result, ticked or not, with the plot colour of the ticked ones."""
+        shown = {(r.project, r.engine, r.sample_id): i for i, r in enumerate(self._results())}
+        rows = []
+        for result in self._results(ticked_only=False):
+            key = (result.project, result.engine, result.sample_id)
+            row = next((row for row in self.matrix if (Path(row.project_path).name, row.engine, row.sample_id) == key),
+                       None)
+            if row is None:
+                continue
+            color = chart_color(shown[key]) if key in shown else "var(--text-disabled)"
+            rows.append({"uid": row.uid, "active": row.active, **results_cells(result, color, active=row.active)})
+        return rows
 
     def _render_results_plots(self) -> None:
         from nicegui import ui
@@ -1031,9 +1067,10 @@ class AnalyzeWorkflowView:
                         chart = ui.echart(options).classes("w-full h-full")
                     self._chart_refs.append((name, chart))
 
-    def _results(self) -> list[FileResult]:
-        """Stored results of the ticked files, not everything ever analysed, with the hand corrections."""
-        ticked = {(Path(row.project_path).name, row.engine, row.sample_id) for row in self.matrix if row.active}
+    def _results(self, *, ticked_only: bool = True) -> list[FileResult]:
+        """Stored results of the listed files -- the ticked ones unless asked otherwise -- with the hand corrections."""
+        ticked = {(Path(row.project_path).name, row.engine, row.sample_id) for row in self.matrix
+                  if row.active or not ticked_only}
         fixes = json.dumps({f"{engine}/{sample}": value for (engine, sample), value in self._corrections().items()},
                            sort_keys=True)
         results = []
@@ -1291,7 +1328,11 @@ class AnalyzeWorkflowView:
             row.active = bool(value)
             self._save_setup()
             self._sync_action_box()
+            self._notify(self._stage_summary(), "primary")
             self._mount_sidebar()
+            if self._stage_id() == "results":
+                self._sync_tables()                      # the row greys out or gets its colour back
+                self._remount_main()                     # the plots follow the ticked files
             return
         if field_name == "sample_id":
             row.sample_id = str(value or "")
@@ -2212,6 +2253,14 @@ def _style() -> str:
     table.results .sub { color: var(--text-muted); font-size: 11px; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
     table.results .spark { fill: var(--accent); fill-opacity: 0.8; vertical-align: middle; }
     table.results .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+    .results-table .q-table td { height: 44px; white-space: nowrap; }
+    .results-table .q-table td:nth-child(2), .results-table .q-table td:nth-child(3) { white-space: nowrap; }
+    .results-cell { line-height: 1.25; }
+    .results-cell .n { font-family: Menlo, Consolas, monospace; margin-right: 6px; }
+    .results-cell .sub { color: var(--text-muted); font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+    .results-cell .spark { fill: var(--accent); fill-opacity: 0.8; vertical-align: middle; }
+    .results-cell .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+    .results-off { opacity: 0.45; }
     .results-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .results-grid .plot-card { aspect-ratio: 4 / 3; min-height: 0; }
     @media (max-width: 1100px) { .results-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

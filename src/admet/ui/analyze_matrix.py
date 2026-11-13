@@ -41,6 +41,22 @@ def analyse_columns() -> list[dict[str, Any]]:
     ]
 
 
+def results_columns(fields: tuple[str, ...], labels: dict[str, str]) -> list[dict[str, Any]]:
+    columns = [{"name": "active", "label": "Use", "field": "active", "align": "center"}]
+    columns += [{"name": field, "label": labels[field], "field": field, "align": "left"} for field in fields]
+    return columns
+
+
+def wire_results_table(table: Any, on_change: Any, html_fields: tuple[str, ...]) -> None:
+    """Use toggles like the other tables; every other cell is HTML made server-side."""
+    table.add_slot("body-cell-active", _bool_cell_slot("active"))
+    for field in html_fields:
+        table.add_slot(f"body-cell-{field}", f"""
+        <q-td :props="props"><div v-html="props.row.{field}"></div></q-td>
+        """)
+    table.on("matrix-change", on_change)
+
+
 def files_row(row: Any, *, count: str, analyzed: str, removable: bool) -> dict[str, Any]:
     return {
         "uid": row.uid,

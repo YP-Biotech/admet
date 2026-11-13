@@ -313,39 +313,47 @@ def spark(values, width: int = 72, height: int = 16, bins: int = 24) -> str:
     return f'<svg class="spark" width="{width}" height="{height}">{rects}</svg>'
 
 
+RESULT_FIELDS = ("sample", "droplets", "inclusions", "diameter", "area", "cv", "rate", "speed", "analysed")
+RESULT_LABELS = {"sample": "Sample", "droplets": "Droplets", "inclusions": "Inclusions", "diameter": "Diameter, µm",
+                 "area": "Area, µm²", "cv": "CV, %", "rate": "Rate, /s", "speed": "Speed, mm/s",
+                 "analysed": "Analysed"}
+
+
+def results_cells(result: FileResult, color: str, *, active: bool = True) -> dict[str, str]:
+    """One file's row of the results table, each cell as HTML: the number with its distribution."""
+    off = "" if active else " results-off"
+
+    def cell(inner: str) -> str:
+        return f'<div class="results-cell{off}">{inner}</div>'
+
+    with_inclusions = sum(1 for count in result.inclusion_counts if count)
+    summary = settings_summary(result.settings)
+    return {
+        "sample": cell(f'<span class="swatch" style="background:{color}"></span>{html.escape(result.sample_id)}'
+                       f'<div class="sub">{html.escape(result.engine)}</div>'),
+        "droplets": cell(f'{result.droplets}<div class="sub">{result.frames} frames</div>'),
+        "inclusions": cell(f'{result.inclusions}<div class="sub">in {with_inclusions} droplets</div>'
+                           + spark(result.inclusion_counts)) if result.inclusion_counts else cell("—"),
+        "diameter": cell(_distribution(result.mean_diameter, result.std_diameter, result.diameters, 1)),
+        "area": cell(_distribution(result.mean_area, result.std_area, result.areas, 0)),
+        "cv": cell(f"{result.cv_percent:.1f}" if result.diameters else "—"),
+        "rate": cell(_distribution(result.rate_hz, 0.0, [1.0 / p for p in result.periods_s if p > 0], 1)
+                     if result.rate_hz else "—"),
+        "speed": cell(_distribution(result.speed_mm_s, 0.0, result.speeds_mm_s, 2) if result.speed_mm_s else "—"),
+        "analysed": cell(f'{html.escape(result.analyzed_at or "earlier")}'
+                         f'<div class="sub" title="{html.escape(summary)}">{html.escape(_short(summary, 48))}</div>'),
+    }
+
+
 def results_table_html(results: list[FileResult]) -> str:
-    """One row per file: the numbers with their distributions, and what the run used."""
+    """The results as one HTML table (what the per-file rows hold, without the Use column)."""
     if not results:
         return ""
-    inclusions = any(result.inclusion_counts for result in results)
-    heads = ["Sample", "Droplets"] + (["Inclusions"] if inclusions else []) + [
-        "Diameter, µm", "Area, µm²", "CV, %", "Rate, /s", "Speed, mm/s", "Analysed"]
-    body = []
-    for index, result in enumerate(results):
-        color = chart_color(index)
-        with_inclusions = sum(1 for count in result.inclusion_counts if count)
-        cells = [
-            f'<span class="swatch" style="background:{color}"></span>{html.escape(result.sample_id)}'
-            f'<div class="sub">{html.escape(result.engine)}</div>',
-            f'{result.droplets}<div class="sub">{result.frames} frames</div>',
-        ]
-        if inclusions:
-            cells.append(f'{result.inclusions}<div class="sub">in {with_inclusions} droplets</div>'
-                         + spark(result.inclusion_counts))
-        cells += [
-            _distribution(result.mean_diameter, result.std_diameter, result.diameters, 1),
-            _distribution(result.mean_area, result.std_area, result.areas, 0),
-            f"{result.cv_percent:.1f}" if result.diameters else "—",
-            _distribution(result.rate_hz, 0.0, [1.0 / p for p in result.periods_s if p > 0], 1)
-            if result.rate_hz else "—",
-            _distribution(result.speed_mm_s, 0.0, result.speeds_mm_s, 2) if result.speed_mm_s else "—",
-            f'{html.escape(result.analyzed_at or "earlier")}'
-            f'<div class="sub" title="{html.escape(settings_summary(result.settings))}">'
-            f'{html.escape(_short(settings_summary(result.settings), 48))}</div>',
-        ]
-        body.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
-    head = "".join(f"<th>{html.escape(label)}</th>" for label in heads)
-    return f'<table class="results"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table>'
+    fields = [f for f in RESULT_FIELDS if f != "inclusions" or any(r.inclusion_counts for r in results)]
+    head = "".join(f"<th>{html.escape(RESULT_LABELS[f])}</th>" for f in fields)
+    body = "".join("<tr>" + "".join(f"<td>{results_cells(r, chart_color(i))[f]}</td>" for f in fields) + "</tr>"
+                   for i, r in enumerate(results))
+    return f'<table class="results"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
 
 
 def _distribution(value: float, sd: float, samples, digits: int) -> str:
