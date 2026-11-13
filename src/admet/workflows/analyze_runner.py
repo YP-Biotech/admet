@@ -328,17 +328,21 @@ class AnalyzeBatchRunner:
         kept_rows = [row for row in _read_jsonl(run_target.raw_path) if row.get("file_id") not in touched_ids]
         _write_jsonl(run_target.raw_path, kept_rows + sink.rows)
 
+        # What the earlier run had is kept, except for files that have since left the project:
+        # the run's sample item names its files, and the manifest refuses a name it does not know.
+        known_ids = {file.id for file in store.session.files}
+
+        def kept(file_id: Any) -> bool:
+            return bool(file_id) and file_id in known_ids and file_id not in touched_ids
+
         merged_jobs = [
-            job
-            for job in prior_meta.get("jobs", ())
-            if isinstance(job, dict) and job.get("file_id") and job.get("file_id") not in touched_ids
+            job for job in prior_meta.get("jobs", ()) if isinstance(job, dict) and kept(job.get("file_id"))
         ] + [_job_metadata(job) for job in job_reports if job.file_id in touched_ids]
         merged_matrix = [
-            row
-            for row in prior_settings.get("matrix", ())
-            if isinstance(row, dict) and row.get("file_id") and row.get("file_id") not in touched_ids
+            row for row in prior_settings.get("matrix", ()) if isinstance(row, dict) and kept(row.get("file_id"))
         ] + [row for row in matrix_rows if row.get("file_id") in touched_ids]
-        merged_files = list(dict.fromkeys([f for f in prior.get("files", ()) if isinstance(f, str)] + file_ids))
+        merged_files = list(dict.fromkeys(
+            [f for f in prior.get("files", ()) if isinstance(f, str) and f in known_ids] + file_ids))
 
         store.finish_analysis_run(
             run_target,

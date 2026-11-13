@@ -1,150 +1,66 @@
 from __future__ import annotations
 
-from admet.core.engine import Param, ParamKind, ParamSchema
+from .model import EditorSpec, SettingsSpec, Stage, StageAction, StageInstruction, Workflow
 
-from .model import EditorSpec, SettingsSpec, Stage, StageAction, Workflow
-
-
-IMPORT_SETTINGS = SettingsSpec(
-    "matrix",
-    title="Batch Matrix",
-    options={
-        "source": "all_targets",
-        "columns": (
-            "project",
-            "source",
-            "engine",
-            "sample_id",
-            "active",
-        ),
-    },
-)
-VIDEO_SETTINGS = SettingsSpec(
-    "matrix",
-    title="OpenCV Settings",
-    options={
-        "source": "opencv_targets",
-        "engine": "opencv",
-        "columns": ("project", "source", "sample_id", "active", "settings"),
-    },
-)
-IMAGING_SETTINGS = SettingsSpec(
-    "matrix",
-    title="Cellpose Settings",
-    options={
-        "source": "cellpose_targets",
-        "engine": "cellpose",
-        "columns": ("project", "source", "sample_id", "active", "settings"),
-    },
-)
-VIEW_SETTINGS = SettingsSpec("none", title="View Settings")
-EXPORT_SETTINGS = SettingsSpec(
-    "params",
-    title="Export Settings",
-    schema=ParamSchema((Param("export_dir", "Export Directory", ParamKind.PATH, default="exports"),)),
-)
-IMPORT_EDITOR = EditorSpec("import_inventory")
-VIDEO_EDITOR = EditorSpec("opencv_video", options={"engine": "opencv"})
-IMAGING_EDITOR = EditorSpec("cellpose_editor", options={"engine": "cellpose"})
-VIEW_EDITOR = EditorSpec("analysis_results", options={"charts": ("diameter", "cv", "count")})
-EXPORT_EDITOR = EditorSpec("analysis_export")
 
 def create_analyze_workflow() -> Workflow:
+    """Three steps: pick the files, set each up and run, view what was found."""
     return Workflow(
         workflow_id="analyze",
         label="Analysis",
         stages=(
             Stage(
-                "import",
-                "1. Import & Batch",
-                description="Open a project and build the file-to-engine matrix.",
-                instructions=(
-                    "Add videos or imaging folders.",
-                    "Each row declares its project, sample id, engine, and whether it is active.",
+                "files",
+                "1. Files",
+                description="The files to analyse.",
+                instruction_cards=(
+                    StageInstruction("Open a project: pick one at the top, or browse for it.",
+                                     guard="not project_ready"),
+                    StageInstruction("Add the videos or image folders to analyse.", guard="not has_matrix_rows"),
+                    StageInstruction("Tick Use on the files to run and name the samples, then go to 2. Analyse."),
                 ),
-                settings=ParamSchema(
-                    (
-                        Param("project_path", "Project Path", ParamKind.PATH, default=""),
-                        Param("source_path", "Source Path", ParamKind.PATH, default=""),
-                    )
-                ),
-                settings_panel=IMPORT_SETTINGS,
+                settings_panel=SettingsSpec("matrix", title="Files"),
                 actions=(
-                    StageAction("Browse File", "browse_source", guard="project_ready", variant="secondary"),
-                    StageAction("Reset Settings", "reset_settings", guard="has_matrix_rows", variant="secondary"),
-                    StageAction("Clear Matrix", "clear_matrix", guard="has_matrix_rows", variant="secondary"),
+                    StageAction("Add files…", "browse_source", guard="project_ready"),
+                    StageAction("Clear list", "clear_matrix", guard="has_matrix_rows", variant="secondary"),
                 ),
-                editor=IMPORT_EDITOR,
+                editor=EditorSpec("file_facts"),
             ),
             Stage(
-                "video",
-                "2. Video Analysis",
+                "analyse",
+                "2. Analyse",
                 action="analyze",
-                description="Run OpenCV on active video matrix rows.",
-                settings=ParamSchema(
-                    (
-                        Param("microns_per_pixel", "Microns Per Pixel", ParamKind.FLOAT, default=1.0),
-                        Param("fps", "FPS", ParamKind.FLOAT, default=0.0, minimum=0.0),
-                    )
+                description="Set each file up and run.",
+                instruction_cards=(
+                    StageInstruction("No files ticked. Tick Use on 1. Files.", guard="not has_targets"),
+                    StageInstruction("Fill in µm/px and FPS for every ticked file: the red cells are missing.",
+                                     guard="not targets_ready"),
+                    StageInstruction("Select a file, set its crop, frames and detection on the preview, then Run."),
                 ),
-                settings_panel=VIDEO_SETTINGS,
+                settings_panel=SettingsSpec("matrix", title="Ticked files"),
                 actions=(
-                    StageAction(
-                        "Run OpenCV",
-                        "analyze",
-                        guard="has_opencv_targets",
-                        completes=True,
-                    ),
+                    StageAction("Run all ticked", "analyze", guard="targets_ready", completes=True),
+                    StageAction("Run selected", "analyze_selected", guard="selected_ready", variant="secondary"),
+                    StageAction("Reset file settings", "reset_row_settings", guard="has_selected",
+                                variant="secondary"),
                 ),
-                editor=VIDEO_EDITOR,
+                editor=EditorSpec("file_editor"),
             ),
             Stage(
-                "imaging",
-                "3. Imaging Analysis",
-                action="analyze",
-                description="Run Cellpose on active imaging matrix rows.",
-                settings=ParamSchema(
-                    (
-                        Param("px_to_um", "Pixels To Microns", ParamKind.FLOAT, default=1.14, minimum=0.0),
-                        Param("frame_limit", "Frame Limit", ParamKind.INTEGER, default=None),
-                        Param("detect_inclusions", "Detect Inclusions", ParamKind.BOOLEAN, default=True),
-                    )
+                "results",
+                "3. Results",
+                description="What the analysis found.",
+                instruction_cards=(
+                    StageInstruction("Nothing analysed yet. Run the ticked files on 2. Analyse.",
+                                     guard="not has_results"),
+                    StageInstruction("View only. Export takes the ticked files' results."),
                 ),
-                settings_panel=IMAGING_SETTINGS,
+                settings_panel=SettingsSpec("results", title="Per file"),
                 actions=(
-                    StageAction(
-                        "Run Cellpose",
-                        "analyze",
-                        guard="has_cellpose_targets",
-                        completes=True,
-                    ),
+                    StageAction("Export CSV", "export_csv", guard="has_results"),
+                    StageAction("Export plots", "export_plots", guard="has_results", variant="secondary"),
                 ),
-                editor=IMAGING_EDITOR,
-            ),
-            Stage(
-                "view",
-                "4. View Results",
-                description="Inspect stored raw analysis runs and execution summaries.",
-                instructions=(
-                    "Views use raw JSONL and project run metadata.",
-                    "Stored project runs remain available for review.",
-                ),
-                settings_panel=VIEW_SETTINGS,
-                actions=(
-                    StageAction("Refresh View", "refresh_view", completes=True, variant="success"),
-                    StageAction("Run All", "analyze_all", guard="has_matrix_rows"),
-                ),
-                editor=VIEW_EDITOR,
-            ),
-            Stage(
-                "export",
-                "5. Export",
-                skippable=True,
-                description="Export figures and derived tables from stored raw data.",
-                settings=EXPORT_SETTINGS.schema,
-                settings_panel=EXPORT_SETTINGS,
-                actions=(StageAction("Export Later", "export_later", variant="warning"),),
-                editor=EXPORT_EDITOR,
+                editor=EditorSpec("results_plots"),
             ),
         ),
     )

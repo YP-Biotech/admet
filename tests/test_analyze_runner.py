@@ -107,6 +107,33 @@ class AnalyzeBatchRunnerTests(unittest.TestCase):
         self.assertEqual(len(session.items), 1)
         self.assertFalse((project / "analysis" / "runs").exists())
 
+    def test_a_file_removed_from_the_project_leaves_the_next_run_alone(self):
+        """The earlier run listed the file; the run after its removal must not bring the name back."""
+        from admet.core.project import ProjectStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            gone, kept = root / "gone.avi", root / "kept.avi"
+            gone.write_bytes(b"video")
+            kept.write_bytes(b"video")
+            project = root / "study.admetp"
+            registry = EngineRegistry()
+            registry.register("opencv", lambda: FakeAnalyzeEngine("opencv"))
+            runner = AnalyzeBatchRunner(registry, cache_root=root / "cache")
+            runner.run((AnalyzeTarget(project_path=project, source_path=gone, engine="opencv", sample_id="g"),
+                        AnalyzeTarget(project_path=project, source_path=kept, engine="opencv", sample_id="k")))
+            ProjectStore(project).remove_analysis_file(gone)
+
+            report = runner.run((AnalyzeTarget(project_path=project, source_path=kept, engine="opencv",
+                                               sample_id="k"),))
+            session = load_session(project)
+            run_metadata = json.loads((project / "analysis" / "run.json").read_text(encoding="utf-8"))
+
+        self.assertIn(report.jobs[0].status, {"complete", "cached"})
+        self.assertEqual(session.items[0].files, tuple(file.id for file in session.files))
+        self.assertEqual(run_metadata["files"], list(session.items[0].files))
+        self.assertEqual([job["sample_id"] for job in run_metadata["metadata"]["jobs"]], ["k"])
+
     def test_runner_groups_rows_by_project(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
