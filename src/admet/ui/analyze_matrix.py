@@ -1,127 +1,124 @@
+"""The file tables of the analyze stages: their columns, rows and editable cells."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from admet.core.engine import Param, ParamKind
-from admet.engines.cellpose.settings import CELLPOSE_SETTINGS
-from admet.engines.opencv.settings import OPENCV_SETTINGS
+from admet.core.engine import ParamKind
+
+# What a row's table cells edit, and as which kind.
+FIELD_KINDS = {
+    "microns_per_pixel": ParamKind.FLOAT,
+    "fps": ParamKind.FLOAT,
+    "px_to_um": ParamKind.FLOAT,
+}
 
 
-ENGINE_SCHEMAS = {"opencv": OPENCV_SETTINGS, "cellpose": CELLPOSE_SETTINGS}
-MATRIX_HIDDEN_PARAMS = {"video_path", "input_dir"}
-FIELD_KINDS = {param.name: param.kind for schema in ENGINE_SCHEMAS.values() for param in schema.params}
-
-
-def matrix_columns() -> list[dict[str, Any]]:
+def files_columns() -> list[dict[str, Any]]:
     return [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
-        {"name": "project", "label": "Project", "field": "project", "align": "left"},
-        {"name": "source", "label": "Source", "field": "source", "align": "left"},
+        {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
+        {"name": "source", "label": "File", "field": "source", "align": "left"},
         {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
-        {"name": "sample_id", "label": "Sample ID", "field": "sample_id", "align": "left"},
-        {"name": "analyzed", "label": "Analyzed", "field": "analyzed", "align": "left"},
+        {"name": "count", "label": "Frames / images", "field": "count", "align": "right"},
+        {"name": "analyzed", "label": "Analysed", "field": "analyzed", "align": "left"},
+        {"name": "remove", "label": "", "field": "remove", "align": "center"},
     ]
 
 
-def matrix_params(engine: str) -> tuple[Param, ...]:
-    schema = ENGINE_SCHEMAS.get(engine)
-    if schema is None:
-        return ()
-    return tuple(param for param in schema.params if param.name not in MATRIX_HIDDEN_PARAMS)
+def analyse_columns() -> list[dict[str, Any]]:
+    return [
+        {"name": "active", "label": "Use", "field": "active", "align": "center"},
+        {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
+        {"name": "source", "label": "File", "field": "source", "align": "left"},
+        {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
+        {"name": "microns_per_pixel", "label": "µm/px", "field": "microns_per_pixel", "align": "left"},
+        {"name": "fps", "label": "FPS", "field": "fps", "align": "left"},
+        {"name": "range", "label": "Frames", "field": "range", "align": "left"},
+        {"name": "crop", "label": "Crop", "field": "crop", "align": "left"},
+        {"name": "analyzed", "label": "Analysed", "field": "analyzed", "align": "left"},
+    ]
 
 
-def matrix_field_kind(field: str) -> ParamKind | None:
-    return FIELD_KINDS.get(field)
+def files_row(row: Any, *, count: str, analyzed: str, removable: bool) -> dict[str, Any]:
+    return {
+        "uid": row.uid,
+        "active": row.active,
+        "sample_id": row.sample_id,
+        "source": Path(row.source_path).name or row.source_path,
+        "engine": row.engine,
+        "count": count,
+        "analyzed": analyzed or "—",
+        "remove": removable,
+    }
+
+
+def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> dict[str, Any]:
+    if row.engine == "cellpose":
+        scale, fps = _number(row.settings.get("px_to_um")), None
+    else:
+        scale, fps = _number(row.settings.get("microns_per_pixel")), _number(row.settings.get("fps"))
+    return {
+        "uid": row.uid,
+        "active": row.active,
+        "sample_id": row.sample_id,
+        "source": Path(row.source_path).name or row.source_path,
+        "engine": row.engine,
+        "microns_per_pixel": scale,
+        "fps": fps,
+        "fps_applies": row.engine != "cellpose",
+        "range": range_text,
+        "crop": crop_text,
+        "analyzed": analyzed or "—",
+    }
+
+
+def wire_files_table(table: Any, on_change: Any, on_remove: Any) -> None:
+    table.add_slot("body-cell-active", _bool_cell_slot("active"))
+    table.add_slot("body-cell-sample_id", _text_cell_slot("sample_id"))
+    table.add_slot("body-cell-remove", """
+    <q-td :props="props">
+      <q-btn v-if="props.row.remove" flat dense round size="sm" icon="close" title="Remove from the list"
+        @click.stop="$parent.$emit('matrix-remove', {uid: props.row.uid})" />
+    </q-td>
+    """)
+    table.on("matrix-change", on_change)
+    table.on("matrix-remove", on_remove)
+
+
+def wire_analyse_table(table: Any, on_change: Any) -> None:
+    table.add_slot("body-cell-active", _bool_cell_slot("active"))
+    table.add_slot("body-cell-microns_per_pixel", _required_number_slot("microns_per_pixel"))
+    table.add_slot("body-cell-fps", _required_number_slot("fps", applies="props.row.fps_applies"))
+    table.on("matrix-change", on_change)
 
 
 def cast_matrix_value(kind: ParamKind, value: Any) -> Any:
     if kind is ParamKind.BOOLEAN:
         return bool(value)
     if kind is ParamKind.INTEGER:
-        return int(_numeric(value) or 0)
+        return int(_number(value) or 0)
     if kind is ParamKind.FLOAT:
-        return float(_numeric(value) or 0.0)
+        return float(_number(value) or 0.0)
     return str(value or "")
 
 
-def schema_matrix_columns(params: tuple[Param, ...]) -> list[dict[str, Any]]:
-    columns = [
-        {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
-        {"name": "source", "label": "Source", "field": "source", "align": "left"},
-    ]
-    for param in params:
-        align = "right" if param.kind in {ParamKind.INTEGER, ParamKind.FLOAT} else "left"
-        columns.append({"name": param.name, "label": param.label, "field": param.name, "align": align})
-    return columns
+def matrix_field_kind(field: str) -> ParamKind | None:
+    return FIELD_KINDS.get(field)
 
 
-def schema_matrix_row(row: Any, params: tuple[Param, ...]) -> dict[str, Any]:
-    data = {
-        "uid": row.uid,
-        "sample_id": row.sample_id,
-        "source": Path(row.source_path).name or row.source_path,
-    }
-    for param in params:
-        data[param.name] = _schema_cell_value(row, param)
-    return data
-
-
-def wire_matrix_table(table: Any, handler: Any) -> None:
-    table.add_slot("body-cell-active", _bool_cell_slot("active"))
-    table.add_slot(
-        "body-cell-project",
-        """
-        <q-td :props="props">
-          <div class="source-cell-name">{{ props.row.project }}</div>
-        </q-td>
-        """,
-    )
-    table.add_slot(
-        "body-cell-source",
-        """
-        <q-td :props="props">
-          <div class="source-cell-name">{{ props.row.source }}</div>
-        </q-td>
-        """,
-    )
-    table.add_slot(
-        "body-cell-engine",
-        """
-        <q-td :props="props">
-          <div class="source-cell-name">{{ props.row.engine }}</div>
-        </q-td>
-        """,
-    )
-    table.add_slot("body-cell-sample_id", _text_cell_slot("sample_id"))
-    table.on("matrix-change", handler)
-
-
-def wire_schema_matrix_table(table: Any, params: tuple[Param, ...], handler: Any) -> None:
-    for param in params:
-        table.add_slot(f"body-cell-{param.name}", _schema_cell_slot(param))
-    table.on("matrix-change", handler)
-
-
-def _schema_cell_value(row: Any, param: Param) -> Any:
-    default = param.default
-    if param.kind is ParamKind.BOOLEAN:
-        return _row_bool(row, param.name, bool(default))
-    if param.kind is ParamKind.INTEGER:
-        return _row_int(row, param.name, int(default) if default is not None else 0)
-    if param.kind is ParamKind.FLOAT:
-        return _row_float(row, param.name, float(default) if default is not None else 0.0)
-    return str(_row_setting(row, param.name, default if default is not None else ""))
-
-
-def _numeric_cell_slot(field: str) -> str:
+def _required_number_slot(field: str, *, applies: str = "true") -> str:
+    # Empty or zero is "missing": the cell is outlined red until a value is in.
     return f"""
     <q-td :props="props">
-      <q-input dense outlined type="number" input-class="matrix-num"
+      <q-input v-if="{applies}" dense outlined type="number" step="any" input-class="matrix-num"
+        :class="props.row.{field} > 0 ? '' : 'matrix-missing'"
         v-model.number="props.row.{field}"
         @click.stop @mousedown.stop
         @blur="$parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: props.row.{field}}})"
         @keyup.enter="$event.target.blur()" />
+      <span v-else class="muted">—</span>
     </q-td>
     """
 
@@ -147,36 +144,9 @@ def _bool_cell_slot(field: str) -> str:
     """
 
 
-def _schema_cell_slot(param: Param) -> str:
-    if param.kind is ParamKind.BOOLEAN:
-        return _bool_cell_slot(param.name)
-    if param.kind in {ParamKind.INTEGER, ParamKind.FLOAT}:
-        return _numeric_cell_slot(param.name)
-    return _text_cell_slot(param.name)
-
-
-def _row_setting(row: Any, key: str, default: Any) -> Any:
-    value = row.settings.get(key, default)
-    return default if value in {None, ""} else value
-
-
-def _row_int(row: Any, key: str, default: Any) -> int:
-    return int(_numeric(_row_setting(row, key, default)) or 0)
-
-
-def _row_float(row: Any, key: str, default: Any) -> float:
-    return float(_numeric(_row_setting(row, key, default)) or 0.0)
-
-
-def _row_bool(row: Any, key: str, default: Any) -> bool:
-    value = _row_setting(row, key, default)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _numeric(value: Any) -> float | None:
+def _number(value: Any) -> float | None:
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if number == number else None
