@@ -7,6 +7,7 @@ import html
 import io
 import json
 import math
+import random
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,7 @@ class FileResult:
     sample_id: str
     engine: str
     source_path: str
+    file_id: str
     analyzed_at: str
     settings: dict[str, Any]
     fps: float
@@ -47,6 +49,8 @@ class FileResult:
     droplets: int
     rate_hz: float
     speed_mm_s: float
+    rate_note: str = ""                                    # when the rate is not the gate's
+    arrivals_s: tuple[float, ...] = ()                     # each droplet's first sighting, s from the first frame
     diameters: tuple[float, ...] = ()                      # µm
     areas: tuple[float, ...] = ()                          # µm²
     periods_s: tuple[float, ...] = ()                      # between one droplet's arrival and the next
@@ -107,15 +111,16 @@ def load_stored_runs(project_paths: list[Path]) -> list[StoredRun]:
     return runs
 
 
-def read_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = 50_000) -> list[dict[str, Any]]:
+def iter_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = None):
+    """The rows of a raw file one at a time: a recording's rows run into the hundreds of thousands."""
     path = raw_path if raw_path.is_absolute() else project_path / raw_path
     if not path.is_file():
-        return []
-    rows: list[dict[str, Any]] = []
+        return
+    count = 0
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
-            if limit is not None and len(rows) >= limit:
-                break
+            if limit is not None and count >= limit:
+                return
             line = line.strip()
             if not line:
                 continue
@@ -124,132 +129,175 @@ def read_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = 50_
             except json.JSONDecodeError:
                 continue
             if isinstance(value, dict):
-                rows.append(value)
-    return rows
+                count += 1
+                yield value
 
 
-def file_results(run: StoredRun, rows: list[dict[str, Any]],
-                 corrections: dict[tuple[str, str], dict[str, Any]] | None = None) -> list[FileResult]:
-    """Each file's result from one run's rows: distributions per droplet, rate and speed.
+def read_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+    return list(iter_raw_rows(project_path, raw_path, limit=limit))
 
-    CORRECTIONS, by (engine, sample id), are what the user changed by hand on imaging
-    droplets: a droplet switched off is left out, an inclusion count is taken as corrected.
+
+PLOT_POINTS = 6000      # detections kept per file for the plots: a uniform sample, not the first ones
+
+
+def file_results(run: StoredRun, rows, corrections: dict[tuple[str, str], dict[str, Any]] | None = None,
+                 scales: dict[tuple[str, str], tuple[float, float]] | None = None) -> list[FileResult]:
+    """Each file's result from one run's rows, in one pass: distributions per droplet, rate and speed.
+
+    Files are told apart by their id, never by the sample name two files may share. CORRECTIONS,
+    by (engine, source path), are what the user changed by hand on imaging droplets: a droplet
+    switched off is left out, an inclusion count is taken as corrected. SCALES, by the same key,
+    are the µm per px and fps to read the rows with: the engine measures in pixels and frames,
+    so changing either needs no new run.
     """
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    contexts: dict[tuple[str, str], dict[str, Any]] = {}
+    jobs = _jobs_by_key(run)
+    files: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         key = _row_key(row)
-        if row.get("kind") == "run_context":
-            contexts[key] = _values(row)
-        else:
-            groups.setdefault(key, []).append(row)
-    jobs = _jobs_by_sample(run)
-    results = []
-    for key, group in sorted(groups.items()):
-        engine, sample_id = key
-        context = contexts.get(key, {})
-        analysis = _as_dict(context.get("analysis"))
-        job = jobs.get(key, {})
-        meta = _as_dict(job.get("metadata"))
-        fixes = (corrections or {}).get(key, {})
-        scale = _num(analysis.get("microns_per_pixel")) or 1.0
-        fps = _num(analysis.get("fps")) or 0.0
-        per_droplet: dict[int, dict[str, list[float]]] = {}
-        loose_diameters: list[float] = []
-        loose_areas: list[float] = []
-        detections: list[tuple[float, float, float, float]] = []
-        inclusion_counts: list[int] = []
-        frames: set[int] = set()
-        for row in group:
-            kind = row.get("kind")
-            if kind not in {"detection", "droplet", "track"}:
-                continue
-            values = _values(row)
-            frame = _num(values.get("frame"))
-            if frame is not None:
-                frames.add(int(frame))
-            fix = fixes.get(correction_key(frame, values.get("droplet_id"))) if kind == "droplet" and fixes else None
-            if fix and fix.get("disabled"):
-                continue
-            diameter = _num(values.get("diameter_um"))
-            if diameter is None:
-                pixels = _num(values.get("equivalent_diameter") or values.get("diameter"))
-                diameter = pixels * scale if pixels is not None else None
-            area = _num(values.get("area_um2"))
-            if area is None:
-                pixels = _num(values.get("area"))
-                area = pixels * scale * scale if pixels is not None else None
-            if kind == "droplet":
-                inclusion_counts.append(corrected_inclusions(values, fix))
-            cx = _num(values.get("centroid_x", values.get("center_x")))
-            cy = _num(values.get("centroid_y", values.get("center_y")))
-            if frame is not None and cx is not None and cy is not None and len(detections) < 6000:
-                detections.append((frame, round(cx, 1), round(cy, 1), round(area or 0.0, 2)))
-            # A "droplet" row is one droplet in one image; its id only counts within that image,
-            # so it is not followed across frames the way a tracked detection is.
-            droplet_id = None if kind == "droplet" else _num(
-                values.get("droplet_id") if values.get("droplet_id") is not None else values.get("track_id"))
-            if droplet_id is None:
-                if diameter:
-                    loose_diameters.append(diameter)
-                if area:
-                    loose_areas.append(area)
-                continue
-            entry = per_droplet.setdefault(int(droplet_id), {"d": [], "a": [], "f": [], "x": []})
+        kind = row.get("kind")
+        acc = files.get(key)
+        if acc is None:
+            job = jobs.get(key, {})
+            source = str(resolve_project_path(run.project_path, str(job.get("source_path") or "")))
+            acc = files[key] = {"context": {}, "per_droplet": {}, "loose_d": [], "loose_a": [], "points": [],
+                                "seen": 0, "inclusions": [], "frames": set(), "um": False, "job": job,
+                                "source": source, "rng": random.Random(0),
+                                "fixes": (corrections or {}).get((key[0], source), {}),
+                                "scale": (scales or {}).get((key[0], source), (0.0, 0.0))}
+        if kind == "run_context":
+            acc["context"] = _values(row)
+            continue
+        if kind not in {"detection", "droplet", "track"}:
+            continue
+        values = _values(row)
+        frame = _num(values.get("frame"))
+        if frame is not None:
+            acc["frames"].add(int(frame))
+        fix = acc["fixes"].get(correction_key(frame, values.get("droplet_id"))) if kind == "droplet" and acc["fixes"] \
+            else None
+        if fix and fix.get("disabled"):
+            continue
+        # Pixels first, so the scale of the day applies; µm only when the row has nothing else.
+        diameter = _num(values.get("diameter_px", values.get("equivalent_diameter", values.get("diameter"))))
+        area = _num(values.get("area_px", values.get("area")))
+        if diameter is None and area is None:
+            diameter, area = _num(values.get("diameter_um")), _num(values.get("area_um2"))
+            if diameter is not None or area is not None:
+                acc["um"] = True
+        if kind == "droplet":
+            acc["inclusions"].append(corrected_inclusions(values, fix))
+        cx = _num(values.get("centroid_x", values.get("center_x")))
+        cy = _num(values.get("centroid_y", values.get("center_y")))
+        if frame is not None and cx is not None and cy is not None:
+            _reservoir(acc, (frame, round(cx, 1), round(cy, 1), area or 0.0))
+        # A "droplet" row is one droplet in one image; its id only counts within that image,
+        # so it is not followed across frames the way a tracked detection is.
+        droplet_id = None if kind == "droplet" else _num(
+            values.get("droplet_id") if values.get("droplet_id") is not None else values.get("track_id"))
+        if droplet_id is None:
             if diameter:
-                entry["d"].append(diameter)
+                acc["loose_d"].append(diameter)
             if area:
-                entry["a"].append(area)
-            if frame is not None:
-                entry["f"].append(frame)
-                entry["x"].append(cx or 0.0)
-        diameters = [median(e["d"]) for e in per_droplet.values() if e["d"]] + loose_diameters
-        areas = [median(e["a"]) for e in per_droplet.values() if e["a"]] + loose_areas
-        spans: list[tuple[float, float, float]] = []
-        arrivals: list[float] = []
-        speeds: list[float] = []
-        for droplet_id, entry in sorted(per_droplet.items()):
-            if not entry["f"]:
-                continue
-            order = sorted(range(len(entry["f"])), key=lambda i: entry["f"][i])
-            first, last = entry["f"][order[0]], entry["f"][order[-1]]
-            spans.append((float(droplet_id), first, last))
-            arrivals.append(first)
-            if last > first and fps and scale:
-                travel = abs(entry["x"][order[-1]] - entry["x"][order[0]])
-                speeds.append(travel / (last - first) * scale * fps / 1000.0)
-        arrivals.sort()
-        periods = [(b - a) / fps for a, b in zip(arrivals, arrivals[1:]) if fps and b > a]
-        generation = _as_dict(context.get("generation"))
-        rate = (_num(generation.get("rate_hz")) or _num(meta.get("frequency_hz"))
-                or _num(context.get("frequency_hz")) or (1.0 / mean(periods) if periods else 0.0))
-        speed_px = _num(context.get("speed_px_frame")) or 0.0
-        speed = speed_px * scale * fps / 1000.0 if speed_px and fps else (mean(speeds) if speeds else 0.0)
-        analyzed_at = str(meta.get("analyzed_at") or "")
-        results.append(FileResult(
-            project=run.project_path.name,
-            sample_id=sample_id,
-            engine=engine,
-            source_path=str(resolve_project_path(run.project_path, str(job.get("source_path") or ""))),
-            analyzed_at=local_time(analyzed_at) if analyzed_at else "",
-            settings=_run_settings(run, job, analysis, _as_dict(context.get("detection"))),
-            fps=fps,
-            scale=scale,
-            frames=len(frames),
-            droplets=(len(loose_diameters) if fixes else
-                      int(_num(meta.get("total_droplets") or meta.get("droplet_count")) or 0)
-                      or len(per_droplet) or len(loose_diameters)),
-            rate_hz=float(rate or 0.0),
-            speed_mm_s=float(speed or 0.0),
-            diameters=tuple(diameters),
-            areas=tuple(areas),
-            periods_s=tuple(periods),
-            speeds_mm_s=tuple(speeds),
-            detections=tuple(detections),
-            spans=tuple(spans),
-            inclusion_counts=tuple(inclusion_counts),
-        ))
-    return results
+                acc["loose_a"].append(area)
+            continue
+        entry = acc["per_droplet"].setdefault(int(droplet_id), {"d": [], "a": [], "f": [], "x": []})
+        if diameter:
+            entry["d"].append(diameter)
+        if area:
+            entry["a"].append(area)
+        if frame is not None:
+            entry["f"].append(frame)
+            entry["x"].append(cx or 0.0)
+    return [_finish(run, key, acc) for key, acc in sorted(files.items())]
+
+
+def _reservoir(acc: dict[str, Any], point: tuple[float, float, float, float]) -> None:
+    """Keep PLOT_POINTS detections spread evenly over the file, whatever its length."""
+    acc["seen"] += 1
+    if len(acc["points"]) < PLOT_POINTS:
+        acc["points"].append(point)
+        return
+    slot = acc["rng"].randrange(acc["seen"])
+    if slot < PLOT_POINTS:
+        acc["points"][slot] = point
+
+
+def _finish(run: StoredRun, key: tuple[str, str], acc: dict[str, Any]) -> FileResult:
+    engine = key[0]
+    job, context = acc["job"], acc["context"]
+    analysis = _as_dict(context.get("analysis"))
+    meta = _as_dict(job.get("metadata"))
+    scale = acc["scale"][0] or _num(analysis.get("microns_per_pixel")) or 1.0
+    fps = acc["scale"][1] or _num(analysis.get("fps")) or 0.0
+    to_um = 1.0 if acc["um"] else scale                  # engine rows in px are scaled; µm rows are kept
+    diameters = [median(e["d"]) * to_um for e in acc["per_droplet"].values() if e["d"]] \
+        + [d * to_um for d in acc["loose_d"]]
+    areas = [median(e["a"]) * to_um * to_um for e in acc["per_droplet"].values() if e["a"]] \
+        + [a * to_um * to_um for a in acc["loose_a"]]
+    spans: list[tuple[float, float, float]] = []
+    arrivals: list[float] = []
+    speeds: list[float] = []
+    for droplet_id, entry in sorted(acc["per_droplet"].items()):
+        if not entry["f"]:
+            continue
+        order = sorted(range(len(entry["f"])), key=lambda i: entry["f"][i])
+        first, last = entry["f"][order[0]], entry["f"][order[-1]]
+        spans.append((float(droplet_id), first, last))
+        arrivals.append(first)
+        if last > first and fps and scale:
+            travel = abs(entry["x"][order[-1]] - entry["x"][order[0]])
+            speeds.append(travel / (last - first) * scale * fps / 1000.0)
+    arrivals.sort()
+    periods = [(b - a) / fps for a, b in zip(arrivals, arrivals[1:]) if fps and b > a]
+    arrival_rate = ((len(arrivals) - 1) / ((arrivals[-1] - arrivals[0]) / fps)
+                    if fps and len(arrivals) > 1 and arrivals[-1] > arrivals[0] else 0.0)
+    generation = _as_dict(context.get("generation"))
+    crossings = int(_num(generation.get("crossings")) or 0)
+    period_frames = _num(generation.get("period_frames")) or 0.0
+    gate_rate = (fps / period_frames if fps and period_frames else
+                 _num(generation.get("rate_hz")) or _num(meta.get("frequency_hz")) or _num(context.get("frequency_hz")))
+    rate_note = ""
+    if gate_rate and (crossings >= len(arrivals) / 2 or not arrival_rate):
+        rate = gate_rate
+    elif arrival_rate:
+        # The gate saw too few of the droplets to be trusted (it sits where tracks start or end):
+        # the rate is then droplets seen per second of analysed video.
+        rate = arrival_rate
+        rate_note = f"from arrivals; gate saw {crossings} of {len(arrivals)}" if gate_rate else "from arrivals"
+    else:
+        rate = 1.0 / mean(periods) if periods else 0.0
+    speed_px = _num(context.get("speed_px_frame")) or 0.0
+    speed = speed_px * scale * fps / 1000.0 if speed_px and fps else (mean(speeds) if speeds else 0.0)
+    analyzed_at = str(meta.get("analyzed_at") or "")
+    points = sorted(acc["points"])
+    settings = _run_settings(run, job, analysis, _as_dict(context.get("detection")))
+    settings.update({"microns_per_pixel": scale, "fps": fps} if engine != "cellpose" else {"px_to_um": scale})
+    return FileResult(
+        project=run.project_path.name,
+        sample_id=str(job.get("sample_id") or key[1]),
+        engine=engine,
+        source_path=acc["source"],
+        file_id=str(job.get("file_id") or key[1]),
+        analyzed_at=local_time(analyzed_at) if analyzed_at else "",
+        settings=settings,
+        fps=fps,
+        scale=scale,
+        frames=len(acc["frames"]),
+        droplets=(len(acc["loose_d"]) if acc["fixes"] else
+                  int(_num(meta.get("total_droplets") or meta.get("droplet_count")) or 0)
+                  or len(acc["per_droplet"]) or len(acc["loose_d"])),
+        rate_hz=float(rate or 0.0),
+        speed_mm_s=float(speed or 0.0),
+        rate_note=rate_note,
+        arrivals_s=tuple((a - arrivals[0]) / fps for a in arrivals) if arrivals and fps else (),
+        diameters=tuple(diameters),
+        areas=tuple(areas),
+        periods_s=tuple(periods),
+        speeds_mm_s=tuple(speeds),
+        detections=tuple((f, x, y, round(a * to_um * to_um, 2)) for f, x, y, a in points),
+        spans=tuple(spans),
+        inclusion_counts=tuple(acc["inclusions"]),
+    )
 
 
 def settings_summary(settings: dict[str, Any]) -> str:
@@ -337,8 +385,9 @@ def results_cells(result: FileResult, color: str, *, active: bool = True) -> dic
         "diameter": cell(_distribution(result.mean_diameter, result.std_diameter, result.diameters, 1)),
         "area": cell(_distribution(result.mean_area, result.std_area, result.areas, 0)),
         "cv": cell(f"{result.cv_percent:.1f}" if result.diameters else "—"),
-        "rate": cell(_distribution(result.rate_hz, 0.0, [1.0 / p for p in result.periods_s if p > 0], 1)
-                     if result.rate_hz else "—"),
+        "rate": cell((_distribution(result.rate_hz, 0.0, [1.0 / p for p in result.periods_s if p > 0], 1)
+                      + (f'<div class="sub" title="{html.escape(result.rate_note)}">{html.escape(result.rate_note)}</div>'
+                         if result.rate_note else "")) if result.rate_hz else "—"),
         "speed": cell(_distribution(result.speed_mm_s, 0.0, result.speeds_mm_s, 2) if result.speed_mm_s else "—"),
         "analysed": cell(f'{html.escape(result.analyzed_at or "earlier")}'
                          f'<div class="sub" title="{html.escape(summary)}">{html.escape(_short(summary, 48))}</div>'),
@@ -367,6 +416,28 @@ def _distribution(value: float, sd: float, samples, digits: int) -> str:
 
 def chart_color(index: int) -> str:
     return theme.CHART_COLORS[index % len(theme.CHART_COLORS)]
+
+
+def short_names(names: list[str], *, keep: int = 12) -> dict[str, str]:
+    """Each name without the start they all share, so plots say what differs between the samples.
+
+    Recordings are named run_<id>_step01_<stamp>: with the run id gone, step01 and its stamp remain.
+    """
+    distinct = list(dict.fromkeys(names))
+    if len(distinct) < 2:
+        return {name: name for name in names}
+    prefix = 0
+    while all(len(name) > prefix and name[prefix] == distinct[0][prefix] for name in distinct):
+        prefix += 1
+    prefix = distinct[0][:prefix].rfind("_") + 1                    # cut at a word, not mid-way through one
+    prefix = min(prefix, min(len(name) for name in distinct) - keep)
+    if prefix < 4:
+        return {name: name for name in names}
+    return {name: name[prefix:] for name in names}
+
+
+def _names(results: list[FileResult]) -> dict[str, str]:
+    return short_names([result.sample_id for result in results])
 
 
 def histogram_edges(values: list[float], *, max_bins: int = 40, min_bins: int = 8) -> list[float]:
@@ -399,12 +470,13 @@ def diameter_chart(results: list[FileResult]) -> dict[str, Any]:
     edges = histogram_edges(values)
     labels = bin_labels(edges)
     width = edges[1] - edges[0]
+    names = _names(results)
     series = []
     for index, result in enumerate(plotted):
         counts = [0] * len(labels)
         for value in result.diameters:
             counts[min(len(labels) - 1, int((value - edges[0]) / width))] += 1
-        series.append({"name": result.sample_id, "type": "bar", "data": counts, "barMaxWidth": 18,
+        series.append({"name": names[result.sample_id], "type": "bar", "data": counts, "barMaxWidth": 18,
                        "itemStyle": {"color": chart_color(index), "opacity": 0.82},
                        "emphasis": {"focus": "series"}})
     return {
@@ -421,22 +493,29 @@ def diameter_chart(results: list[FileResult]) -> dict[str, Any]:
 
 
 def timeline_chart(results: list[FileResult]) -> dict[str, Any]:
+    """Droplets counted against time since each file's first frame: the slope is the rate.
+
+    Files start at different frames of different recordings, so each is laid from its own
+    start; a steady train is a straight line, a change of rate a bend, a stop a plateau.
+    """
+    names = _names(results)
     series = []
-    for index, result in enumerate(result for result in results if result.spans):
-        data: list[list[float | str]] = []
-        for droplet_id, first_frame, last_frame in result.spans:
-            data.extend(([first_frame, droplet_id], [last_frame, droplet_id], ["-", "-"]))
-        series.append({"name": result.sample_id, "type": "line", "showSymbol": False, "connectNulls": False,
-                       "progressive": 500, "progressiveThreshold": 1000, "silent": True, "data": data,
-                       "lineStyle": {"width": 2, "color": chart_color(index), "opacity": 0.72}})
+    for index, result in enumerate(result for result in results if result.arrivals_s):
+        points = [[round(t, 4), n] for n, t in enumerate(result.arrivals_s, start=1)]
+        if len(points) > 4000:
+            step = len(points) // 4000 + 1
+            points = points[::step] + [points[-1]]
+        series.append({"name": names[result.sample_id], "type": "line", "showSymbol": False, "silent": True,
+                       "data": points, "lineStyle": {"width": 2, "color": chart_color(index)},
+                       "itemStyle": {"color": chart_color(index)}})
     return {
-        "title": _title("Droplet timeline"),
+        "title": _title("Droplets over time"),
         "animation": False,
-        "tooltip": {},
+        "tooltip": {"trigger": "axis"},
         "legend": _legend(),
         "grid": _grid(right=28),
-        "xAxis": _value_axis("frame"),
-        "yAxis": _value_axis("droplet id"),
+        "xAxis": _value_axis("s since the first frame"),
+        "yAxis": _value_axis("droplets"),
         "series": series,
     }
 
@@ -452,11 +531,12 @@ def area_x_chart(results: list[FileResult]) -> dict[str, Any]:
 def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
                   project: Callable[[tuple[float, float, float, float]], list[float] | None],
                   *, invert_y: bool = False) -> dict[str, Any]:
+    names = _names(results)
     series = []
     for index, result in enumerate(results[:8]):
         data = [point for point in (project(detection) for detection in result.detections) if point is not None]
         if data:
-            series.append({"name": result.sample_id, "type": "scatter", "symbolSize": 3, "data": data,
+            series.append({"name": names[result.sample_id], "type": "scatter", "symbolSize": 3, "data": data,
                            "itemStyle": {"color": chart_color(index)}})
     return {
         "title": _title(title),
@@ -473,13 +553,15 @@ def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
 def cv_chart(results: list[FileResult]) -> dict[str, Any]:
     """One bar per sample: the spread of its droplet diameters, as CV in percent."""
     plotted = [result for result in results if result.diameters]
+    names = _names(results)
     return {
         "title": _title("CV of diameter per sample (%)"),
         "animation": False,
         "tooltip": {"trigger": "axis"},
-        "grid": _grid(bottom=58),
-        "xAxis": {"type": "category", "data": [result.sample_id for result in plotted],
-                  "axisLabel": {"rotate": 25, "fontSize": 10, "hideOverlap": True}},
+        "grid": _grid(bottom=48),
+        "xAxis": {"type": "category", "data": [names[result.sample_id] for result in plotted],
+                  "axisLabel": {"rotate": 25, "fontSize": 10, "hideOverlap": True, "width": 90,
+                                "overflow": "truncate"}},
         "yAxis": _value_axis("CV %"),
         "series": [{"type": "bar", "barMaxWidth": 36,
                     "data": [{"value": round(result.cv_percent, 2), "itemStyle": {"color": chart_color(index)}}
@@ -491,6 +573,7 @@ def cv_chart(results: list[FileResult]) -> dict[str, Any]:
 def inclusions_chart(results: list[FileResult]) -> dict[str, Any]:
     """How many droplets of each sample hold 0, 1, 2 ... inclusions; empty for samples without any."""
     keys = sorted({count for result in results for count in result.inclusion_counts})
+    names = _names(results)
     series = []
     for index, result in enumerate(results):
         if not result.inclusion_counts:
@@ -498,7 +581,7 @@ def inclusions_chart(results: list[FileResult]) -> dict[str, Any]:
         counts = {key: 0 for key in keys}
         for value in result.inclusion_counts:
             counts[value] += 1
-        series.append({"name": result.sample_id, "type": "bar", "barMaxWidth": 24,
+        series.append({"name": names[result.sample_id], "type": "bar", "barMaxWidth": 24,
                        "data": [counts[key] for key in keys], "itemStyle": {"color": chart_color(index)}})
     return {
         "title": _title("Inclusions per droplet"),
@@ -539,10 +622,12 @@ def _title(text: str) -> dict[str, Any]:
 
 
 def _legend() -> dict[str, Any]:
-    return {"top": 4, "right": 8, "textStyle": {"fontSize": 9}}
+    """Under the plot, scrolling, each name cut to fit: a sample name can be a whole file name."""
+    return {"bottom": 0, "left": 8, "right": 8, "type": "scroll", "itemWidth": 12, "itemHeight": 8,
+            "textStyle": {"fontSize": 9, "width": 120, "overflow": "truncate"}}
 
 
-def _grid(*, left: int = 58, right: int = 18, top: int = 42, bottom: int = 52) -> dict[str, Any]:
+def _grid(*, left: int = 58, right: int = 18, top: int = 36, bottom: int = 60) -> dict[str, Any]:
     return {"left": left, "right": right, "top": top, "bottom": bottom, "containLabel": True}
 
 
@@ -568,17 +653,21 @@ def export_csv_zip(runs: list[StoredRun], results: list[FileResult],
     Imaging droplets switched off by hand are left out; corrected inclusion counts are written
     with the raw count beside them.
     """
-    wanted = {(result.project, result.engine, result.sample_id) for result in results}
+    wanted = {(result.project, result.engine, result.source_path): result.sample_id for result in results}
     files: dict[str, bytes] = {"summary.csv": _summary_csv(results)}
     for run in runs:
+        jobs = _jobs_by_key(run)
         groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for row in read_raw_rows(run.project_path, run.raw_path, limit=None):
+        for row in iter_raw_rows(run.project_path, run.raw_path):
             if row.get("kind") in {"detection", "droplet", "track", "droplet_geometry"}:
                 groups.setdefault(_row_key(row), []).append(row)
-        for (engine, sample_id), rows in sorted(groups.items()):
-            if (run.project_path.name, engine, sample_id) not in wanted:
+        for key, rows in sorted(groups.items()):
+            engine = key[0]
+            source = str(resolve_project_path(run.project_path, str(jobs.get(key, {}).get("source_path") or "")))
+            sample_id = wanted.get((run.project_path.name, engine, source))
+            if sample_id is None:
                 continue
-            fixes = (corrections or {}).get((engine, sample_id), {})
+            fixes = (corrections or {}).get((engine, source), {})
             files[f"droplets/{_safe(run.project_path.stem)}_{_safe(sample_id)}_{engine}.csv"] = _rows_csv(rows, fixes)
     return zip_bytes(files)
 
@@ -652,12 +741,19 @@ def local_time(stamp: str) -> str:
 
 
 def _row_key(row: dict[str, Any]) -> tuple[str, str]:
+    """A row's file: its id, or the sample it was written for when rows carry no file id."""
     return (str(row.get("engine") or ""),
-            str(row.get("item_id") or row.get("sample_id") or row.get("file_id") or "sample"))
+            str(row.get("file_id") or row.get("item_id") or row.get("sample_id") or "sample"))
 
 
-def _jobs_by_sample(run: StoredRun) -> dict[tuple[str, str], dict[str, Any]]:
-    return {(str(job.get("engine") or ""), str(job.get("sample_id") or "sample")): job for job in run.jobs}
+def _jobs_by_key(run: StoredRun) -> dict[tuple[str, str], dict[str, Any]]:
+    jobs: dict[tuple[str, str], dict[str, Any]] = {}
+    for job in run.jobs:
+        engine = str(job.get("engine") or "")
+        jobs.setdefault((engine, str(job.get("sample_id") or "sample")), job)
+        if job.get("file_id"):
+            jobs[(engine, str(job["file_id"]))] = job
+    return jobs
 
 
 def _run_settings(run: StoredRun, job: dict[str, Any], analysis: dict[str, Any],
