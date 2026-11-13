@@ -50,8 +50,19 @@ The preview shows the video at its native size, scaled down to fit. Set the crop
 and frame limits on it. After a run, the preview draws the detected droplet
 contours and their trajectories over the video, clipped to the crop.
 
+Droplets are found as what is darker than the empty channel. The background is the
+bright side of each pixel over frames sampled across the video, each frame is matched
+to it in brightness (so a lamp that drifts does not matter), and a pixel counts as
+droplet when it is darker than the background by a few times the camera noise. An
+opening the size of a satellite droplet keeps satellites, wall lines and specks off
+the main droplets. Droplets are then followed from frame to frame and counted once
+each as they pass a gate line, which gives the generation rate.
+
 Key settings: microns per pixel, frame rate (taken from the recording when
-known), crop and frame limit.
+known), crop and frame limit; **skip left / right** (% of the width left out, where
+droplets form and where they leave); **gate** (% of the width, where every droplet
+passes once); **satellite size**, **min droplet area** and **threshold × noise**.
+Tick *Show detection stages* to see each step on the preview frame.
 
 ## Imaging (Cellpose)
 

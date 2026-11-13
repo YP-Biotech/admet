@@ -493,6 +493,12 @@ _CACHE_KEY_FIELDS = (
     "roi_y",
     "roi_width",
     "roi_height",
+    "k_sigma",
+    "satellite_px",
+    "min_area",
+    "skip_left_pct",
+    "skip_right_pct",
+    "gate_pct",
 )
 
 

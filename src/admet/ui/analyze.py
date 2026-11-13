@@ -667,6 +667,12 @@ class AnalyzeWorkflowView:
                     self._slider_editor(target, "roi_y", "ROI Y", 0, height - 1)
                     self._slider_editor(target, "roi_width", "ROI W (0 = full)", 0, width)
                     self._slider_editor(target, "roi_height", "ROI H (0 = full)", 0, height)
+                    self._slider_editor(target, "skip_left_pct", "Skip left, % (droplets form here)", 0, 90)
+                    self._slider_editor(target, "skip_right_pct", "Skip right, %", 0, 90)
+                    self._slider_editor(target, "gate_pct", "Gate, % (droplets counted here)", 0, 100, default=50)
+                    self._slider_editor(target, "satellite_px", "Satellite size, px", 3, 60, default=13)
+                    self._slider_editor(target, "min_area", "Min droplet area, px²", 0, 5000, default=150)
+                    self._slider_editor(target, "k_sigma", "Threshold, × noise", 1, 12, default=4)
 
     def _slider_editor(self, row: MatrixRow, key: str, label: str, minimum: int, maximum: int,
                        *, default: int | None = None) -> None:
@@ -735,14 +741,16 @@ class AnalyzeWorkflowView:
             stages = {"error": f"Detection stages failed: {exc}"}
         if stages["error"]:
             return f'<div class="editor-note editor-warning">{html.escape(stages["error"])}</div>'
-        seg = stages["segmentation"]
+        det = stages["detection"]
         captions = {
             "original": "1 · Original (crop)",
-            "background": "2 · Background, from sampled frames",
-            "removed": "3 · Background removed",
-            "threshold": f"4 · Threshold: {stages['threshold_method'] or 'value'} = {stages['threshold']}",
-            "morphology": f"5 · Morphology: closing {seg['closing_t']}, erosion {seg['closing_e']}",
-            "contours": f"6 · Contours: {stages['kept']} kept (green), {stages['dropped']} dropped (red)",
+            "background": "2 · Background: the empty channel, from sampled frames",
+            "matched": "3 · Frame matched to the background's brightness",
+            "darker": "4 · Darker than the background",
+            "threshold": f"5 · Threshold {stages['threshold']} = {det['k_sigma']:g} × noise {stages['noise_sigma']}",
+            "bodies": f"6 · Bodies: satellites under {det['satellite']} px set aside",
+            "droplets": (f"7 · Droplets: {stages['kept']} kept (green), {stages['dropped']} dropped (red), "
+                         f"{stages['satellites']} satellites (yellow); window and gate lines"),
         }
         tiles = "".join(
             f'<figure class="stage-tile"><img src="{_png_src(stages["images"][name])}" alt="{html.escape(caption)}">'
@@ -1554,6 +1562,12 @@ class AnalyzeWorkflowView:
             "roi_y": 0,
             "roi_width": 0,
             "roi_height": 0,
+            "k_sigma": _row_float(row, "k_sigma", 4.0),
+            "satellite_px": _row_int(row, "satellite_px", 13),
+            "min_area": _row_float(row, "min_area", 150.0),
+            "skip_left_pct": _row_float(row, "skip_left_pct", 0.0),
+            "skip_right_pct": _row_float(row, "skip_right_pct", 0.0),
+            "gate_pct": _row_float(row, "gate_pct", 50.0),
         }
         if roi_width or roi_height:
             settings.update(
