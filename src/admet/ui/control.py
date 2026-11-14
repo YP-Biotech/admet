@@ -1187,6 +1187,7 @@ class ControlWindow(QMainWindow):
             preview_layout.addWidget(self._camera_selector_row())
         # The camera's facts sit right over its frame, where they are looked for; the
         # box that used to be drawn on the frame covered most of a 320 x 60 picture.
+        preview_layout.addStretch(1)                     # spare height goes above, not between
         self.camera_strip = QLabel(camera_strip(self.last_metadata, self._camera_name()))
         self.camera_strip.setObjectName("CameraStrip")
         self.camera_strip.setWordWrap(True)
