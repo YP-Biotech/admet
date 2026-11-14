@@ -84,6 +84,7 @@ from admet.ui.theme import STATUS_COLORS, Theme
 from admet.ui.window import (
     connected_devices,
     log_state,
+    live_stats,
     panel_specs,
     structure_changed,
     structure_signature,
@@ -1927,6 +1928,7 @@ class ControlWindow(QMainWindow):
         self.last_result = result
         self.last_metadata = dict(result.metadata)
         self._refresh_runtime_state()
+        self._sync_preview_overlay()
         warning = self._action_result_warning(action, self.last_metadata)
         if warning:
             self._set_status(action, "warning")
@@ -2222,20 +2224,9 @@ class ControlWindow(QMainWindow):
             acknowledge()
 
     def _sync_preview_overlay(self) -> None:
-        if self.preview is None:
-            return
-        elapsed = self.last_metadata.get("camera_record_elapsed")
-        fps = self.last_metadata.get("camera_fps")
-        frames = self.last_metadata.get("camera_recorded_frames")
-        state = "recording" if self.last_metadata.get("camera_recording") else "live"
-        self.preview.set_overlay(
-            (
-                state,
-                f"time {_measurement(elapsed)} s",
-                f"fps {_measurement(fps)}",
-                f"frames {'—' if frames is None else frames}",
-            )
-        )
+        if self.preview is not None:
+            self.preview.set_overlay(live_stats(self.last_metadata),
+                                     recording=bool(self.last_metadata.get("camera_recording")))
 
     def _emergency_stop(self) -> None:
         self._set_status("Emergency stop requested", "danger")
@@ -2629,6 +2620,7 @@ class ControlWindow(QMainWindow):
         def received(result):
             self._fluigent_probe = dict(result.metadata)
             self.last_metadata.update(result.metadata)
+            self._sync_preview_overlay()
             self._render_current_stage()
 
         self.tasks.submit(
@@ -3794,7 +3786,8 @@ class PreviewDisplay(QWidget):
         self.frame_rect = QRect()
         self.message = "No camera frame"
         self._aspect = 480 / 640
-        self._overlay_lines: tuple[str, ...] = ()
+        self._overlay = ""
+        self._overlay_recording = False
 
     def set_frame(self, frame: np.ndarray | None) -> bool:
         if frame is None:
@@ -3812,9 +3805,10 @@ class PreviewDisplay(QWidget):
         self.update()
         return True
 
-    def set_overlay(self, lines: tuple[str, ...]) -> None:
-        self._overlay_lines = tuple(line for line in lines if line)
-        self.update()
+    def set_overlay(self, text: str, *, recording: bool = False) -> None:
+        if (text, recording) != (self._overlay, self._overlay_recording):
+            self._overlay, self._overlay_recording = text, recording
+            self.update()
 
     def hasHeightForWidth(self) -> bool:
         return True
@@ -3874,16 +3868,23 @@ class PreviewDisplay(QWidget):
             Qt.TransformationMode.FastTransformation,
         )
         painter.drawImage(self.frame_rect, scaled)
-        if self._overlay_lines:
-            text = "\n".join(self._overlay_lines)
-            overlay_rect = QRect(self.frame_rect.x() + 10, self.frame_rect.y() + 10, 168, 76)
-            painter.fillRect(overlay_rect, QColor(0, 0, 0, 145))
-            painter.setPen(Qt.GlobalColor.white)
-            painter.drawText(
-                overlay_rect.adjusted(8, 7, -8, -7),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                text,
-            )
+        if self._overlay:
+            # One line, the width of the view, in the black band above the frame when the
+            # frame is wide and low (a 320 x 60 channel view); over the frame's top edge
+            # otherwise. Never a box in the picture.
+            font = painter.font()
+            font.setPointSize(13)
+            font.setBold(True)
+            painter.setFont(font)
+            band_height = painter.fontMetrics().height() + 10
+            if self.frame_rect.y() >= band_height:
+                band = QRect(0, self.frame_rect.y() - band_height, self.width(), band_height)
+            else:
+                band = QRect(self.frame_rect.x(), self.frame_rect.y(), self.frame_rect.width(), band_height)
+                painter.fillRect(band, QColor(0, 0, 0, 150))
+            painter.setPen(QColor(255, 96, 96) if self._overlay_recording else Qt.GlobalColor.white)
+            painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             self._overlay)
         self.frame_painted.emit()
 
 

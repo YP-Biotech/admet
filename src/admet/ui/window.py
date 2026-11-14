@@ -74,6 +74,33 @@ def connected_devices(
     return tuple(devices)
 
 
+def live_stats(metadata: dict[str, Any]) -> str:
+    """What changes while the camera runs, in one line for the frame: state, time, fps, frames.
+
+    Only the live numbers; the camera's settings are in the parameter table already.
+    """
+    if not metadata.get("camera_connected"):
+        return ""
+    fps = metadata.get("camera_fps")
+    rate = f"{float(fps):.0f} fps" if fps else "fps —"
+    if metadata.get("camera_recording"):
+        frames = int(metadata.get("camera_recorded_frames") or 0)
+        parts = [f"REC {_clock(float(metadata.get('camera_record_elapsed') or 0))}", rate,
+                 f"{frames:,} frames".replace(",", " ")]
+        dropped = int(metadata.get("camera_dropped_frames") or 0)
+        if dropped:
+            parts.append(f"{dropped:,} dropped".replace(",", " "))
+        return " · ".join(parts)
+    if metadata.get("camera_live"):
+        return f"LIVE · {rate}"
+    return "connected · not live"
+
+
+def _clock(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
 def structure_signature(*parts: Any) -> tuple[Any, ...]:
     return tuple(parts)
 

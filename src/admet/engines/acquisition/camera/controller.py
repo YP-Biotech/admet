@@ -192,6 +192,7 @@ class CameraController:
             "camera_recording": bool(stats.get("recording", False)),
             "camera_recorded_frames": int(stats.get("frames", 0)),
             "camera_record_elapsed": float(stats.get("elapsed", 0.0)),
+            "camera_dropped_frames": int(stats.get("dropped_frames", 0) or 0),
         }
         metadata.update(self.read_parameters())
         return metadata
