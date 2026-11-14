@@ -560,19 +560,9 @@ class ControlWindow(QMainWindow):
     def _build_top_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("TopPanel")
-        rows = QVBoxLayout(bar)
-        rows.setContentsMargins(16, 9, 16, 9)
-        rows.setSpacing(4)
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 11, 16, 11)
         layout.setSpacing(10)
-        rows.addWidget(row)
-        # The camera's facts live here, the width of the window, not over the frame.
-        self.camera_strip = QLabel(camera_strip({}))
-        self.camera_strip.setObjectName("CameraStrip")
-        self.camera_strip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        rows.addWidget(self.camera_strip)
 
         title = QLabel("admet control")
         title.setObjectName("AppTitle")
@@ -1195,6 +1185,13 @@ class ControlWindow(QMainWindow):
         preview_layout.setSpacing(8)
         if has_feature(stage, "camera") and self._project_ready():
             preview_layout.addWidget(self._camera_selector_row())
+        # The camera's facts sit right over its frame, where they are looked for; the
+        # box that used to be drawn on the frame covered most of a 320 x 60 picture.
+        self.camera_strip = QLabel(camera_strip(self.last_metadata, self._camera_name()))
+        self.camera_strip.setObjectName("CameraStrip")
+        self.camera_strip.setWordWrap(True)
+        self.camera_strip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        preview_layout.addWidget(self.camera_strip)
         if self.preview is None:
             self.preview = PreviewDisplay()
             self.preview.frame_painted.connect(self._acknowledge_camera_frame)
@@ -2237,8 +2234,12 @@ class ControlWindow(QMainWindow):
 
     def _sync_camera_strip(self) -> None:
         strip = getattr(self, "camera_strip", None)
-        if strip is not None:
+        if strip is None:
+            return
+        try:
             strip.setText(camera_strip(self.last_metadata, self._camera_name()))
+        except RuntimeError:                      # the stage was redrawn and took the label with it
+            self.camera_strip = None
 
     def _camera_name(self) -> str:
         cameras = self.last_metadata.get("cameras") or ()
