@@ -1938,6 +1938,7 @@ class ControlWindow(QMainWindow):
         self.last_result = result
         self.last_metadata = dict(result.metadata)
         self._refresh_runtime_state()
+        self._sync_camera_strip()
         warning = self._action_result_warning(action, self.last_metadata)
         if warning:
             self._set_status(action, "warning")
@@ -2223,6 +2224,7 @@ class ControlWindow(QMainWindow):
             self._acknowledge_camera_frame()
             return
         self.preview.set_frame(frame)
+        self._sync_camera_strip()
         self._sync_preview_overlay()
 
     def _acknowledge_camera_frame(self) -> None:
@@ -2640,6 +2642,7 @@ class ControlWindow(QMainWindow):
         def received(result):
             self._fluigent_probe = dict(result.metadata)
             self.last_metadata.update(result.metadata)
+            self._sync_camera_strip()
             self._render_current_stage()
 
         self.tasks.submit(
