@@ -191,7 +191,6 @@ class CameraTests(unittest.TestCase):
 
 class VideoWorkerTests(unittest.TestCase):
     def test_writes_one_raw_file_and_encodes_it_once_every_frame_is_written(self):
-        import json
         import threading
 
         encoded = {}
@@ -216,8 +215,7 @@ class VideoWorkerTests(unittest.TestCase):
             self.assertEqual(encoded["bytes"], bytes([0, 1, 2, 4, 3, 3, 3, 3]))
             self.assertEqual(encoded["shape"], (2, 2, 30.0))
             self.assertFalse((Path(tmpdir) / "sample.raw").exists())          # gone once the video is whole
-            info = json.loads((Path(tmpdir) / "sample.video.json").read_text())
-            self.assertEqual((info["status"], info["frames_written"], info["frames_dropped"]), ("done", 2, 0))
+            self.assertFalse((Path(tmpdir) / "sample.video.json").exists())   # the video carries the record now
 
     def test_a_recording_left_unencoded_is_finished_later_with_its_whole_frames(self):
         import json
@@ -240,8 +238,7 @@ class VideoWorkerTests(unittest.TestCase):
 
             self.assertEqual(done, [str(camera / "cut.avi")])
             self.assertEqual(seen["size"], 12)
-            info = json.loads((camera / "cut.video.json").read_text())
-            self.assertEqual((info["status"], info["frames_written"]), ("done", 3))
+            self.assertFalse((camera / "cut.video.json").exists())             # finished: nothing left to hold
             self.assertEqual(encode_leftovers(camera, encoder=fake_encoder), [])   # nothing left
 
 

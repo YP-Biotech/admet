@@ -39,8 +39,12 @@ class StepVideo:
         fps: float,
         writer_factory: Callable[[Path, str, int, int, float], Any],
         on_failure: Callable[[str], None] = lambda message: None,
+        context: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._on_failure = on_failure
+        # What is true as a part starts -- project, run, camera, setpoints -- asked for
+        # then, since the setpoints are the step's own.
+        self._context = context
         self._steps = steps
         self._camera = camera
         self._video_dir = Path(video_dir)
@@ -97,6 +101,14 @@ class StepVideo:
         name = f"{self._label}_step{index + 1:02d}" + (f"_part{part}" if part > 1 else "") + f"_{stamp}"
         width, height = self._frame_size
         writer = self._writer_factory(self._video_dir, name, width, height, self._fps)
+        started_at = datetime.now().isoformat(timespec="seconds")
+        record = {**(getattr(writer, "record", None) or {}), **(self._context() if self._context else {}),
+                  "recording_id": name, "step": index + 1, "step_name": self._steps[index].name, "part": part,
+                  "started_at": started_at, "limit_s": round(remaining, 3)}
+        try:
+            writer.record = record
+        except AttributeError:
+            pass
         self._camera.set_recording_complete_callback(self._camera_stopped)
         if not self._camera.start_recording(writer, max_time=remaining):
             message = f"could not start video for step {index + 1} ({self._steps[index].name})"
@@ -107,7 +119,7 @@ class StepVideo:
             self._on_failure(message)
             return
         self._open = {"index": index, "part": part, "name": name, "started": time.monotonic(),
-                      "limit": remaining, "started_at": datetime.now().isoformat(timespec="seconds")}
+                      "limit": remaining, "started_at": started_at}
 
     def _camera_stopped(self) -> None:
         """The camera reached the time limit and closed the file itself."""
