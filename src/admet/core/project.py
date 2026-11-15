@@ -351,20 +351,60 @@ class ProjectStore:
 
     @_locked
     def attach_encoded_video(self, video_path: str | Path) -> bool:
-        """List a recording's video once its encoding has finished and the file is there."""
+        """List a recording's video once its encoding has finished and the file is there.
+
+        The frames the video carries in its own record (written, dropped) are taken over
+        the recording's estimate; the writer counted them.
+        """
         recording_id = Path(video_path).stem
         metadata_path = self.records_dir / "metadata.json"
         metadata = _read_metadata(metadata_path, default={"recordings": []})
         recordings = [item for item in metadata.get("recordings", []) if isinstance(item, dict)]
         for index, entry in enumerate(recordings):
             if entry.get("recording_id") == recording_id:
-                updated = self._normalize_control_recording({**entry, "video_path": str(video_path)})
+                updated = self._normalize_control_recording(
+                    {**entry, **_facts_from_tag(video_path), "video_path": str(video_path)})
                 recordings[index] = updated
                 metadata.update({"updated": _local_timestamp(), "recordings": recordings})
                 _write_metadata(metadata_path, metadata)
                 self._register_control_recording(updated)
+                self.save()
                 return True
         return False
+
+    @_locked
+    def register_tagged_recordings(self, only: Path | None = None) -> list[str]:
+        """List every video in records/camera that carries its record and is not listed yet.
+
+        The video is the truth; the manifest only points at it. A manifest that lost
+        a recording -- a run that ended badly, a file copied in from another machine --
+        gets it back from the file. The ids of what was listed.
+        """
+        from admet.engines.acquisition.camera.tags import read_recording_tag
+
+        listed = {self.resolve_file_path(file).resolve() for file in self.session.files}
+        candidates = [only] if only is not None else sorted((self.records_dir / "camera").glob("*.avi"))
+        added = []
+        for video in candidates:
+            if not video.is_file() or video.resolve() in listed:
+                continue
+            tag = read_recording_tag(video)
+            if not tag:
+                continue
+            recording = recording_from_tag(tag, video)
+            metadata_path = self.records_dir / "metadata.json"
+            metadata = _read_metadata(metadata_path, default={"recordings": []})
+            recordings = [item for item in metadata.get("recordings", []) if isinstance(item, dict)]
+            normalized = self._normalize_control_recording(recording)
+            recordings = _upsert_recording(recordings, normalized)
+            metadata.update({"updated": _local_timestamp(), "report_dir": "records",
+                             "recording_count": len(recordings), "recordings": recordings})
+            _write_metadata(metadata_path, metadata)
+            self._register_control_recording(normalized)
+            added.append(normalized["recording_id"])
+        if added:
+            self.save()
+        return added
 
     def _normalize_control_recording(self, recording: dict[str, Any]) -> dict[str, Any]:
         recording_id = str(recording.get("recording_id") or "").strip()
@@ -577,7 +617,7 @@ def _find_item(items: tuple[SessionItem, ...], item_id: str) -> SessionItem | No
 def _video_metadata(recording: dict[str, Any]) -> dict[str, Any]:
     width = int(float(recording.get("width") or 0))
     height = int(float(recording.get("height") or 0))
-    return {
+    metadata = {
         "video_path": str(recording.get("video_path") or ""),
         "started_at": str(recording.get("started_at") or ""),
         "stopped_at": str(recording.get("stopped_at") or ""),
@@ -591,6 +631,50 @@ def _video_metadata(recording: dict[str, Any]) -> dict[str, Any]:
         "converted_fps": float(recording.get("converted_fps") or 0.0),
         "fluidics_csv": str(recording.get("fluidics_csv") or ""),
     }
+    for key in ("frames_dropped", "complete", "step", "step_name", "part", "run_id", "camera", "channels"):
+        if recording.get(key) is not None:
+            metadata[key] = recording[key]
+    return metadata
+
+
+def _facts_from_tag(video_path: str | Path) -> dict[str, Any]:
+    """What the video's own record says about its frames; empty when it carries none."""
+    from admet.engines.acquisition.camera.tags import read_recording_tag
+
+    tag = read_recording_tag(video_path) or {}
+    facts = {key: tag[key] for key in ("frames_written", "frames_dropped", "complete", "camera", "channels")
+             if key in tag}
+    if tag.get("frames_captured"):
+        facts["frames_recorded"] = tag["frames_captured"]
+    return facts
+
+
+def recording_from_tag(tag: dict[str, Any], video_path: Path) -> dict[str, Any]:
+    """A recording entry, as append_control_recording takes it, from a video's own record."""
+    frames = tag.get("frames_written") or tag.get("frames_captured")
+    started, stopped = str(tag.get("started_at") or ""), str(tag.get("stopped_at") or tag.get("encoded_at") or "")
+    duration = float(tag.get("duration_s") or 0.0)
+    if not duration and started and stopped:
+        try:
+            duration = max(0.0, (datetime.fromisoformat(stopped) - datetime.fromisoformat(started)).total_seconds())
+        except ValueError:
+            duration = 0.0
+    recording = {
+        "recording_id": str(tag.get("recording_id") or video_path.stem),
+        "video_path": str(video_path),
+        "fluidics_csv": str(tag.get("fluidics_csv") or ""),
+        "started_at": started, "stopped_at": stopped, "duration_s": round(duration, 3),
+        "width": tag.get("width"), "height": tag.get("height"),
+        "frames_recorded": tag.get("frames_captured"), "frames_written": tag.get("frames_written"),
+        "acquisition_fps": float(tag.get("acquisition_fps") or (frames / duration if frames and duration else 0.0)),
+        "converted_fps": float(tag.get("file_fps") or 0.0),
+        "listed_from": "video",
+    }
+    for key in ("frames_dropped", "complete", "step", "step_name", "part", "run_id", "protocol", "camera",
+                "channels", "software_version"):
+        if tag.get(key) is not None:
+            recording[key] = tag[key]
+    return recording
 
 
 def _csv_metadata(recording: dict[str, Any]) -> dict[str, Any]:

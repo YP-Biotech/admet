@@ -189,6 +189,7 @@ class Admet:
         self._require_project_idle()
         path = session_path(path)
         self.project = ProjectStore.create(path, project_id or path.stem)
+        self._tell_engine_project()
         return self.project
 
     def open_project(self, path: str | Path) -> ProjectStore:
@@ -198,12 +199,32 @@ class Admet:
         if not (path / "manifest.json").is_file():
             raise NoProject(f"{path} is not a project: no manifest.json in it")
         self.project = ProjectStore(path)
+        self._tell_engine_project()
         self._encode_leftovers()
+        self._list_tagged_recordings()
         return self.project
 
     def close_project(self) -> None:
         self._require_project_idle()
         self.project = None
+        self._tell_engine_project()
+
+    def _tell_engine_project(self) -> None:
+        """The acquisition engine stamps recordings with the project they belong to."""
+        engine = self._engines.get("acquisition")
+        if engine is not None and hasattr(engine, "recording_context"):
+            engine.recording_context = (
+                {"project_id": self.project.session.project_id} if self.project is not None else {})
+
+    def _list_tagged_recordings(self) -> None:
+        """Any video in records/camera that carries its record but is not listed gets listed."""
+        try:
+            listed = self.project.register_tagged_recordings()
+        except Exception:
+            log.exception("could not list the recordings found in records/camera")
+            return
+        if listed:
+            log.info("listed %d recording(s) found in records/camera: %s", len(listed), ", ".join(listed))
 
     def _require_project_idle(self):
         engine = self._engines.get("acquisition")
@@ -275,15 +296,21 @@ class Admet:
             if hasattr(engine, "on_video_finished"):
                 engine.on_video_finished = self._video_finished
             self._engines[engine_id] = engine
+            self._tell_engine_project()
         return self._engines[engine_id]
 
     def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
-        """A video finished encoding after its recording stopped: list it with its recording."""
+        """A video finished encoding after its recording stopped: list it with its recording.
+
+        A video whose recording was never listed (its run ended badly) is listed from
+        the record the video carries, so no finished video goes unlisted.
+        """
         project = self.project
         if not encoded or project is None or Path(video_path).parent != project.records_dir / "camera":
             return
         try:
-            project.attach_encoded_video(video_path)
+            if not project.attach_encoded_video(video_path):
+                project.register_tagged_recordings(only=Path(video_path))
         except Exception:
             log.exception("could not list the encoded video %s", video_path)
 
@@ -565,7 +592,10 @@ class Admet:
                 })
                 if plan["recording"]["video_steps"]:
                     # Video is per step, opened and closed by the steps themselves.
-                    engine.arm_step_video(self.project.records_dir / "camera", plan["run_id"])
+                    engine.arm_step_video(self.project.records_dir / "camera", plan["run_id"], {
+                        "project_id": self.project.session.project_id, "run_id": plan["run_id"],
+                        "protocol": str(plan.get("name") or plan.get("protocol_name") or plan.get("operation_id") or ""),
+                    })
                 artifact = self._run_artifacts[plan_id]
                 artifact["recording"] = True
                 artifact["artifacts"]["fluidics_csv"] = recording.get("csv_path")
@@ -627,8 +657,12 @@ class Admet:
                          if video["video_path"] else ""}
                         for video in videos]
                     for video in videos:
-                        if video["video_path"]:
+                        if not video["video_path"]:
+                            continue
+                        try:                       # one video's record failing must not lose the others
                             self._keep_recording(video)
+                        except Exception:
+                            log.exception("could not list the video of step %s", video.get("step"))
         finally:
             self._save_plan(plan)
             store = self._plan_store(plan["plan_id"])
