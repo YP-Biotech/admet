@@ -544,6 +544,17 @@ class AnalyzeWorkflowView:
                               else "unknown: set FPS on 2. Analyse"))
                 if captured and frames:
                     facts.append(("Duration", f"{frames / captured:.1f} s"))
+                record = _video_record(source) or {}
+                camera = record.get("camera") or {}
+                if camera.get("exposure_us") is not None:
+                    facts.append(("Exposure", f"{float(camera['exposure_us']):g} µs (from the video)"))
+                if camera.get("pixel_size_um"):
+                    facts.append(("Sensor pixel", f"{float(camera['pixel_size_um']):g} µm"))
+                if record.get("frames_dropped"):
+                    facts.append(("Dropped", f"{record['frames_dropped']} frames (the disk fell behind)"))
+                if record.get("step_name"):
+                    facts.append(("Step", f"{record.get('step')} {record['step_name']}"
+                                  + (f", part {record['part']}" if record.get("part", 1) > 1 else "")))
         else:
             facts.append(("Images", str(_image_count(source))))
         analyzed = self._analyzed_at(row)
@@ -1932,16 +1943,26 @@ def _png_src(image: Any) -> str:
 
 
 def _recorded_capture_fps(row: MatrixRow) -> float:
-    """The capture rate control recorded for this video, or 0 when it was not recorded by control."""
+    """The capture rate the recording carries: in the project's listing, else in the video itself."""
+    source = Path(row.source_path).resolve()
     try:
         store = ProjectStore(session_path(row.project_path))
+        for file in store.files_by_role(("control_video",)):
+            if store.resolve_file_path(file).resolve() == source:
+                return float(file.metadata.get("acquisition_fps") or 0.0)
     except Exception:
-        return 0.0
-    source = Path(row.source_path).resolve()
-    for file in store.files_by_role(("control_video",)):
-        if store.resolve_file_path(file).resolve() == source:
-            return float(file.metadata.get("acquisition_fps") or 0.0)
-    return 0.0
+        pass
+    return float((_video_record(source) or {}).get("acquisition_fps") or 0.0)
+
+
+def _video_record(source: Path) -> dict[str, Any] | None:
+    """The record a video carries about itself, when it was made by control."""
+    from admet.engines.acquisition.camera.tags import read_recording_tag
+
+    try:
+        return read_recording_tag(source)
+    except Exception:
+        return None
 
 
 # -- the stored analysis drawn over a frame ---------------------------------------------
