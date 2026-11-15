@@ -52,3 +52,14 @@ Every run records fluidics (pressure and flow of each channel) to
 `records/fluidics/`. Steps marked `"record": true` also record video, one file per
 step (see [Video](../protocols/format#video)). The run's
 `summary.json` points at both and holds the rig mapping and corrections in force.
+
+Each video carries its own record inside the file (the AVI's `INFO` comment): the
+project and run it belongs to, the step and part, when it started, the camera as it
+was set (model, exposure, gain, binning, pixel size, frame rate), each channel's
+set point, and how many frames were captured, written and dropped. Frames the disk
+cannot keep up with are counted, never a reason to stop: a recording with gaps is
+still listed, marked incomplete. The project manifest is only an index of these
+records — a video it has forgotten (a run that ended badly, a file copied in from
+another machine) is listed again from the file when the project is opened, and
+`admet check <project>` reports such videos (`--fix` lists them). No side file is
+left once the video is whole.
