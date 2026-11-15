@@ -1,10 +1,15 @@
 """Camera frames to a video file.
 
 Frames are appended to one raw file as they arrive, then ffmpeg turns that file
-into the video once every queued frame is written. Beside the video, a small
-<name>.video.json keeps what only an expert needs: frames captured, written and
-dropped, and how the encoding went. If an encoding did not finish, the raw file
-and its .video.json stay, and encode_leftovers() finishes it later.
+into the video once every queued frame is written, and writes the recording's
+record into the video itself (see tags.py): what it is, the camera's settings,
+frames captured, written and dropped. While the raw file waits, a small
+<name>.video.json holds the same record; it goes once the video is whole. If an
+encoding did not finish, the raw file and its .video.json stay, and
+encode_leftovers() finishes it later.
+
+Frames the disk cannot keep up with are dropped and counted, never a reason to
+stop: a recording with gaps is still the recording.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import logging
 import subprocess
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -21,6 +27,7 @@ from threading import Event, Lock, Thread
 import numpy as np
 
 from .constants import QUEUE_GET_TIMEOUT, WRITER_QUEUE_SIZE
+from .tags import ffmpeg_metadata_args
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +51,7 @@ class VideoWorker:
         fps: float,
         *,
         encoder: Encoder | None = None,
+        record: dict | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.prefix = prefix
@@ -52,6 +60,9 @@ class VideoWorker:
         self.fps = fps
         self.encoder = encoder
         self.on_finished: Finished | None = None
+        # What the recording is, beyond its frames: written into the video at encode.
+        self.record: dict = dict(record or {})
+        self.started_at = ""
 
         self.raw_path = self.output_dir / f"{prefix}.raw"
         self.info_path = self.output_dir / f"{prefix}.video.json"
@@ -67,6 +78,7 @@ class VideoWorker:
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self._file = self.raw_path.open("wb")
+            self.started_at = datetime.now().isoformat(timespec="seconds")
             _write_info(self.info_path, self._info("recording"))
             self._stop_event.clear()
             self.frame_count = self.written = 0
@@ -140,7 +152,9 @@ class VideoWorker:
             "width": self.width, "height": self.height, "fps": self.fps,
             "frames_captured": self.frame_count, "frames_written": self.written,
             "frames_dropped": self.frame_count - self.written, "status": status,
+            "started_at": self.started_at,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "record": dict(self.record),
         }
 
 
@@ -171,13 +185,31 @@ def _encode_raw(info_path: Path, info: dict, raw: Path, video: Path, encoder: En
     if not whole:
         return _finish(info_path, info, False, "no whole frame in the raw file")
     info["frames_written"] = whole
-    encoded, reason = (encoder or _ffmpeg)(raw, video, int(info["width"]), int(info["height"]), float(info["fps"]))
+    encode = encoder or partial(_ffmpeg, record=tag_record(info))
+    encoded, reason = encode(raw, video, int(info["width"]), int(info["height"]), float(info["fps"]))
     if encoded:
         raw.unlink(missing_ok=True)
         log.info("Encoded %s from %d frames", video.name, whole)
     else:
         log.error("Encoding %s failed: %s; its raw frames are kept at %s", video.name, reason, raw)
     return _finish(info_path, info, encoded, reason)
+
+
+def tag_record(info: dict) -> dict:
+    """The record the video carries: what the writer counted, and what it was told it was recording."""
+    captured = int(info.get("frames_captured") or 0)
+    written = int(info.get("frames_written") or 0)
+    return {
+        **{key: value for key, value in (info.get("record") or {}).items()},
+        "recording_id": (info.get("record") or {}).get("recording_id") or Path(str(info.get("video", ""))).stem,
+        "width": int(info.get("width") or 0), "height": int(info.get("height") or 0),
+        "file_fps": float(info.get("fps") or 0.0),
+        "frames_captured": captured, "frames_written": written,
+        "frames_dropped": max(0, captured - written) if captured else int(info.get("frames_dropped") or 0),
+        "complete": not captured or written >= captured,
+        "started_at": info.get("started_at") or (info.get("record") or {}).get("started_at", ""),
+        "encoded_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 def encode_leftovers(camera_dir: Path, on_finished: Finished | None = None,
@@ -202,25 +234,30 @@ def encode_leftovers(camera_dir: Path, on_finished: Finished | None = None,
     return done
 
 
-def _ffmpeg(raw: Path, video: Path, width: int, height: int, fps: float) -> tuple[bool, str]:
-    partial = video.with_name(video.name + ".part")   # the video appears only once it is whole
+def _ffmpeg(raw: Path, video: Path, width: int, height: int, fps: float,
+            record: dict | None = None) -> tuple[bool, str]:
+    part = video.with_name(video.name + ".part")   # the video appears only once it is whole
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pixel_format", "gray",
            "-video_size", f"{width}x{height}", "-framerate", str(fps), "-i", str(raw),
-           "-c:v", "rawvideo", "-pix_fmt", "gray", "-f", "avi", str(partial)]
+           "-c:v", "rawvideo", "-pix_fmt", "gray", "-f", "avi",
+           *(ffmpeg_metadata_args(record) if record else []), str(part)]
     try:
         done = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     except OSError as exc:
         return False, f"ffmpeg could not start: {exc}"
     if done.returncode != 0:
-        partial.unlink(missing_ok=True)
+        part.unlink(missing_ok=True)
         lines = (done.stderr or "").strip().splitlines()
         return False, lines[-1] if lines else f"ffmpeg exited with {done.returncode}"
-    partial.replace(video)
+    part.replace(video)
     return True, ""
 
 
 def _finish(info_path: Path, info: dict, encoded: bool, reason: str) -> tuple[bool, str]:
-    info.update({"status": "done" if encoded else "failed", "reason": reason,
+    if encoded:
+        Path(info_path).unlink(missing_ok=True)     # the video now carries the record itself
+        return True, ""
+    info.update({"status": "failed", "reason": reason,
                  "updated_at": datetime.now().isoformat(timespec="seconds")})
     _write_info(info_path, info)
     return encoded, reason

@@ -217,10 +217,17 @@ class AcquisitionEngine:
         # Told when a video's encoding has finished, after the recording itself stopped.
         self.on_video_finished: Callable[[str, bool, str], None] | None = None
 
+        # Where a recording belongs (project, run): the service says, the engine does not know.
+        self.recording_context: dict[str, Any] = {}
+
         def writer_factory(*args):
             writer = base_writer_factory(*args)
             if hasattr(writer, "on_finished"):
                 writer.on_finished = self._video_finished
+            try:
+                writer.record = {**self.recording_facts(), "recording_id": args[1] if len(args) > 1 else ""}
+            except (AttributeError, Exception):
+                log.debug("writer takes no record", exc_info=True)
             return writer
 
         self._writer_factory = writer_factory
@@ -642,9 +649,50 @@ class AcquisitionEngine:
         if self.on_video_finished is not None:
             self.on_video_finished(video_path, encoded, reason)
 
-    def arm_step_video(self, video_dir: str | Path, label: str) -> None:
-        """Let the next protocol record its record steps into video_dir, named after label."""
-        self._step_video_target = {"video_dir": Path(video_dir), "label": label}
+    def arm_step_video(self, video_dir: str | Path, label: str, context: dict[str, Any] | None = None) -> None:
+        """Let the next protocol record its record steps into video_dir, named after label.
+
+        CONTEXT is what the caller knows about the run (project, run id) and the
+        engine does not; it goes into every step video's record.
+        """
+        self._step_video_target = {"video_dir": Path(video_dir), "label": label, "context": dict(context or {})}
+
+    def recording_facts(self) -> dict[str, Any]:
+        """What a recording should carry about this moment: the camera as set, the channels as set.
+
+        Nothing is invented: a value the camera or the rig does not report is left out.
+        """
+        from admet import __version__
+
+        from .camera.tags import pixel_size_um
+
+        facts: dict[str, Any] = {"software_version": __version__, **self.recording_context}
+        try:
+            camera = self._camera.observation()
+        except Exception:
+            camera = {}
+        if camera.get("connected"):
+            model = camera.get("model")
+            facts["camera"] = {key: camera.get(key) for key in (
+                "model", "serial_number", "frame_width", "frame_height", "pixel_format",
+                "configured_frame_rate_hz", "exposure_us", "gain") if camera.get(key) is not None}
+            parameters = self._camera.read_parameters().get("camera_parameters", {})
+            binning = tuple(int((parameters.get(name) or {}).get("value") or 1)
+                            for name in ("BinningHorizontal", "BinningVertical"))
+            facts["camera"]["binning"] = list(binning)
+            if pixel_size_um(model) is not None:
+                facts["camera"]["pixel_size_um"] = pixel_size_um(model) * max(binning)
+        if self.hardware.state.connected:
+            channels = []
+            for index, channel in enumerate(self.channel_manager.channels):
+                label = FLUIDIC_CHANNEL_LABELS[index] if index < len(FLUIDIC_CHANNEL_LABELS) else ""
+                channels.append({
+                    "index": index, "label": label, "mode": channel.mode,
+                    "flow_ul_min": channel.active_setpoint if channel.mode == "flow" else None,
+                    "pressure_mbar": channel.pressure_setpoint if channel.mode != "flow" else None,
+                })
+            facts["channels"] = channels
+        return facts
 
     def step_videos(self) -> list[dict[str, Any]]:
         """The videos the last protocol recorded, one per step part."""
@@ -669,11 +717,13 @@ class AcquisitionEngine:
                 raise RuntimeError("this protocol records video but no recording folder was set")
             if not self.camera_live:
                 raise RuntimeError("this protocol records video; connect the camera and start Live first")
+            run_context = dict(target.get("context") or {})
             self._step_video = StepVideo(
                 steps, self._camera.acquisition, video_dir=target["video_dir"], label=target["label"],
                 frame_size=self._camera.recording_frame_size({"camera_width": 640, "camera_height": 480}),
                 fps=24.0, writer_factory=self._video_writer_factory,
                 on_failure=lambda _message: self.pause_pipeline(),
+                context=lambda: {**self.recording_facts(), **run_context},
             )
         step_video = self._step_video
         sensor_to_channel = {

@@ -28,17 +28,33 @@ class StepVideoTests(unittest.TestCase):
         self.camera = FakeCameraAcquisition()
         self.failures = []
         self.limits = []
+        self.writers = []
         start = self.camera.start_recording
 
         def start_and_note_limit(writer, *, max_frames=None, max_time=None):
             self.limits.append(max_time)
+            self.writers.append(writer)
             return start(writer, max_frames=max_frames, max_time=max_time)
 
         self.camera.start_recording = start_and_note_limit
 
-    def video(self, steps):
+    def video(self, steps, context=None):
         return StepVideo(steps, self.camera, video_dir=self.dir, label="run_ab12", frame_size=(16, 12), fps=24.0,
-                         writer_factory=FakeVideoWriter, on_failure=self.failures.append)
+                         writer_factory=FakeVideoWriter, on_failure=self.failures.append, context=context)
+
+    def test_each_part_carries_the_run_and_its_step_in_its_record(self):
+        video = self.video([step("prime"), step("collect", record=True)],
+                           context=lambda: {"project_id": "study", "run_id": "run_ab12", "channels": [{"label": "oil"}]})
+        video.on_event(event(1, name="collect"))
+        video.on_event(event(1, name="collect", state="paused"))
+        video.on_event(event(1, name="collect"))
+
+        records = [writer.record for writer in self.writers]
+        self.assertEqual([r["part"] for r in records], [1, 2])
+        self.assertEqual((records[0]["project_id"], records[0]["run_id"], records[0]["step"], records[0]["step_name"]),
+                         ("study", "run_ab12", 2, "collect"))
+        self.assertEqual(records[1]["channels"], [{"label": "oil"}])
+        self.assertTrue(records[1]["recording_id"].startswith("run_ab12_step02_part2_"))
 
     def test_only_record_steps_record_and_never_at_their_gate(self):
         video = self.video([step("prime"), step("collect", record=True)])
