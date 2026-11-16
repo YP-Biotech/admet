@@ -4,11 +4,26 @@ import logging
 import time
 from collections.abc import Callable
 from threading import Event, Thread
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
+from .constants import GRAB_BUFFER_MEMORY, GRAB_BUFFERS_MAX, GRAB_BUFFERS_MIN
+
 log = logging.getLogger(__name__)
+
+
+def bytes_per_pixel(pixel_format: Any) -> float:
+    """Bytes one pixel takes on the wire: Mono8 1, Mono10 and Mono12 2, the packed Mono10p 1.25."""
+    name = str(pixel_format or "Mono8")
+    if name.endswith("p"):
+        return int("".join(ch for ch in name if ch.isdigit()) or 8) / 8
+    return 2.0 if any(bits in name for bits in ("10", "12", "16")) else 1.0
+
+
+def grab_buffers(frame_bytes: int) -> int:
+    """How many frames pylon keeps for us: the memory budget's worth, between the bounds."""
+    return max(GRAB_BUFFERS_MIN, min(GRAB_BUFFERS_MAX, GRAB_BUFFER_MEMORY // max(int(frame_bytes), 1)))
 
 
 def as_8bit(frame: np.ndarray) -> np.ndarray:

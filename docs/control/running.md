@@ -64,3 +64,8 @@ records — a video it has forgotten (a run that ended badly, a file copied in f
 another machine) is listed again from the file when the project is opened, and
 `admet check <project>` reports such videos (`--fix` lists them). No side file is
 left once the video is whole.
+
+To check that a machine keeps up with the camera, run `uv run python
+tools/camera_bench.py` with the camera connected and control closed; `--contend`
+adds the load the window puts on the interpreter while it paints. It says whether
+every frame reached the disk.

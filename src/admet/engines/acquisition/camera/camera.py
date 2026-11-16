@@ -107,7 +107,6 @@ class Camera:
             self.device.UserSetSelector.Value = "Default"
             self.device.UserSetLoad.Execute()
             self.set_parameter("DeviceLinkThroughputLimitMode", "Off")
-            self.set_parameter("MaxNumBuffer", 50)
             for auto_feature in ("ExposureAuto", "GainAuto", "BalanceWhiteAuto"):
                 self.set_parameter(auto_feature, "Off")
         except Exception as exc:
@@ -180,13 +179,14 @@ class Camera:
             return {}
         return {name: self.get_parameter(name) for name in params}
 
-    def start_grabbing(self, *, latest_only: bool = True) -> None:
+    def start_grabbing(self, *, latest_only: bool = True, buffers: int | None = None) -> None:
         if not self.device:
             return
         if self.device.IsGrabbing():
             self._is_grabbing = True
             return
 
+        self.set_parameter("MaxNumBuffer", buffers or self.grab_buffers())
         pylon = self._pylon_module()
         strategy = pylon.GrabStrategy_LatestImageOnly if latest_only else pylon.GrabStrategy_OneByOne
         try:
@@ -244,6 +244,16 @@ class Camera:
             converter.OutputPixelFormat = pylon.PixelType_Mono8
             self._mono8_converter = converter
         return self._mono8_converter
+
+    def grab_buffers(self) -> int:
+        """Buffers for the frame as the camera is set now."""
+        from .acquisition import bytes_per_pixel, grab_buffers
+
+        def value(name: str, default: Any) -> Any:
+            return self.get_parameter(name, value_only=True).get("value", default)
+
+        return grab_buffers(int(value("Width", 640)) * int(value("Height", 480))
+                            * bytes_per_pixel(value("PixelFormat", "Mono8")))
 
     def get_resulting_framerate(self) -> float:
         for name in ("ResultingFrameRate", "ResultingFrameRateAbs"):

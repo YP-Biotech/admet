@@ -28,7 +28,7 @@ from threading import Event, Lock, Thread
 import numpy as np
 
 from .acquisition import as_8bit
-from .constants import QUEUE_GET_TIMEOUT, WRITER_QUEUE_SIZE
+from .constants import QUEUE_GET_TIMEOUT, WRITER_BATCH, WRITER_QUEUE_SIZE
 from .tags import ffmpeg_metadata_args
 
 log = logging.getLogger(__name__)
@@ -138,14 +138,19 @@ class VideoWorker:
     def _writer_thread(self) -> None:
         while not self._stop_event.is_set() or not self.queue.empty():
             try:
-                frame = self.queue.get(timeout=QUEUE_GET_TIMEOUT)
+                frames = [self.queue.get(timeout=QUEUE_GET_TIMEOUT)]
             except Empty:
                 continue
+            while len(frames) < WRITER_BATCH:          # whatever else is waiting goes in the same write
+                try:
+                    frames.append(self.queue.get_nowait())
+                except Empty:
+                    break
             try:
-                self._file.write(as_8bit(frame).tobytes())
-                self.written += 1
+                self._file.write(b"".join(as_8bit(frame).tobytes() for frame in frames))
+                self.written += len(frames)
             except Exception as exc:
-                log.error("%s: a frame could not be written: %s", self.prefix, exc)
+                log.error("%s: %d frames could not be written: %s", self.prefix, len(frames), exc)
 
     def _encode(self) -> None:
         encoded, reason = encode_recording(self.info_path, self.encoder)

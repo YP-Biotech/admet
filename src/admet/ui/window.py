@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from admet.engines.acquisition.camera.acquisition import bytes_per_pixel  # noqa: F401  (the UI's name for it)
+
 from admet.workflows import Stage
 
 
@@ -187,13 +189,6 @@ def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float 
     if focus is not None:
         parts.append(f"focus {focus * 100:.0f}%")        # last, so the focus bar sits next to it
     return NERD_SEPARATOR.join(parts)
-
-
-def bytes_per_pixel(pixel_format: Any) -> float:
-    name = str(pixel_format or "Mono8")
-    if name.endswith("p"):                       # packed: Mono10p is 10 bits a pixel, Mono12p 12
-        return int("".join(ch for ch in name if ch.isdigit()) or 8) / 8
-    return 2.0 if any(bits in name for bits in ("10", "12", "16")) else 1.0
 
 
 def _clock(seconds: float) -> str:
