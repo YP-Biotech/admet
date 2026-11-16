@@ -581,10 +581,13 @@ class ControlWindow(QMainWindow):
         layout.addWidget(self.project_badge)
         for label, callback in (
             ("New Project", self._new_project),
+            ("Clone Project", self._clone_project),
             ("Save Project", self._save_project),
         ):
             button = ui.button(label)
             button.clicked.connect(callback)
+            button.setToolTip("A new project with this one's settings and calibration, none of its data"
+                              if label == "Clone Project" else "")
             layout.addWidget(button)
         return bar
 
@@ -816,6 +819,41 @@ class ControlWindow(QMainWindow):
         self._set_status("Project created", "success")
         self._notify("Project created", "success")
         self._append_log(f"project: created {self.project_path}")
+        self._reset_project_workflow()
+        self._load_rig_calibration()
+        self._render_current_stage()
+
+    def _clone_project(self) -> None:
+        """Start the next project where this one leaves off: same rig set-up, no data."""
+        if self.tasks.busy:
+            self._notify("Wait for the current command before changing project.", "warning")
+            return
+        if self.api.session is None:
+            self._notify("Open a project to clone its settings.", "warning")
+            return
+        source = self.api.session.project_id
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            f"Clone {source} into a new admet project",
+            str(session_path(Path.cwd() / f"{source}_{time.strftime('%Y%m%d_%H%M%S')}")),
+            "admet projects (*.admetp)",
+        )
+        if not path:
+            return
+        target = session_path(Path(path))
+        try:
+            self._flush_measurements()
+            self.api.save_project(checkup=self._preflight.workspace_state() if self._preflight else None)
+            self.project_path = self.api.clone_project(target).path
+        except Exception as exc:
+            self._set_status("Project clone failed", "danger")
+            self._notify(f"Project clone failed: {exc}", "danger", timeout_ms=0)
+            return
+        self._remember_project()
+        self._sync_project_badge()
+        self._set_status("Project cloned", "success")
+        self._notify(f"Project cloned from {source}: settings and calibration kept, no data.", "success")
+        self._append_log(f"project: cloned {source} into {self.project_path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
         self._render_current_stage()

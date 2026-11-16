@@ -48,3 +48,9 @@ discards unexecuted previews.
 Create or open a project from the project menu. It lists recent projects with
 their run counts and when you last opened them on this computer. See
 [Projects](../guide/projects) for what is stored.
+
+**Clone Project** starts the next project where this one leaves off: a new project
+with the same acquisition mode, each channel's calibration (profile and dead
+volume), the profiles and liquids you added, the preflight set-up and the saved
+protocols — and none of the recordings, runs, analyses or media. The same from
+the command line: `admet clone <source>.admetp <new>.admetp`.

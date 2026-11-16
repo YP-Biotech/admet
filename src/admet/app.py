@@ -33,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="an operation or engine id; omit for everything",
     )
 
+    clone = sub.add_parser("clone", help="a new project with another's settings and calibration, none of its data")
+    clone.add_argument("source", help="the .admetp project to take the settings from")
+    clone.add_argument("target", help="the new .admetp project folder")
+
     check = sub.add_parser("check", help="say what would stop a project from saving; --fix mends it")
     check.add_argument("project", help="the .admetp project folder")
     check.add_argument("--fix", action="store_true", help="take dangling file names out of the items")
@@ -62,6 +66,22 @@ def main(argv: list[str] | None = None) -> int:
         from admet.core.service import Admet
 
         return _attempt(lambda: Admet().describe(args.target))
+
+    if args.command == "clone":
+        from admet.core.project import ProjectStore
+        from admet.core.session import session_path
+
+        source = session_path(args.source)
+        if not (source / "manifest.json").is_file():
+            print(f"{source} is not a project: no manifest.json in it", file=sys.stderr)
+            return 1
+        try:
+            clone = ProjectStore.clone_settings(ProjectStore(source), args.target)
+        except FileExistsError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f"{clone.path}: settings and calibration of {source.name} kept, no data")
+        return 0
 
     if args.command == "check":
         from admet.core.check import check_project, mend_project
