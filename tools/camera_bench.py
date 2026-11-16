@@ -9,13 +9,15 @@ paints, which is what made the camera skip frames before pylon got enough buffer
     uv run python tools/camera_bench.py --contend
     uv run python tools/camera_bench.py --contend --buffers 50     # the old setting, to see the loss
 
-Leaves bench.avi in --dir; delete it afterwards.
+The raw frames go to --dir, the recording drive, and are deleted at the end; nothing is
+encoded, so one run never competes with the next for the disk.
 """
 from __future__ import annotations
 
 import argparse
 import threading
 import time
+from pathlib import Path
 
 
 from admet.engines.acquisition.camera.acquisition import CameraAcquisitionThread
@@ -41,6 +43,8 @@ def main() -> int:
     parser.add_argument("--exposure", type=float, default=59.0, help="µs")
     parser.add_argument("--buffers", type=int, default=None, help="pylon buffers; default: as control sets them")
     parser.add_argument("--contend", action="store_true", help="a thread hogs the interpreter like the GUI")
+    parser.add_argument("--hog-ms", type=float, default=20.0, help="how long each hogging burst holds it")
+    parser.add_argument("--every-ms", type=float, default=60.0, help="how often a burst comes")
     parser.add_argument("--dir", default=".", help="where bench.avi goes; use the recording drive")
     args = parser.parse_args()
 
@@ -65,9 +69,13 @@ def main() -> int:
     thread = CameraAcquisitionThread(camera, preview_callback=lambda frame: thread.frame_processed())
     thread.start()
     time.sleep(0.5)
-    writer = VideoWorker(args.dir, "bench", args.width, args.height, 24.0)
+    def discard(raw: Path, video: Path, width: int, height: int, fps: float) -> tuple[bool, str]:
+        raw.unlink(missing_ok=True)
+        return True, ""
+
+    writer = VideoWorker(args.dir, "bench", args.width, args.height, 24.0, encoder=discard)
     stop = threading.Event()
-    hogger = threading.Thread(target=hog, args=(stop, 8.0, 25.0), daemon=True)
+    hogger = threading.Thread(target=hog, args=(stop, args.hog_ms, args.every_ms), daemon=True)
     if args.contend:
         hogger.start()
     if not thread.start_recording(writer, max_time=args.seconds):
@@ -90,9 +98,11 @@ def main() -> int:
             pass
     thread.stop()
     camera.close()
+    (Path(args.dir) / "bench.video.json").unlink(missing_ok=True)
 
     captured, written, arrived_fps = writer.frame_count, writer.written, writer.measured_fps
-    print(f"pylon buffers {buffers}{' with the interpreter hogged' if args.contend else ''}")
+    print(f"pylon buffers {buffers}"
+          + (f", the interpreter hogged {args.hog_ms:.0f} ms every {args.every_ms:.0f} ms" if args.contend else ""))
     print(f"frames: {captured} reached Python in {elapsed:.1f} s, arriving at {arrived_fps:.0f}/s against the "
           f"camera's {expected_fps:.0f}/s; written {written}, dropped by the writer {captured - written}")
     for name, value in statistics.items():

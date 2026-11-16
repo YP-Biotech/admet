@@ -68,4 +68,4 @@ left once the video is whole.
 To check that a machine keeps up with the camera, run `uv run python
 tools/camera_bench.py` with the camera connected and control closed; `--contend`
 adds the load the window puts on the interpreter while it paints. It says whether
-every frame reached the disk.
+every frame reached the disk and leaves no file behind.
