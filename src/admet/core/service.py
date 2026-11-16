@@ -192,6 +192,18 @@ class Admet:
         self._tell_engine_project()
         return self.project
 
+    def clone_project(self, source: str | Path, path: str | Path, project_id: str = "") -> ProjectStore:
+        """A new project carrying the source's settings and calibration, opened as the current one."""
+        self._require_project_idle()
+        source_path = session_path(source)
+        if not (source_path / "manifest.json").is_file():
+            raise NoProject(f"{source_path} is not a project: no manifest.json in it")
+        origin = self.project if self.project is not None and self.project.path == source_path \
+            else ProjectStore(source_path)
+        self.project = ProjectStore.clone_settings(origin, session_path(path), project_id)
+        self._tell_engine_project()
+        return self.project
+
     def open_project(self, path: str | Path) -> ProjectStore:
         """Open an existing project, or say plainly that it is not one."""
         self._require_project_idle()

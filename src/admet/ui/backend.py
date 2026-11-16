@@ -183,6 +183,15 @@ class DesktopBackend:
             self._discard_previews()
             return project
 
+    def clone_project(self, path):
+        """The open project's settings and calibration in a new project at PATH, which becomes current."""
+        with self.lock:
+            if self.service.project is None:
+                raise RuntimeError("Open a project to clone its settings")
+            project = self.service.clone_project(self.service.project.path, path)
+            self._discard_previews()
+            return project
+
     def _discard_previews(self):
         for plan_id in self._previews.values():
             self.service.discard_protocol_preview(plan_id)

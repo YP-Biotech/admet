@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import threading
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +85,47 @@ class ProjectStore:
             return cls(existing)
         path = save_session(project_path, new_session(project_id))
         return cls(path)
+
+    # What a project carries that is about the rig and the work, not about one run:
+    # the clone of a project keeps exactly these.
+    SETTINGS_KEYS = ("acquisition_mode", "calibration", "profiles", "liquids", "qt_checkup")
+
+    @classmethod
+    def clone_settings(cls, source: ProjectStore, project_path: str | Path, project_id: str = "") -> ProjectStore:
+        """A new project with the source's settings and calibration, and none of its data.
+
+        Copied: acquisition mode, each channel's calibration (profile, dead volume),
+        the profiles and liquids added, the preflight set-up, the saved protocols, and
+        the system checks (gravimetry and the like: the calibration's evidence).
+        Left behind: recordings, protocol runs, analyses, media, and anything that
+        belongs to a machine rather than the project.
+        """
+        import shutil
+
+        target = session_path(project_path)
+        if (target / "manifest.json").is_file():
+            raise FileExistsError(f"{target} is already a project")
+        clone = cls.create(target, project_id or target.stem)
+        settings = {key: deepcopy(source.session.metadata[key]) for key in cls.SETTINGS_KEYS
+                    if source.session.metadata.get(key) is not None}
+        if settings:
+            clone.update_metadata(**settings)
+        protocols = source.path / "protocols"
+        if protocols.is_dir():
+            (clone.path / "protocols").mkdir(exist_ok=True)
+            for path in sorted(protocols.glob("*.json")):
+                shutil.copy2(path, clone.path / "protocols" / path.name)
+        for file in source.files_by_role(("system_check",)):
+            check = source.resolve_file_path(file)
+            if not check.is_file():
+                continue
+            try:
+                snapshot = json.loads(check.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            clone.append_system_check(snapshot, summary=str(file.metadata.get("summary") or ""),
+                                      check_id=str(file.metadata.get("check_id") or check.stem))
+        return clone
 
     @_locked
     def save(self) -> None:
