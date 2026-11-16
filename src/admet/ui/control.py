@@ -81,10 +81,11 @@ from admet.ui.data import (
     video_row,
 )
 from admet.ui.theme import STATUS_COLORS, Theme
-from admet.engines.acquisition.camera.acquisition import as_8bit
+from admet.engines.acquisition.camera.acquisition import as_8bit, sharpness
 from admet.ui.window import (
     connected_devices,
     log_state,
+    FocusTracker,
     live_stats,
     nerd_line,
     panel_specs,
@@ -392,6 +393,7 @@ class ControlWindow(QMainWindow):
             self.values.update(stage.settings.defaults())
         self.values["simulated"] = api.simulated
         self._frame_mean: float | None = None
+        self._focus = FocusTracker()
         self._calibration_sources: dict[str, QTableWidgetItem] = {}
         self._load_rig_calibration(apply=False)
         self.protocol_editors = {}
@@ -2254,7 +2256,11 @@ class ControlWindow(QMainWindow):
             self._acknowledge_camera_frame()
             return
         self.preview.set_frame(frame)
-        self._frame_mean = float(frame.mean()) if self.values.get("camera_nerd_mode") and frame.size else None
+        if self.values.get("camera_nerd_mode") and frame.size:
+            self._frame_mean = float(frame.mean())
+            self._focus.add(sharpness(frame), time.monotonic())
+        else:
+            self._frame_mean = None
         self._sync_preview_overlay()
 
     def _acknowledge_camera_frame(self) -> None:
@@ -2271,8 +2277,9 @@ class ControlWindow(QMainWindow):
         self.preview.set_overlay(live_stats(self.last_metadata),
                                  recording=bool(self.last_metadata.get("camera_recording")))
         nerd = bool(self.values.get("camera_nerd_mode"))
-        self.preview.set_nerd(nerd_line(self.last_metadata, self._frame_mean) if nerd else "",
-                              grid=nerd)
+        focus = self._focus.fraction if nerd else None
+        self.preview.set_nerd(nerd_line(self.last_metadata, self._frame_mean, focus) if nerd else "",
+                              grid=nerd, focus=focus)
 
     def _emergency_stop(self) -> None:
         self._set_status("Emergency stop requested", "danger")
@@ -2822,7 +2829,9 @@ class ControlWindow(QMainWindow):
             self._set_status(f"{param.label} rejected", "danger")
             self._notify(str(exc), "danger")
             return
-        if name == "camera_nerd_mode":
+        if name.startswith("camera_"):
+            # A new setting, or Nerd mode switched on, starts the focus best over.
+            self._focus.reset()
             self._sync_preview_overlay()
         for editor in self.protocol_editors.values():
             if editor.builtin and name in editor.stage.settings.defaults():
@@ -3838,6 +3847,7 @@ class PreviewDisplay(QWidget):
         self._overlay_recording = False
         self._nerd = ""
         self._grid = False
+        self._focus: float | None = None
 
     def set_frame(self, frame: np.ndarray | None) -> bool:
         if frame is None:
@@ -3854,9 +3864,9 @@ class PreviewDisplay(QWidget):
         self.update()
         return True
 
-    def set_nerd(self, text: str, *, grid: bool = False) -> None:
-        if (text, grid) != (self._nerd, self._grid):
-            self._nerd, self._grid = text, grid
+    def set_nerd(self, text: str, *, grid: bool = False, focus: float | None = None) -> None:
+        if (text, grid, focus) != (self._nerd, self._grid, self._focus):
+            self._nerd, self._grid, self._focus = text, grid, focus
             self.update()
 
     def set_overlay(self, text: str, *, recording: bool = False) -> None:
@@ -3964,6 +3974,14 @@ class PreviewDisplay(QWidget):
             painter.setPen(QColor(255, 220, 0))
             painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                              self._nerd)
+            bar_x = band.x() + 10 + painter.fontMetrics().horizontalAdvance(self._nerd) + 8
+            if self._focus is not None and bar_x + 60 <= band.right() - 4:
+                # The focus bar after the text: full at the sharpest position seen, shorter on either side.
+                bar = QRect(bar_x, band.center().y() - 4, 60, 8)
+                painter.setPen(QPen(QColor(255, 220, 0, 160), 1))
+                painter.drawRect(bar)
+                painter.fillRect(QRect(bar.x() + 1, bar.y() + 1, int((bar.width() - 2) * self._focus), bar.height() - 2),
+                                 QColor(255, 220, 0))
         self.frame_painted.emit()
 
 

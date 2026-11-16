@@ -22,6 +22,25 @@ def as_8bit(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
+def sharpness(frame: np.ndarray) -> float:
+    """How sharp a frame is: its edge energy (Tenengrad), the mean squared Sobel gradient after
+    a 3×3 smoothing, divided by the squared mean level so a gain change leaves it alone.
+
+    Only the comparison matters: the number rises as the focus improves and peaks when it is sharpest.
+    """
+    f = as_8bit(frame).astype(np.float32)
+    if f.ndim == 3:
+        f = f.mean(axis=2)
+    if f.ndim != 2 or f.shape[0] < 5 or f.shape[1] < 5:
+        return 0.0
+    s = (f[:-2] + 2 * f[1:-1] + f[2:]) / 4
+    s = (s[:, :-2] + 2 * s[:, 1:-1] + s[:, 2:]) / 4
+    gx = (s[:-2, 2:] + 2 * s[1:-1, 2:] + s[2:, 2:]) - (s[:-2, :-2] + 2 * s[1:-1, :-2] + s[2:, :-2])
+    gy = (s[2:, :-2] + 2 * s[2:, 1:-1] + s[2:, 2:]) - (s[:-2, :-2] + 2 * s[:-2, 1:-1] + s[:-2, 2:])
+    level = max(float(s.mean()), 1.0)
+    return float(np.mean(gx * gx + gy * gy)) / (level * level)
+
+
 class CameraSource(Protocol):
     def start_grabbing(self, *, latest_only: bool = True) -> None:
         ...

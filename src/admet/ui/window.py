@@ -96,7 +96,39 @@ def live_stats(metadata: dict[str, Any]) -> str:
     return "connected · not live"
 
 
-def nerd_line(metadata: dict[str, Any], mean: float | None = None) -> str:
+class FocusTracker:
+    """The sharpness of the last half second of frames against the best seen since the reset.
+
+    Turn the focus until the fraction reads 1: it falls on either side of the sharpest position.
+    """
+
+    def __init__(self, window_s: float = 0.5) -> None:
+        self.window_s = window_s
+        self.samples: list[tuple[float, float]] = []
+        self.best = 0.0
+
+    def add(self, score: float, now: float) -> None:
+        self.samples.append((now, score))
+        self.samples = [(t, s) for t, s in self.samples if now - t <= self.window_s]
+        self.best = max(self.best, self.current)
+
+    @property
+    def current(self) -> float:
+        return sum(s for _, s in self.samples) / len(self.samples) if self.samples else 0.0
+
+    @property
+    def fraction(self) -> float | None:
+        """The current sharpness as a share of the best, None before any frame."""
+        if not self.samples or self.best <= 0:
+            return None
+        return min(self.current / self.best, 1.0)
+
+    def reset(self) -> None:
+        self.samples = []
+        self.best = 0.0
+
+
+def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float | None = None) -> str:
     """The camera's numbers for the curious: size in pixels, format, mean level, exposure, gain, data rate."""
     if not metadata.get("camera_connected"):
         return ""
@@ -122,6 +154,8 @@ def nerd_line(metadata: dict[str, Any], mean: float | None = None) -> str:
     fps = metadata.get("camera_fps")
     if fps and width and height:
         parts.append(f"{float(fps) * int(width) * int(height) * bytes_per_pixel(fmt) / 1e6:.1f} MB/s")
+    if focus is not None:
+        parts.append(f"focus {focus * 100:.0f} %")        # last, so the focus bar sits next to it
     return " · ".join(parts)
 
 
