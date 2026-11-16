@@ -16,6 +16,9 @@ from .camera import Camera
 log = logging.getLogger(__name__)
 
 
+PARAMETER_READ_INTERVAL_S = 1.0     # the status line's parameter reads, when not recording
+
+
 class CameraController:
     def __init__(self, camera: Any | None = None):
         self.camera = camera or Camera()
@@ -26,6 +29,11 @@ class CameraController:
         self._preflight_cache: dict[str, Any] = {}
         self._frame_callbacks: list[Callable[[np.ndarray], None]] = []
         self._lock = Lock()
+        # The parameters as last read; the status line uses these, so the camera is not asked
+        # over USB twice a second, and never while recording.
+        self._parameters: dict[str, Any] = {}
+        self._resulting_fps = 0.0
+        self._parameters_read_at = 0.0
 
     @property
     def live(self) -> bool:
@@ -188,13 +196,16 @@ class CameraController:
             "camera_preview_width": preview_size[0],
             "camera_preview_height": preview_size[1],
             "camera_frame_shape": frame_shape,
-            "camera_fps": self.camera.get_resulting_framerate() if self.camera.connected else 0.0,
+            "camera_fps": self._resulting_fps if self.camera.connected else 0.0,
             "camera_recording": bool(stats.get("recording", False)),
             "camera_recorded_frames": int(stats.get("frames", 0)),
             "camera_record_elapsed": float(stats.get("elapsed", 0.0)),
             "camera_dropped_frames": int(stats.get("dropped_frames", 0) or 0),
         }
-        metadata.update(self.read_parameters())
+        if not stats.get("recording") and time.monotonic() - self._parameters_read_at >= PARAMETER_READ_INTERVAL_S:
+            self.read_parameters()
+            metadata["camera_fps"] = self._resulting_fps if self.camera.connected else 0.0
+        metadata["camera_parameters"] = self._parameters
         return metadata
 
     def observation(self) -> dict[str, Any]:
@@ -242,7 +253,9 @@ class CameraController:
             "frame_width": width if connected else None,
             "frame_height": height if connected else None,
             "pixel_format": value("PixelFormat") if connected else None,
-            "configured_frame_rate_hz": value("AcquisitionFrameRate") if connected else None,
+            # the limit the camera is told to keep; nothing when it runs free
+            "configured_frame_rate_hz": (value("AcquisitionFrameRate")
+                                         if connected and value("AcquisitionFrameRateEnable") is not False else None),
             "measured_frame_rate_hz": stats.get("fps") if self.live else None,
             "exposure_us": value("ExposureTime") if connected else None,
             "gain": value("Gain") if connected else None,
@@ -256,7 +269,9 @@ class CameraController:
         }
 
     def read_parameters(self) -> dict[str, Any]:
+        """Ask the camera for its parameters now, and keep them for the status line."""
         if not self.camera.connected:
+            self._parameters, self._resulting_fps = {}, 0.0
             return {"camera_parameters": {}}
         names = [
             "Width",
@@ -270,10 +285,14 @@ class CameraController:
             "BinningHorizontal",
             "BinningVertical",
             "AcquisitionFrameRate",
+            "AcquisitionFrameRateEnable",
             "DeviceLinkThroughputLimit",
             "ResultingFrameRate",
         ]
         parameters = self.camera.get_settings(names)
+        self._parameters = parameters
+        self._resulting_fps = self.camera.get_resulting_framerate()
+        self._parameters_read_at = time.monotonic()
         return {"camera_parameters": parameters}
 
     def recording_frame_size(self, settings: dict[str, Any]) -> tuple[int, int]:

@@ -54,12 +54,18 @@ step (see [Video](../protocols/format#video)). The run's
 `summary.json` points at both and holds the rig mapping and corrections in force.
 
 Each video carries its own record inside the file (the AVI's `INFO` comment): the
-project and run it belongs to, the step and part, when it started, the camera as it
-was set (model, exposure, gain, binning, pixel size, frame rate), each channel's
-set point, and how many frames were captured, written and dropped. Frames the disk
+project and run it belongs to, the step and part, when it started and stopped, the
+camera as it was set (model, exposure, gain, binning, pixel size, a frame-rate limit
+if one was on), the frame rate measured as the frames arrived, each channel's set
+point, and how many frames were captured, written and dropped. Frames the disk
 cannot keep up with are counted, never a reason to stop: a recording with gaps is
 still listed, marked incomplete. The project manifest is only an index of these
 records — a video it has forgotten (a run that ended badly, a file copied in from
 another machine) is listed again from the file when the project is opened, and
 `admet check <project>` reports such videos (`--fix` lists them). No side file is
 left once the video is whole.
+
+To check that a machine keeps up with the camera, run `uv run python
+tools/camera_bench.py` with the camera connected and control closed; `--contend`
+adds the load the window puts on the interpreter while it paints. It says whether
+every frame reached the disk.

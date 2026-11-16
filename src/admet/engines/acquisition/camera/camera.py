@@ -107,7 +107,6 @@ class Camera:
             self.device.UserSetSelector.Value = "Default"
             self.device.UserSetLoad.Execute()
             self.set_parameter("DeviceLinkThroughputLimitMode", "Off")
-            self.set_parameter("MaxNumBuffer", 50)
             for auto_feature in ("ExposureAuto", "GainAuto", "BalanceWhiteAuto"):
                 self.set_parameter(auto_feature, "Off")
         except Exception as exc:
@@ -136,20 +135,26 @@ class Camera:
         return False
 
     def get_parameter(self, param_name: str, *, value_only: bool = False) -> dict[str, Any]:
+        """The parameter's value and, when the node has them, its range, increment and choices.
+
+        Each is read on its own: pylon raises for the increment of a float node that has none
+        (Gain, the frame rates), and that must not lose the value already read.
+        """
         result: dict[str, Any] = {}
         try:
             if not self.device or not hasattr(self.device, param_name):
                 return result
             param = getattr(self.device, param_name)
-            if hasattr(param, "Value"):
-                result["value"] = param.Value
-                if value_only:
-                    return result
-            for attr, key in (("Min", "min"), ("Max", "max"), ("Inc", "inc"), ("Symbolics", "symbolics")):
+        except Exception:
+            return result
+        for attr, key in (("Value", "value"), ("Min", "min"), ("Max", "max"), ("Inc", "inc"), ("Symbolics", "symbolics")):
+            try:
                 if hasattr(param, attr):
                     result[key] = getattr(param, attr)
-        except Exception:
-            return {}
+            except Exception:
+                continue
+            if value_only and key == "value":
+                break
         return result
 
     def apply_settings(self, settings: dict[str, Any] | None) -> bool:
@@ -174,13 +179,14 @@ class Camera:
             return {}
         return {name: self.get_parameter(name) for name in params}
 
-    def start_grabbing(self, *, latest_only: bool = True) -> None:
+    def start_grabbing(self, *, latest_only: bool = True, buffers: int | None = None) -> None:
         if not self.device:
             return
         if self.device.IsGrabbing():
             self._is_grabbing = True
             return
 
+        self.set_parameter("MaxNumBuffer", buffers or self.grab_buffers())
         pylon = self._pylon_module()
         strategy = pylon.GrabStrategy_LatestImageOnly if latest_only else pylon.GrabStrategy_OneByOne
         try:
@@ -238,6 +244,16 @@ class Camera:
             converter.OutputPixelFormat = pylon.PixelType_Mono8
             self._mono8_converter = converter
         return self._mono8_converter
+
+    def grab_buffers(self) -> int:
+        """Buffers for the frame as the camera is set now."""
+        from .acquisition import bytes_per_pixel, grab_buffers
+
+        def value(name: str, default: Any) -> Any:
+            return self.get_parameter(name, value_only=True).get("value", default)
+
+        return grab_buffers(int(value("Width", 640)) * int(value("Height", 480))
+                            * bytes_per_pixel(value("PixelFormat", "Mono8")))
 
     def get_resulting_framerate(self) -> float:
         for name in ("ResultingFrameRate", "ResultingFrameRateAbs"):

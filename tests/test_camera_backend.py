@@ -11,6 +11,7 @@ from admet.engines.acquisition.camera import (
     PypylonUnavailableError,
     VideoWorker,
 )
+from admet.engines.acquisition.camera.acquisition import grab_buffers
 
 
 class FakeParam:
@@ -26,6 +27,17 @@ class FakeParam:
 
     def Execute(self):
         self.Value = "executed"
+
+
+class FakeFloatWithoutIncrement:
+    """pylon's Gain and frame-rate nodes: a value, a range, and an increment that raises."""
+
+    def __init__(self, value, minimum, maximum):
+        self.Value, self.Min, self.Max = value, minimum, maximum
+
+    @property
+    def Inc(self):
+        raise RuntimeError("Node has no increment")
 
 
 class FakeTransportDevice:
@@ -199,6 +211,33 @@ class CameraTests(unittest.TestCase):
         self.assertEqual(camera._to_mono8().OutputPixelFormat, "Mono8")
         camera.close()
 
+    def test_grabbing_sizes_the_buffers_by_the_frame(self):
+        self.assertEqual(grab_buffers(320 * 60), 1000)                 # a small ROI: the cap, 19 MB
+        self.assertEqual(grab_buffers(640 * 480), 218)                 # a full frame: the 64 MB budget
+        self.assertEqual(grab_buffers(10 ** 9), 50)                    # never below the floor
+        camera = Camera(FakePylon)
+        self.assertTrue(camera.open())
+        camera.device.Width, camera.device.Height = FakeParam(320), FakeParam(60)
+        camera.device.PixelFormat = FakeParam("Mono8")
+        camera.start_grabbing()
+        self.assertEqual(camera.device.MaxNumBuffer.Value, 1000)
+        camera.stop_grabbing()
+        camera.start_grabbing(buffers=50)
+        self.assertEqual(camera.device.MaxNumBuffer.Value, 50)
+        camera.close()
+
+    def test_a_float_without_an_increment_still_reports_its_value(self):
+        camera = Camera(FakePylon)
+        self.assertTrue(camera.open())
+        camera.device.Gain = FakeFloatWithoutIncrement(value=6.0, minimum=0.0, maximum=24.0)
+
+        read = camera.get_parameter("Gain")
+
+        self.assertEqual((read["value"], read["min"], read["max"]), (6.0, 0.0, 24.0))
+        self.assertNotIn("inc", read)
+        self.assertEqual(camera.get_parameter("Gain", value_only=True), {"value": 6.0})
+        camera.close()
+
     def test_preflight_treats_no_devices_as_refreshable_state(self):
         camera = Camera(EmptyFakePylon)
 
@@ -215,6 +254,40 @@ class CameraTests(unittest.TestCase):
         status = camera.preflight()
 
         self.assertIn("Basler Camera Emulator / BaslerCamEmu", status.transport_layers)
+
+
+class CountingCamera:
+    """A connected camera that counts how often its parameters are read."""
+
+    def __init__(self):
+        self.connected = True
+        self.reads = 0
+
+    def get_settings(self, names):
+        self.reads += 1
+        return {name: {"value": 1.0} for name in names}
+
+    def get_resulting_framerate(self):
+        return 4032.0
+
+
+class StatusReadTests(unittest.TestCase):
+    def test_the_status_line_asks_the_camera_once_a_second_and_never_while_recording(self):
+        from admet.engines.acquisition.camera.controller import CameraController
+
+        controller = CameraController(CountingCamera())
+        controller.status_metadata()
+        controller.status_metadata()
+        self.assertEqual(controller.camera.reads, 1)                  # the second one is within the second
+        controller._parameters_read_at -= 2
+        self.assertEqual(controller.status_metadata()["camera_fps"], 4032.0)
+        self.assertEqual(controller.camera.reads, 2)
+        controller._stats["recording"] = True
+        controller._parameters_read_at -= 2
+        metadata = controller.status_metadata()
+        self.assertEqual(controller.camera.reads, 2)                  # recording: nothing asked over USB
+        self.assertEqual(metadata["camera_parameters"]["Gain"]["value"], 1.0)
+        self.assertEqual(metadata["camera_fps"], 4032.0)
 
 
 class VideoWorkerTests(unittest.TestCase):
