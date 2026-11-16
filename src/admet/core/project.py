@@ -95,8 +95,7 @@ class ProjectStore:
         """A new project with the source's settings and calibration, and none of its data.
 
         Copied: acquisition mode, each channel's calibration (profile, dead volume),
-        the profiles and liquids added, the preflight set-up, the saved protocols, and
-        the system checks (gravimetry and the like: the calibration's evidence).
+        the profiles and liquids added, the preflight set-up and the saved protocols.
         Left behind: recordings, protocol runs, analyses, media, and anything that
         belongs to a machine rather than the project.
         """
@@ -115,16 +114,6 @@ class ProjectStore:
             (clone.path / "protocols").mkdir(exist_ok=True)
             for path in sorted(protocols.glob("*.json")):
                 shutil.copy2(path, clone.path / "protocols" / path.name)
-        for file in source.files_by_role(("system_check",)):
-            check = source.resolve_file_path(file)
-            if not check.is_file():
-                continue
-            try:
-                snapshot = json.loads(check.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            clone.append_system_check(snapshot, summary=str(file.metadata.get("summary") or ""),
-                                      check_id=str(file.metadata.get("check_id") or check.stem))
         return clone
 
     @_locked
@@ -217,74 +206,6 @@ class ProjectStore:
         _write_metadata(metadata_path, metadata)
         self._register_control_recording(normalized)
         self.save()
-
-    @_locked
-    def append_system_check(
-        self,
-        snapshot: dict[str, Any],
-        *,
-        summary: str = "",
-        check_id: str = "",
-    ) -> Path:
-        """Store one system check as its own JSON record under records/checks.
-
-        Checks accumulate rather than overwrite: what matters is comparing today's
-        chip against the last one, so each run keeps its own stamped file and the
-        manifest lists them all under a single item.
-
-        A run writes twice -- once as it starts, carrying everything entered, and
-        once as it ends, carrying what was measured. Passing the id returned by
-        the first write lets the second replace it in place, so one run is one
-        record whether or not it ever reached the end.
-        """
-        kind = str(snapshot.get("kind") or "check").strip() or "check"
-        if check_id:
-            path = self.records_dir / "checks" / f"{check_id}.json"
-        else:
-            # Stamps are one a second, and a run restarted straight away would
-            # otherwise take the name of the one it was restarted from.
-            check_id = _stamped_id(f"check-{kind}")
-            path = self.records_dir / "checks" / f"{check_id}.json"
-            attempt = 2
-            while path.exists():
-                path = self.records_dir / "checks" / f"{check_id}-{attempt}.json"
-                attempt += 1
-            check_id = path.stem
-        _write_metadata(path, {**snapshot, "check_id": check_id})
-
-        file = self.upsert_file_path(
-            path,
-            role="system_check",
-            media_type="application/json",
-            metadata={
-                "check_id": check_id,
-                "kind": kind,
-                "recorded_at": str(snapshot.get("recorded_at") or ""),
-                "summary": summary,
-            },
-            id_hint=check_id,
-        )
-        existing = _find_item(self.session.items, "system-checks")
-        item_files = list(existing.files if existing else ())
-        if file.id not in item_files:
-            item_files.append(file.id)
-        item = SessionItem(
-            id="system-checks",
-            project_type="system_check",
-            engine="acquisition",
-            files=tuple(item_files),
-            metadata={
-                "check_count": len(item_files),
-                "report_dir": "records/checks",
-                "latest": check_id,
-                "latest_summary": summary,
-            },
-        )
-        self.session = replace(
-            self.session, items=tuple(_upsert_item(list(self.session.items), item))
-        )
-        self.save()
-        return path
 
     def analysis_run_target(self, label: str = "analysis") -> AnalysisRunTarget:
         # A project keeps a single, stable analysis output: one raw.jsonl and one

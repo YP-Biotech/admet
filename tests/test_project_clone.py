@@ -20,8 +20,6 @@ def _filled_project(root: Path) -> ProjectStore:
     )
     (store.path / "protocols").mkdir()
     (store.path / "protocols" / "dropseq.json").write_text(json.dumps({"name": "dropseq", "steps": []}))
-    store.append_system_check({"kind": "gravimetry", "recorded_at": "2026-11-10T10:00:00", "rows": [1, 2]},
-                              summary="40 µL/min ok", check_id="gravimetry-1")
     video = store.records_dir / "camera" / "run.avi"
     video.parent.mkdir(parents=True)
     video.write_bytes(b"RIFF")
@@ -44,9 +42,8 @@ class ProjectCloneTests(unittest.TestCase):
             self.assertNotIn("cache_root", reopened.session.metadata)
             self.assertNotIn("analysis_setup", reopened.session.metadata)
             self.assertEqual(json.loads((reopened.path / "protocols" / "dropseq.json").read_text())["name"], "dropseq")
-            self.assertEqual([file.role for file in reopened.session.files], ["system_check"])
-            self.assertEqual([item.id for item in reopened.session.items], ["system-checks"])
-            self.assertTrue((reopened.path / "records" / "checks" / "gravimetry-1.json").is_file())
+            self.assertEqual(reopened.session.files, ())
+            self.assertEqual(reopened.session.items, ())
             self.assertFalse((reopened.path / "records" / "camera").exists())
 
     def test_a_clone_never_replaces_an_existing_project(self):

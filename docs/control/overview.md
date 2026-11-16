@@ -51,7 +51,6 @@ their run counts and when you last opened them on this computer. See
 
 **Clone Project** starts the next project where this one leaves off: a new project
 with the same acquisition mode, each channel's calibration (profile and dead
-volume), the profiles and liquids you added, the preflight set-up, the saved
-protocols and the system checks (gravimetry and the like, the calibration's
-evidence) — and none of the recordings, runs, analyses or media. The same from
+volume), the profiles and liquids you added, the preflight set-up and the saved
+protocols — and none of the recordings, runs, analyses or media. The same from
 the command line: `admet clone <source>.admetp <new>.admetp`.
