@@ -128,6 +128,9 @@ class FocusTracker:
         self.best = 0.0
 
 
+NERD_SEPARATOR = "  "
+
+
 def heat_rgb(t: float) -> tuple[int, int, int]:
     """Blue for the lowest level through green to red for the highest, t in 0..1."""
     t = min(max(t, 0.0), 1.0)
@@ -153,7 +156,8 @@ def heat_range(cells: Any, min_span: float = 4.0) -> tuple[float, float]:
 
 def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float | None = None,
               cells: tuple[float, float] | None = None) -> str:
-    """The camera's numbers for the curious: size in pixels, format, mean level, exposure, gain, data rate."""
+    """The camera's numbers for the curious, short: size, format, mean level, grid span, exposure, gain, data rate,
+    focus. Fields are two spaces apart; a field holds one space at most."""
     if not metadata.get("camera_connected"):
         return ""
     parameters = metadata.get("camera_parameters") or {}
@@ -165,24 +169,24 @@ def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float 
     width, height = (shape[1], shape[0]) if len(shape) >= 2 else (value("Width"), value("Height"))
     parts = []
     if width and height:
-        parts.append(f"{int(width)} × {int(height)} px")
+        parts.append(f"{int(width)}x{int(height)}")
     fmt = value("PixelFormat")
     if fmt:
         parts.append(str(fmt))
     if mean is not None:
-        parts.append(f"mean {mean:.1f}")
+        parts.append(f"avg {mean:.1f}")
     if cells is not None:
-        parts.append(f"cells {cells[0]:.0f}–{cells[1]:.0f}")      # blue at the first level, red at the second
+        parts.append(f"grid {cells[0]:.0f}-{cells[1]:.0f}")      # blue at the first level, red at the second
     if value("ExposureTime") is not None:
-        parts.append(f"exposure {float(value('ExposureTime')):.0f} µs")
+        parts.append(f"exp {float(value('ExposureTime')):.0f}us")
     if value("Gain") is not None:
-        parts.append(f"gain {float(value('Gain')):g} dB")
+        parts.append(f"gain {float(value('Gain')):g}dB")
     fps = metadata.get("camera_fps")
     if fps and width and height:
-        parts.append(f"{float(fps) * int(width) * int(height) * bytes_per_pixel(fmt) / 1e6:.1f} MB/s")
+        parts.append(f"{float(fps) * int(width) * int(height) * bytes_per_pixel(fmt) / 1e6:.1f}MB/s")
     if focus is not None:
-        parts.append(f"focus {focus * 100:.0f} %")        # last, so the focus bar sits next to it
-    return " · ".join(parts)
+        parts.append(f"focus {focus * 100:.0f}%")        # last, so the focus bar sits next to it
+    return NERD_SEPARATOR.join(parts)
 
 
 def bytes_per_pixel(pixel_format: Any) -> float:

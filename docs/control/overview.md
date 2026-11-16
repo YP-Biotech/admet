@@ -32,8 +32,9 @@ Above the stage content sits the **action bar** (Plan, Execute, Confirm, Pause,
 Skip, Abort); below it, the live graphs and, in camera mode, the video preview.
 The camera setting **Nerd mode** draws a grid every 32 pixels on the preview,
 each cell lightly tinted by its mean level from blue (lowest) to red (highest),
-and a line under it with the frame size, pixel format, mean pixel value, the
-levels the colours span, exposure, gain, the data rate and focus. Focus is the
+and a short line under it: `320x60  Mono8  avg 80.3  grid 62-97  exp 150us
+gain 0dB  76.8MB/s  focus 83%` (size, format, mean level, the levels the
+colours span, exposure, gain, data rate, focus). Focus is the
 sharpness of the last half second against the best seen since Nerd mode or a
 camera setting last changed: turn the focus until the bar is full.
 Each channel also has its own manual controls — see [Manual control](./manual).

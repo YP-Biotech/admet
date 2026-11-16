@@ -85,6 +85,7 @@ from admet.engines.acquisition.camera.acquisition import GRID_CELL, as_8bit, cel
 from admet.ui.window import (
     connected_devices,
     log_state,
+    NERD_SEPARATOR,
     FocusTracker,
     heat_range,
     heat_rgb,
@@ -3842,11 +3843,11 @@ class NotificationCard(QFrame):
 
 
 def _wrap_parts(parts: list[str], width: int, measure) -> list[str]:
-    """The parts joined with ' · ' on as few lines as fit the width; a part is never split."""
+    """The parts, two spaces apart, on as few lines as fit the width; a part is never split."""
     lines: list[str] = []
     for part in parts:
-        if lines and measure(f"{lines[-1]} · {part}") <= width:
-            lines[-1] = f"{lines[-1]} · {part}"
+        if lines and measure(f"{lines[-1]}{NERD_SEPARATOR}{part}") <= width:
+            lines[-1] = f"{lines[-1]}{NERD_SEPARATOR}{part}"
         else:
             lines.append(part)
     return lines or [""]
@@ -4000,7 +4001,8 @@ class PreviewDisplay(QWidget):
             painter.setFont(font)
             metrics = painter.fontMetrics()
             bar_room = 8 + 60 if self._focus is not None else 0
-            lines = _wrap_parts(self._nerd.split(" · "), self.width() - 20 - bar_room, metrics.horizontalAdvance)
+            lines = _wrap_parts(self._nerd.split(NERD_SEPARATOR), self.width() - 20 - bar_room,
+                                metrics.horizontalAdvance)
             line_height = metrics.height()
             band_height = line_height * len(lines) + 8
             below = self.height() - self.frame_rect.bottom() - 1

@@ -25,8 +25,7 @@ class NerdModeTests(unittest.TestCase):
         metadata = {"camera_connected": True, "camera_frame_shape": [60, 320], "camera_fps": 4000.0,
                     "camera_parameters": {"PixelFormat": {"value": "Mono8"}, "ExposureTime": {"value": 150.0},
                                           "Gain": {"value": 6.0}}}
-        self.assertEqual(nerd_line(metadata, 80.25),
-                         "320 × 60 px · Mono8 · mean 80.2 · exposure 150 µs · gain 6 dB · 76.8 MB/s")
+        self.assertEqual(nerd_line(metadata, 80.25), "320x60  Mono8  avg 80.2  exp 150us  gain 6dB  76.8MB/s")
         self.assertEqual(nerd_line({}), "")
 
     def test_bytes_per_pixel_by_format(self):
@@ -35,8 +34,8 @@ class NerdModeTests(unittest.TestCase):
 
     def test_the_nerd_line_carries_the_focus_as_a_share_of_the_best(self):
         metadata = {"camera_connected": True, "camera_frame_shape": [60, 320]}
-        self.assertEqual(nerd_line(metadata, None, 0.83), "320 × 60 px · focus 83 %")
-        self.assertEqual(nerd_line(metadata, 80.0, None, (62.4, 97.0)), "320 × 60 px · mean 80.0 · cells 62–97")
+        self.assertEqual(nerd_line(metadata, None, 0.83), "320x60  focus 83%")
+        self.assertEqual(nerd_line(metadata, 80.0, None, (62.4, 97.0)), "320x60  avg 80.0  grid 62-97")
 
     def test_the_heat_map_cells_are_the_grid_means_and_colour_blue_to_red(self):
         frame = np.full((40, 70), 50, dtype=np.uint8)
