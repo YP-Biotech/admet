@@ -64,6 +64,9 @@ class VideoWorker:
         self.on_finished: Finished | None = None
         # What the recording is, beyond its frames: written into the video at encode.
         self.record: dict = dict(record or {})
+        # A protocol's step videos are encoded after the run, one after another, so no encode
+        # competes with the next step's recording for the disk; a lone recording encodes at stop.
+        self.encode_at_stop = True
         self.started_at = ""
         self.stopped_at = ""
         self._first_frame_at: float | None = None      # monotonic, for the measured frame rate
@@ -131,6 +134,9 @@ class VideoWorker:
             self.raw_path.unlink(missing_ok=True)
             self.info_path.unlink(missing_ok=True)
             return ""
+        if not self.encode_at_stop:
+            _write_info(self.info_path, self._info("recorded"))   # the raw file waits; encode() comes later
+            return str(self.video_path)
         _write_info(self.info_path, self._info("encoding"))
         Thread(target=self._encode, daemon=True).start()
         return str(self.video_path)
@@ -152,13 +158,20 @@ class VideoWorker:
             except Exception as exc:
                 log.error("%s: %d frames could not be written: %s", self.prefix, len(frames), exc)
 
-    def _encode(self) -> None:
+    def encode(self) -> tuple[bool, str]:
+        """Encode the raw file now, in this thread, and tell on_finished; nothing to do if no frames were kept."""
+        if not self.info_path.is_file():
+            return False, "nothing recorded"
         encoded, reason = encode_recording(self.info_path, self.encoder)
         if self.on_finished is not None:
             try:
                 self.on_finished(str(self.video_path), encoded, reason)
             except Exception:
                 log.exception("video finished callback failed")
+        return encoded, reason
+
+    def _encode(self) -> None:
+        self.encode()
 
     @property
     def measured_fps(self) -> float:

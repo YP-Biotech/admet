@@ -1049,6 +1049,7 @@ class AcquisitionEngine:
         try:
             if self._step_video is not None:
                 self._step_video.close("emergency stop")
+                self._step_video.finish()
         except Exception as exc:
             errors.append(f"closing the step video: {exc}")
 

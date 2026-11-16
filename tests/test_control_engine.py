@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -192,8 +193,14 @@ class FakeVideoWriter:
         return True
 
     def stop(self):
-        self.path.write_bytes(b"AVI")
+        if getattr(self, "encode_at_stop", True):
+            self.path.write_bytes(b"AVI")
         return str(self.path)
+
+    def encode(self):
+        self.path.write_bytes(b"AVI")
+        self.encoded_at = time.monotonic()
+        return True, ""
 
 
 class FakeCameraAcquisition:

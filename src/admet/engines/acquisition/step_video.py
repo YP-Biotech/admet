@@ -5,6 +5,9 @@ recorded at a confirmation gate. A pause closes the file; resuming the step open
 a new part. Every way a protocol stops (stop, skip, error, timeout, E-STOP) closes
 it, and no step records more than its limit, at most RECORD_CAP_S in total over
 its parts: the camera stops itself there, and the protocol's own ticks check it too.
+The files are encoded once the run is over, one after another, so an encode never
+competes with the next step's recording for the disk; until then the raw frames
+and their record wait on disk, and a project opened later finishes them.
 If the camera cannot start a step's video, the protocol is paused: the step asked
 for video, so it does not run on without it unless the operator resumes.
 """
@@ -58,6 +61,8 @@ class StepVideo:
         self._parts: dict[int, int] = {}
         self._finished: set[int] = set()
         self.videos: list[dict[str, Any]] = []
+        self._pending: list[Any] = []          # writers whose raw file waits for the run to end
+        self._encoder: threading.Thread | None = None
 
     def limit(self, index: int) -> float:
         step = self._steps[index]
@@ -70,6 +75,8 @@ class StepVideo:
             outcome, state = str(event.outcome), str(event.state)
             if not event.step_name or not 0 <= index < len(self._steps):
                 self.close("protocol ended" if outcome != "running" else "no step")
+                if outcome != "running":
+                    self.finish()
                 return
             if outcome != "running":
                 self.close(outcome)
@@ -101,6 +108,10 @@ class StepVideo:
         name = f"{self._label}_step{index + 1:02d}" + (f"_part{part}" if part > 1 else "") + f"_{stamp}"
         width, height = self._frame_size
         writer = self._writer_factory(self._video_dir, name, width, height, self._fps)
+        try:
+            writer.encode_at_stop = False
+        except AttributeError:
+            pass
         started_at = datetime.now().isoformat(timespec="seconds")
         record = {**(getattr(writer, "record", None) or {}), **(self._context() if self._context else {}),
                   "recording_id": name, "step": index + 1, "step_name": self._steps[index].name, "part": part,
@@ -119,7 +130,7 @@ class StepVideo:
             self._on_failure(message)
             return
         self._open = {"index": index, "part": part, "name": name, "started": time.monotonic(),
-                      "limit": remaining, "started_at": started_at}
+                      "limit": remaining, "started_at": started_at, "writer": writer}
 
     def _camera_stopped(self) -> None:
         """The camera reached the time limit and closed the file itself."""
@@ -134,10 +145,35 @@ class StepVideo:
             frames = self._camera.stop_recording() if self._camera.recording else None
             self._finish(reason, frames=frames)
 
+    def finish(self) -> None:
+        """The run is over: encode what the steps recorded, in order, in the background."""
+        with self._lock:
+            self.close("protocol ended")
+            pending, self._pending = self._pending, []
+        if not pending:
+            return
+        self._encoder = threading.Thread(target=self._encode_all, args=(pending,), name="EncodeStepVideos",
+                                         daemon=True)
+        self._encoder.start()
+
+    def wait(self, timeout: float | None = None) -> None:
+        if self._encoder is not None:
+            self._encoder.join(timeout)
+
+    @staticmethod
+    def _encode_all(writers: list[Any]) -> None:
+        for writer in writers:
+            try:
+                writer.encode()
+            except Exception:
+                log.exception("a step video could not be encoded")
+
     def _finish(self, reason: str, *, frames: int | None) -> None:
         segment, self._open = self._open, None
         duration = time.monotonic() - segment["started"]
         index = segment["index"]
+        if hasattr(segment["writer"], "encode"):
+            self._pending.append(segment["writer"])
         self._recorded_s[index] = self._recorded_s.get(index, 0.0) + duration
         width, height = self._frame_size
         self.videos.append({
