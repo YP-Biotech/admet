@@ -28,6 +28,17 @@ class FakeParam:
         self.Value = "executed"
 
 
+class FakeFloatWithoutIncrement:
+    """pylon's Gain and frame-rate nodes: a value, a range, and an increment that raises."""
+
+    def __init__(self, value, minimum, maximum):
+        self.Value, self.Min, self.Max = value, minimum, maximum
+
+    @property
+    def Inc(self):
+        raise RuntimeError("Node has no increment")
+
+
 class FakeTransportDevice:
     def GetModelName(self):
         return "Basler Test"
@@ -197,6 +208,18 @@ class CameraTests(unittest.TestCase):
         self.assertEqual(frame.dtype, np.uint8)
         self.assertEqual(int(frame.max()), 200)
         self.assertEqual(camera._to_mono8().OutputPixelFormat, "Mono8")
+        camera.close()
+
+    def test_a_float_without_an_increment_still_reports_its_value(self):
+        camera = Camera(FakePylon)
+        self.assertTrue(camera.open())
+        camera.device.Gain = FakeFloatWithoutIncrement(value=6.0, minimum=0.0, maximum=24.0)
+
+        read = camera.get_parameter("Gain")
+
+        self.assertEqual((read["value"], read["min"], read["max"]), (6.0, 0.0, 24.0))
+        self.assertNotIn("inc", read)
+        self.assertEqual(camera.get_parameter("Gain", value_only=True), {"value": 6.0})
         camera.close()
 
     def test_preflight_treats_no_devices_as_refreshable_state(self):

@@ -136,20 +136,26 @@ class Camera:
         return False
 
     def get_parameter(self, param_name: str, *, value_only: bool = False) -> dict[str, Any]:
+        """The parameter's value and, when the node has them, its range, increment and choices.
+
+        Each is read on its own: pylon raises for the increment of a float node that has none
+        (Gain, the frame rates), and that must not lose the value already read.
+        """
         result: dict[str, Any] = {}
         try:
             if not self.device or not hasattr(self.device, param_name):
                 return result
             param = getattr(self.device, param_name)
-            if hasattr(param, "Value"):
-                result["value"] = param.Value
-                if value_only:
-                    return result
-            for attr, key in (("Min", "min"), ("Max", "max"), ("Inc", "inc"), ("Symbolics", "symbolics")):
+        except Exception:
+            return result
+        for attr, key in (("Value", "value"), ("Min", "min"), ("Max", "max"), ("Inc", "inc"), ("Symbolics", "symbolics")):
+            try:
                 if hasattr(param, attr):
                     result[key] = getattr(param, attr)
-        except Exception:
-            return {}
+            except Exception:
+                continue
+            if value_only and key == "value":
+                break
         return result
 
     def apply_settings(self, settings: dict[str, Any] | None) -> bool:

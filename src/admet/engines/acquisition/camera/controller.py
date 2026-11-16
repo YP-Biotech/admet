@@ -242,7 +242,9 @@ class CameraController:
             "frame_width": width if connected else None,
             "frame_height": height if connected else None,
             "pixel_format": value("PixelFormat") if connected else None,
-            "configured_frame_rate_hz": value("AcquisitionFrameRate") if connected else None,
+            # the limit the camera is told to keep; nothing when it runs free
+            "configured_frame_rate_hz": (value("AcquisitionFrameRate")
+                                         if connected and value("AcquisitionFrameRateEnable") is not False else None),
             "measured_frame_rate_hz": stats.get("fps") if self.live else None,
             "exposure_us": value("ExposureTime") if connected else None,
             "gain": value("Gain") if connected else None,
@@ -270,6 +272,7 @@ class CameraController:
             "BinningHorizontal",
             "BinningVertical",
             "AcquisitionFrameRate",
+            "AcquisitionFrameRateEnable",
             "DeviceLinkThroughputLimit",
             "ResultingFrameRate",
         ]

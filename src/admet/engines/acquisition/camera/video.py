@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import subprocess
 from collections.abc import Callable
 from datetime import datetime
@@ -64,6 +65,9 @@ class VideoWorker:
         # What the recording is, beyond its frames: written into the video at encode.
         self.record: dict = dict(record or {})
         self.started_at = ""
+        self.stopped_at = ""
+        self._first_frame_at: float | None = None      # monotonic, for the measured frame rate
+        self._last_frame_at: float | None = None
 
         self.raw_path = self.output_dir / f"{prefix}.raw"
         self.info_path = self.output_dir / f"{prefix}.video.json"
@@ -80,6 +84,8 @@ class VideoWorker:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self._file = self.raw_path.open("wb")
             self.started_at = datetime.now().isoformat(timespec="seconds")
+            self.stopped_at = ""
+            self._first_frame_at = self._last_frame_at = None
             _write_info(self.info_path, self._info("recording"))
             self._stop_event.clear()
             self.frame_count = self.written = 0
@@ -101,6 +107,9 @@ class VideoWorker:
         try:
             self.queue.put_nowait(frame)
             self.frame_count += 1
+            self._last_frame_at = time.monotonic()
+            if self._first_frame_at is None:
+                self._first_frame_at = self._last_frame_at
             return True
         except Full:
             return False
@@ -108,6 +117,7 @@ class VideoWorker:
     def stop(self) -> str:
         """Write every queued frame, then start the encoding; the video's path, or "" if nothing was written."""
         self._stop_event.set()
+        self.stopped_at = datetime.now().isoformat(timespec="seconds")
         if self.thread:
             self.thread.join()        # no time limit: a frame left unwritten would be lost
         if self._file:
@@ -145,13 +155,22 @@ class VideoWorker:
             except Exception:
                 log.exception("video finished callback failed")
 
+    @property
+    def measured_fps(self) -> float:
+        """Frames a second as they arrived, first frame to last; 0 before two frames."""
+        if self._first_frame_at is None or self._last_frame_at is None or self.frame_count < 2:
+            return 0.0
+        span = self._last_frame_at - self._first_frame_at
+        return round((self.frame_count - 1) / span, 3) if span > 0 else 0.0
+
     def _info(self, status: str) -> dict:
         return {
             "video": self.video_path.name, "raw": self.raw_path.name,
             "width": self.width, "height": self.height, "fps": self.fps,
             "frames_captured": self.frame_count, "frames_written": self.written,
             "frames_dropped": self.frame_count - self.written, "status": status,
-            "started_at": self.started_at,
+            "started_at": self.started_at, "stopped_at": self.stopped_at,
+            "acquisition_fps": self.measured_fps,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "record": dict(self.record),
         }
@@ -207,6 +226,8 @@ def tag_record(info: dict) -> dict:
         "frames_dropped": max(0, captured - written) if captured else int(info.get("frames_dropped") or 0),
         "complete": not captured or written >= captured,
         "started_at": info.get("started_at") or (info.get("record") or {}).get("started_at", ""),
+        "stopped_at": info.get("stopped_at", ""),
+        "acquisition_fps": float(info.get("acquisition_fps") or 0.0),
         "encoded_at": datetime.now().isoformat(timespec="seconds"),
     }
 

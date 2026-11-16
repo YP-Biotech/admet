@@ -68,7 +68,10 @@ class WriterRecordTests(unittest.TestCase):
         self.assertFalse(record["complete"])
         self.assertEqual((record["recording_id"], record["step"], record["project_id"]), ("x", 2, "p"))
         self.assertEqual(record["started_at"], "2026-11-15T10:00:00")
+        self.assertEqual((record["acquisition_fps"], record["stopped_at"]), (0.0, ""))     # a writer that never said
         self.assertTrue(tag_record({**info, "frames_written": 10})["complete"])
+        self.assertEqual(tag_record({**info, "acquisition_fps": 3191.2, "stopped_at": "2026-11-15T10:00:15"})
+                         ["acquisition_fps"], 3191.2)
 
     @unittest.skipUnless(FFMPEG, "ffmpeg is not installed")
     def test_an_encoded_video_carries_its_record_and_needs_no_side_file(self):
@@ -85,6 +88,8 @@ class WriterRecordTests(unittest.TestCase):
             tag = read_recording_tag(video)
             self.assertEqual((tag["project_id"], tag["frames_written"], tag["complete"]), ("study", 3, True))
             self.assertEqual((tag["width"], tag["height"], tag["file_fps"]), (2, 2, 30.0))
+            self.assertGreater(tag["acquisition_fps"], 0.0)          # measured as the frames arrived
+            self.assertTrue(tag["stopped_at"] >= tag["started_at"])
             self.assertFalse((Path(tmp) / "clip.video.json").exists())
             self.assertFalse((Path(tmp) / "clip.raw").exists())
 
