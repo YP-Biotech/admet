@@ -96,6 +96,42 @@ def live_stats(metadata: dict[str, Any]) -> str:
     return "connected · not live"
 
 
+def nerd_line(metadata: dict[str, Any], mean: float | None = None) -> str:
+    """The camera's numbers for the curious: size in pixels, format, mean level, exposure, gain, data rate."""
+    if not metadata.get("camera_connected"):
+        return ""
+    parameters = metadata.get("camera_parameters") or {}
+
+    def value(name: str) -> Any:
+        return (parameters.get(name) or {}).get("value")
+
+    shape = metadata.get("camera_frame_shape") or []
+    width, height = (shape[1], shape[0]) if len(shape) >= 2 else (value("Width"), value("Height"))
+    parts = []
+    if width and height:
+        parts.append(f"{int(width)} × {int(height)} px")
+    fmt = value("PixelFormat")
+    if fmt:
+        parts.append(str(fmt))
+    if mean is not None:
+        parts.append(f"mean {mean:.1f}")
+    if value("ExposureTime") is not None:
+        parts.append(f"exposure {float(value('ExposureTime')):.0f} µs")
+    if value("Gain") is not None:
+        parts.append(f"gain {float(value('Gain')):g} dB")
+    fps = metadata.get("camera_fps")
+    if fps and width and height:
+        parts.append(f"{float(fps) * int(width) * int(height) * bytes_per_pixel(fmt) / 1e6:.1f} MB/s")
+    return " · ".join(parts)
+
+
+def bytes_per_pixel(pixel_format: Any) -> float:
+    name = str(pixel_format or "Mono8")
+    if name.endswith("p"):                       # packed: Mono10p is 10 bits a pixel, Mono12p 12
+        return int("".join(ch for ch in name if ch.isdigit()) or 8) / 8
+    return 2.0 if any(bits in name for bits in ("10", "12", "16")) else 1.0
+
+
 def _clock(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"

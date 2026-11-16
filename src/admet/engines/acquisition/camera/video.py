@@ -26,6 +26,7 @@ from threading import Event, Lock, Thread
 
 import numpy as np
 
+from .acquisition import as_8bit
 from .constants import QUEUE_GET_TIMEOUT, WRITER_QUEUE_SIZE
 from .tags import ffmpeg_metadata_args
 
@@ -131,9 +132,7 @@ class VideoWorker:
             except Empty:
                 continue
             try:
-                if frame.dtype == np.uint16:
-                    frame = (frame >> 8).astype(np.uint8)
-                self._file.write(frame.tobytes())
+                self._file.write(as_8bit(frame).tobytes())
                 self.written += 1
             except Exception as exc:
                 log.error("%s: a frame could not be written: %s", self.prefix, exc)

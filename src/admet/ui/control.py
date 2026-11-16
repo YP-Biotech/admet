@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 import numpy as np
 from PySide6.QtCore import QEvent, QItemSelectionModel, QLocale, QObject, QRect, QSettings, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -81,10 +81,12 @@ from admet.ui.data import (
     video_row,
 )
 from admet.ui.theme import STATUS_COLORS, Theme
+from admet.engines.acquisition.camera.acquisition import as_8bit
 from admet.ui.window import (
     connected_devices,
     log_state,
     live_stats,
+    nerd_line,
     panel_specs,
     structure_changed,
     structure_signature,
@@ -389,6 +391,7 @@ class ControlWindow(QMainWindow):
         for stage in self.workflow.stages:
             self.values.update(stage.settings.defaults())
         self.values["simulated"] = api.simulated
+        self._frame_mean: float | None = None
         self._calibration_sources: dict[str, QTableWidgetItem] = {}
         self._load_rig_calibration(apply=False)
         self.protocol_editors = {}
@@ -2251,6 +2254,7 @@ class ControlWindow(QMainWindow):
             self._acknowledge_camera_frame()
             return
         self.preview.set_frame(frame)
+        self._frame_mean = float(frame.mean()) if self.values.get("camera_nerd_mode") and frame.size else None
         self._sync_preview_overlay()
 
     def _acknowledge_camera_frame(self) -> None:
@@ -2262,9 +2266,13 @@ class ControlWindow(QMainWindow):
             acknowledge()
 
     def _sync_preview_overlay(self) -> None:
-        if self.preview is not None:
-            self.preview.set_overlay(live_stats(self.last_metadata),
-                                     recording=bool(self.last_metadata.get("camera_recording")))
+        if self.preview is None:
+            return
+        self.preview.set_overlay(live_stats(self.last_metadata),
+                                 recording=bool(self.last_metadata.get("camera_recording")))
+        nerd = bool(self.values.get("camera_nerd_mode"))
+        self.preview.set_nerd(nerd_line(self.last_metadata, self._frame_mean) if nerd else "",
+                              grid=nerd)
 
     def _emergency_stop(self) -> None:
         self._set_status("Emergency stop requested", "danger")
@@ -2814,6 +2822,8 @@ class ControlWindow(QMainWindow):
             self._set_status(f"{param.label} rejected", "danger")
             self._notify(str(exc), "danger")
             return
+        if name == "camera_nerd_mode":
+            self._sync_preview_overlay()
         for editor in self.protocol_editors.values():
             if editor.builtin and name in editor.stage.settings.defaults():
                 editor.edited()
@@ -3826,12 +3836,13 @@ class PreviewDisplay(QWidget):
         self._aspect = 480 / 640
         self._overlay = ""
         self._overlay_recording = False
+        self._nerd = ""
+        self._grid = False
 
     def set_frame(self, frame: np.ndarray | None) -> bool:
         if frame is None:
             return True
-        if frame.dtype == np.uint16:
-            frame = (frame >> 8).astype(np.uint8)
+        frame = as_8bit(frame)
         if not frame.flags["C_CONTIGUOUS"]:
             frame = np.ascontiguousarray(frame)
         self.current_frame = frame
@@ -3842,6 +3853,11 @@ class PreviewDisplay(QWidget):
         self.message = ""
         self.update()
         return True
+
+    def set_nerd(self, text: str, *, grid: bool = False) -> None:
+        if (text, grid) != (self._nerd, self._grid):
+            self._nerd, self._grid = text, grid
+            self.update()
 
     def set_overlay(self, text: str, *, recording: bool = False) -> None:
         if (text, recording) != (self._overlay, self._overlay_recording):
@@ -3923,6 +3939,31 @@ class PreviewDisplay(QWidget):
             painter.setPen(QColor(255, 96, 96) if self._overlay_recording else Qt.GlobalColor.white)
             painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                              self._overlay)
+        if self._grid and self.frame_rect.width() > 0:
+            # Thin yellow lines every 32 camera pixels, so a feature's size can be read off the frame.
+            scale = self.frame_rect.width() / max(width, 1)
+            painter.setPen(QPen(QColor(255, 220, 0, 110), 1))
+            for x in range(32, width, 32):
+                px = int(self.frame_rect.x() + x * scale)
+                painter.drawLine(px, self.frame_rect.y(), px, self.frame_rect.bottom())
+            for y in range(32, height, 32):
+                py = int(self.frame_rect.y() + y * scale)
+                painter.drawLine(self.frame_rect.x(), py, self.frame_rect.right(), py)
+        if self._nerd:
+            font = painter.font()
+            font.setPointSize(11)
+            font.setBold(False)
+            painter.setFont(font)
+            band_height = painter.fontMetrics().height() + 8
+            below = self.height() - self.frame_rect.bottom() - 1
+            if below >= band_height:
+                band = QRect(0, self.frame_rect.bottom() + 1, self.width(), band_height)
+            else:
+                band = QRect(self.frame_rect.x(), self.frame_rect.bottom() - band_height, self.frame_rect.width(), band_height)
+                painter.fillRect(band, QColor(0, 0, 0, 150))
+            painter.setPen(QColor(255, 220, 0))
+            painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             self._nerd)
         self.frame_painted.emit()
 
 

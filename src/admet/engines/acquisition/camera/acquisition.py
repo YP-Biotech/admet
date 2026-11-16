@@ -11,6 +11,17 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 
+def as_8bit(frame: np.ndarray) -> np.ndarray:
+    """A frame as one byte a pixel; a 16-bit frame keeps its top byte.
+
+    The camera hands over Mono8 whatever its pixel format (see Camera.grab_frame), so
+    this only meets a true 16-bit frame from another source.
+    """
+    if frame.dtype == np.uint16:
+        return (frame >> 8).astype(np.uint8)
+    return frame
+
+
 class CameraSource(Protocol):
     def start_grabbing(self, *, latest_only: bool = True) -> None:
         ...

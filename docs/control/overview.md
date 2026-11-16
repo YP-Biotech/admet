@@ -30,6 +30,9 @@ The left-hand list (TOC) is the session, top to bottom:
 
 Above the stage content sits the **action bar** (Plan, Execute, Confirm, Pause,
 Skip, Abort); below it, the live graphs and, in camera mode, the video preview.
+The camera setting **Nerd mode** draws a thin yellow grid every 32 pixels on the
+preview and a line under it with the frame size, pixel format, mean pixel value,
+exposure, gain and the data rate the camera is sending.
 Each channel also has its own manual controls — see [Manual control](./manual).
 
 ## Acquisition mode
