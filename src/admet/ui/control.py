@@ -81,11 +81,13 @@ from admet.ui.data import (
     video_row,
 )
 from admet.ui.theme import STATUS_COLORS, Theme
-from admet.engines.acquisition.camera.acquisition import as_8bit, sharpness
+from admet.engines.acquisition.camera.acquisition import GRID_CELL, as_8bit, cell_means, sharpness
 from admet.ui.window import (
     connected_devices,
     log_state,
     FocusTracker,
+    heat_range,
+    heat_rgb,
     live_stats,
     nerd_line,
     panel_specs,
@@ -393,6 +395,7 @@ class ControlWindow(QMainWindow):
             self.values.update(stage.settings.defaults())
         self.values["simulated"] = api.simulated
         self._frame_mean: float | None = None
+        self._cells: np.ndarray | None = None
         self._focus = FocusTracker()
         self._calibration_sources: dict[str, QTableWidgetItem] = {}
         self._load_rig_calibration(apply=False)
@@ -2258,9 +2261,11 @@ class ControlWindow(QMainWindow):
         self.preview.set_frame(frame)
         if self.values.get("camera_nerd_mode") and frame.size:
             self._frame_mean = float(frame.mean())
+            self._cells = cell_means(frame)
             self._focus.add(sharpness(frame), time.monotonic())
         else:
             self._frame_mean = None
+            self._cells = None
         self._sync_preview_overlay()
 
     def _acknowledge_camera_frame(self) -> None:
@@ -2278,8 +2283,10 @@ class ControlWindow(QMainWindow):
                                  recording=bool(self.last_metadata.get("camera_recording")))
         nerd = bool(self.values.get("camera_nerd_mode"))
         focus = self._focus.fraction if nerd else None
-        self.preview.set_nerd(nerd_line(self.last_metadata, self._frame_mean, focus) if nerd else "",
-                              grid=nerd, focus=focus)
+        cells = self._cells if nerd else None
+        span = heat_range(cells) if cells is not None and cells.size else None
+        self.preview.set_nerd(nerd_line(self.last_metadata, self._frame_mean, focus, span) if nerd else "",
+                              grid=nerd, focus=focus, cells=cells)
 
     def _emergency_stop(self) -> None:
         self._set_status("Emergency stop requested", "danger")
@@ -3834,6 +3841,17 @@ class NotificationCard(QFrame):
         super().closeEvent(event)
 
 
+def _wrap_parts(parts: list[str], width: int, measure) -> list[str]:
+    """The parts joined with ' · ' on as few lines as fit the width; a part is never split."""
+    lines: list[str] = []
+    for part in parts:
+        if lines and measure(f"{lines[-1]} · {part}") <= width:
+            lines[-1] = f"{lines[-1]} · {part}"
+        else:
+            lines.append(part)
+    return lines or [""]
+
+
 class PreviewDisplay(QWidget):
     frame_painted = Signal()
 
@@ -3848,6 +3866,7 @@ class PreviewDisplay(QWidget):
         self._nerd = ""
         self._grid = False
         self._focus: float | None = None
+        self._cells: np.ndarray | None = None
 
     def set_frame(self, frame: np.ndarray | None) -> bool:
         if frame is None:
@@ -3864,7 +3883,10 @@ class PreviewDisplay(QWidget):
         self.update()
         return True
 
-    def set_nerd(self, text: str, *, grid: bool = False, focus: float | None = None) -> None:
+    def set_nerd(self, text: str, *, grid: bool = False, focus: float | None = None,
+                 cells: np.ndarray | None = None) -> None:
+        """The grid cells are tinted by their mean level; the frame that brought them repaints anyway."""
+        self._cells = cells
         if (text, grid, focus) != (self._nerd, self._grid, self._focus):
             self._nerd, self._grid, self._focus = text, grid, focus
             self.update()
@@ -3950,13 +3972,25 @@ class PreviewDisplay(QWidget):
             painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                              self._overlay)
         if self._grid and self.frame_rect.width() > 0:
-            # Thin yellow lines every 32 camera pixels, so a feature's size can be read off the frame.
+            # A grid every 32 camera pixels; each cell is tinted by its mean level, blue low to red high,
+            # lightly enough that the picture stays visible.
             scale = self.frame_rect.width() / max(width, 1)
-            painter.setPen(QPen(QColor(255, 220, 0, 110), 1))
-            for x in range(32, width, 32):
+            cell = GRID_CELL
+            if self._cells is not None and self._cells.size:
+                low, high = heat_range(self._cells)
+                for i, row in enumerate(self._cells):
+                    for j, value in enumerate(row):
+                        x0 = int(self.frame_rect.x() + j * cell * scale)
+                        y0 = int(self.frame_rect.y() + i * cell * scale)
+                        x1 = int(self.frame_rect.x() + min((j + 1) * cell, width) * scale)
+                        y1 = int(self.frame_rect.y() + min((i + 1) * cell, height) * scale)
+                        painter.fillRect(QRect(x0, y0, x1 - x0, y1 - y0),
+                                         QColor(*heat_rgb((float(value) - low) / (high - low)), 70))
+            painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+            for x in range(cell, width, cell):
                 px = int(self.frame_rect.x() + x * scale)
                 painter.drawLine(px, self.frame_rect.y(), px, self.frame_rect.bottom())
-            for y in range(32, height, 32):
+            for y in range(cell, height, cell):
                 py = int(self.frame_rect.y() + y * scale)
                 painter.drawLine(self.frame_rect.x(), py, self.frame_rect.right(), py)
         if self._nerd:
@@ -3964,7 +3998,11 @@ class PreviewDisplay(QWidget):
             font.setPointSize(11)
             font.setBold(False)
             painter.setFont(font)
-            band_height = painter.fontMetrics().height() + 8
+            metrics = painter.fontMetrics()
+            bar_room = 8 + 60 if self._focus is not None else 0
+            lines = _wrap_parts(self._nerd.split(" · "), self.width() - 20 - bar_room, metrics.horizontalAdvance)
+            line_height = metrics.height()
+            band_height = line_height * len(lines) + 8
             below = self.height() - self.frame_rect.bottom() - 1
             if below >= band_height:
                 band = QRect(0, self.frame_rect.bottom() + 1, self.width(), band_height)
@@ -3972,12 +4010,12 @@ class PreviewDisplay(QWidget):
                 band = QRect(self.frame_rect.x(), self.frame_rect.bottom() - band_height, self.frame_rect.width(), band_height)
                 painter.fillRect(band, QColor(0, 0, 0, 150))
             painter.setPen(QColor(255, 220, 0))
-            painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                             self._nerd)
-            bar_x = band.x() + 10 + painter.fontMetrics().horizontalAdvance(self._nerd) + 8
-            if self._focus is not None and bar_x + 60 <= band.right() - 4:
-                # The focus bar after the text: full at the sharpest position seen, shorter on either side.
-                bar = QRect(bar_x, band.center().y() - 4, 60, 8)
+            for n, line in enumerate(lines):
+                row = QRect(band.x() + 10, band.y() + 4 + n * line_height, band.width() - 20, line_height)
+                painter.drawText(row, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, line)
+            if self._focus is not None:
+                # The focus bar after the last line: full at the sharpest position seen, shorter on either side.
+                bar = QRect(band.x() + 10 + metrics.horizontalAdvance(lines[-1]) + 8, row.center().y() - 4, 60, 8)
                 painter.setPen(QPen(QColor(255, 220, 0, 160), 1))
                 painter.drawRect(bar)
                 painter.fillRect(QRect(bar.x() + 1, bar.y() + 1, int((bar.width() - 2) * self._focus), bar.height() - 2),

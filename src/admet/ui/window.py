@@ -128,7 +128,31 @@ class FocusTracker:
         self.best = 0.0
 
 
-def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float | None = None) -> str:
+def heat_rgb(t: float) -> tuple[int, int, int]:
+    """Blue for the lowest level through green to red for the highest, t in 0..1."""
+    t = min(max(t, 0.0), 1.0)
+    stops = [(0, 0, 255), (0, 200, 255), (0, 220, 0), (255, 220, 0), (255, 0, 0)]
+    position = t * (len(stops) - 1)
+    i = min(int(position), len(stops) - 2)
+    f = position - i
+    return tuple(int(round(a + (b - a) * f)) for a, b in zip(stops[i], stops[i + 1]))
+
+
+def heat_range(cells: Any, min_span: float = 4.0) -> tuple[float, float]:
+    """The levels the colours span: the cells' lowest and highest, at least min_span apart so a
+    flat picture does not paint its noise."""
+    values = [float(v) for row in cells for v in row]
+    if not values:
+        return (0.0, min_span)
+    low, high = min(values), max(values)
+    if high - low < min_span:
+        middle = (low + high) / 2
+        low, high = middle - min_span / 2, middle + min_span / 2
+    return (low, high)
+
+
+def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float | None = None,
+              cells: tuple[float, float] | None = None) -> str:
     """The camera's numbers for the curious: size in pixels, format, mean level, exposure, gain, data rate."""
     if not metadata.get("camera_connected"):
         return ""
@@ -147,6 +171,8 @@ def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float 
         parts.append(str(fmt))
     if mean is not None:
         parts.append(f"mean {mean:.1f}")
+    if cells is not None:
+        parts.append(f"cells {cells[0]:.0f}–{cells[1]:.0f}")      # blue at the first level, red at the second
     if value("ExposureTime") is not None:
         parts.append(f"exposure {float(value('ExposureTime')):.0f} µs")
     if value("Gain") is not None:

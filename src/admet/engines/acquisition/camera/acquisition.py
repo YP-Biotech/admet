@@ -22,6 +22,22 @@ def as_8bit(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
+GRID_CELL = 32          # camera pixels a Nerd mode grid cell spans
+
+
+def cell_means(frame: np.ndarray, cell: int = GRID_CELL) -> np.ndarray:
+    """The mean level of each cell of the grid laid over the frame; the edge cells are what is left."""
+    f = as_8bit(frame).astype(np.float32)
+    if f.ndim == 3:
+        f = f.mean(axis=2)
+    if f.ndim != 2 or f.size == 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    rows, cols = np.arange(0, f.shape[0], cell), np.arange(0, f.shape[1], cell)
+    sums = np.add.reduceat(np.add.reduceat(f, rows, axis=0), cols, axis=1)
+    counts = np.outer(np.diff(np.append(rows, f.shape[0])), np.diff(np.append(cols, f.shape[1])))
+    return sums / counts
+
+
 def sharpness(frame: np.ndarray) -> float:
     """How sharp a frame is: its edge energy (Tenengrad), the mean squared Sobel gradient after
     a 3×3 smoothing, divided by the squared mean level so a gain change leaves it alone.

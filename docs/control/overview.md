@@ -30,9 +30,10 @@ The left-hand list (TOC) is the session, top to bottom:
 
 Above the stage content sits the **action bar** (Plan, Execute, Confirm, Pause,
 Skip, Abort); below it, the live graphs and, in camera mode, the video preview.
-The camera setting **Nerd mode** draws a thin yellow grid every 32 pixels on the
-preview and a line under it with the frame size, pixel format, mean pixel value,
-exposure, gain, focus and the data rate the camera is sending. Focus is the
+The camera setting **Nerd mode** draws a grid every 32 pixels on the preview,
+each cell lightly tinted by its mean level from blue (lowest) to red (highest),
+and a line under it with the frame size, pixel format, mean pixel value, the
+levels the colours span, exposure, gain, the data rate and focus. Focus is the
 sharpness of the last half second against the best seen since Nerd mode or a
 camera setting last changed: turn the focus until the bar is full.
 Each channel also has its own manual controls — see [Manual control](./manual).

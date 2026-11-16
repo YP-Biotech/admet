@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from admet.engines.acquisition.camera.acquisition import as_8bit, sharpness
-from admet.ui.window import FocusTracker, bytes_per_pixel, live_stats, nerd_line
+from admet.engines.acquisition.camera.acquisition import as_8bit, cell_means, sharpness
+from admet.ui.window import FocusTracker, bytes_per_pixel, heat_range, heat_rgb, live_stats, nerd_line
 
 
 class LiveStatsTests(unittest.TestCase):
@@ -36,6 +36,18 @@ class NerdModeTests(unittest.TestCase):
     def test_the_nerd_line_carries_the_focus_as_a_share_of_the_best(self):
         metadata = {"camera_connected": True, "camera_frame_shape": [60, 320]}
         self.assertEqual(nerd_line(metadata, None, 0.83), "320 × 60 px · focus 83 %")
+        self.assertEqual(nerd_line(metadata, 80.0, None, (62.4, 97.0)), "320 × 60 px · mean 80.0 · cells 62–97")
+
+    def test_the_heat_map_cells_are_the_grid_means_and_colour_blue_to_red(self):
+        frame = np.full((40, 70), 50, dtype=np.uint8)
+        frame[:, 32:] = 150
+        cells = cell_means(frame)                       # 2 rows (32 + 8 px), 3 columns (32 + 32 + 6 px)
+        self.assertEqual(cells.shape, (2, 3))
+        self.assertEqual(cells.tolist(), [[50.0, 150.0, 150.0], [50.0, 150.0, 150.0]])
+        self.assertEqual(heat_range(cells), (50.0, 150.0))
+        self.assertEqual(heat_range(np.full((2, 2), 80.0)), (78.0, 82.0))         # flat: no noise painting
+        self.assertEqual((heat_rgb(0.0), heat_rgb(0.5), heat_rgb(1.0)), ((0, 0, 255), (0, 220, 0), (255, 0, 0)))
+        self.assertEqual(cell_means(np.zeros((0, 0), dtype=np.uint8)).size, 0)
 
     def test_as_8bit_keeps_the_top_byte_of_a_sixteen_bit_frame(self):
         self.assertEqual(as_8bit(np.array([[0, 256], [512, 65535]], dtype=np.uint16)).tolist(), [[0, 1], [2, 255]])
