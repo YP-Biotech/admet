@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from admet.engines.acquisition.camera.acquisition import as_8bit, cell_means, sharpness
+from admet.engines.acquisition.camera.acquisition import as_8bit, cell_means, grid_edges, sharpness
 from admet.ui.window import FocusTracker, bytes_per_pixel, heat_range, heat_rgb, live_stats, nerd_line
 
 
@@ -37,12 +37,24 @@ class NerdModeTests(unittest.TestCase):
         self.assertEqual(nerd_line(metadata, None, 0.83), "320x60  focus 83%")
         self.assertEqual(nerd_line(metadata, 80.0, None, (62.4, 97.0)), "320x60  avg 80.0  grid 62-97")
 
+    def test_the_grid_has_about_256_cells_whatever_the_frame_size(self):
+        for width, height in ((320, 60), (640, 480), (1920, 1080), (100, 100)):
+            rows, cols = grid_edges(width, height)
+            count = (len(rows) - 1) * (len(cols) - 1)
+            self.assertTrue(230 <= count <= 290, (width, height, count))
+            self.assertEqual((rows[0], rows[-1], cols[0], cols[-1]), (0, height, 0, width))
+        rows, cols = grid_edges(320, 60)
+        self.assertEqual((len(rows) - 1, len(cols) - 1), (7, 37))          # 8.6 px cells
+        self.assertTrue(all(7 <= step <= 10 for step in np.diff(rows)))     # even, no leftover strip
+
     def test_the_heat_map_cells_are_the_grid_means_and_colour_blue_to_red(self):
         frame = np.full((40, 70), 50, dtype=np.uint8)
         frame[:, 32:] = 150
-        cells = cell_means(frame)                       # 2 rows (32 + 8 px), 3 columns (32 + 32 + 6 px)
+        cells = cell_means(frame, cells=6)              # 2 rows of 20 px, 3 columns of 23, 24 and 23 px
         self.assertEqual(cells.shape, (2, 3))
-        self.assertEqual(cells.tolist(), [[50.0, 150.0, 150.0], [50.0, 150.0, 150.0]])
+        self.assertEqual(cells[:, 0].tolist(), [50.0, 50.0])
+        self.assertEqual(cells[:, 2].tolist(), [150.0, 150.0])
+        self.assertAlmostEqual(cells[0, 1], (9 * 50 + 15 * 150) / 24, places=4)
         self.assertEqual(heat_range(cells), (50.0, 150.0))
         self.assertEqual(heat_range(np.full((2, 2), 80.0)), (78.0, 82.0))         # flat: no noise painting
         self.assertEqual((heat_rgb(0.0), heat_rgb(0.5), heat_rgb(1.0)), ((0, 0, 255), (0, 220, 0), (255, 0, 0)))

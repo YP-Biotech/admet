@@ -22,20 +22,28 @@ def as_8bit(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
-GRID_CELL = 32          # camera pixels a Nerd mode grid cell spans
+GRID_CELLS = 256        # cells the Nerd mode grid has, whatever the frame's size
 
 
-def cell_means(frame: np.ndarray, cell: int = GRID_CELL) -> np.ndarray:
-    """The mean level of each cell of the grid laid over the frame; the edge cells are what is left."""
+def grid_edges(width: int, height: int, cells: int = GRID_CELLS) -> tuple[np.ndarray, np.ndarray]:
+    """Row and column boundaries of a grid of about `cells` near-square cells over a width × height frame."""
+    if width <= 0 or height <= 0:
+        return np.zeros(1, dtype=int), np.zeros(1, dtype=int)
+    side = max(np.sqrt(width * height / cells), 1.0)
+    rows, cols = max(int(round(height / side)), 1), max(int(round(width / side)), 1)
+    return np.linspace(0, height, rows + 1).round().astype(int), np.linspace(0, width, cols + 1).round().astype(int)
+
+
+def cell_means(frame: np.ndarray, cells: int = GRID_CELLS) -> np.ndarray:
+    """The mean level of each cell of the grid laid over the frame."""
     f = as_8bit(frame).astype(np.float32)
     if f.ndim == 3:
         f = f.mean(axis=2)
     if f.ndim != 2 or f.size == 0:
         return np.zeros((0, 0), dtype=np.float32)
-    rows, cols = np.arange(0, f.shape[0], cell), np.arange(0, f.shape[1], cell)
-    sums = np.add.reduceat(np.add.reduceat(f, rows, axis=0), cols, axis=1)
-    counts = np.outer(np.diff(np.append(rows, f.shape[0])), np.diff(np.append(cols, f.shape[1])))
-    return sums / counts
+    row_edges, col_edges = grid_edges(f.shape[1], f.shape[0], cells)
+    sums = np.add.reduceat(np.add.reduceat(f, row_edges[:-1], axis=0), col_edges[:-1], axis=1)
+    return sums / np.outer(np.diff(row_edges), np.diff(col_edges))
 
 
 def sharpness(frame: np.ndarray) -> float:

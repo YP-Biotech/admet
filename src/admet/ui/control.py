@@ -81,7 +81,7 @@ from admet.ui.data import (
     video_row,
 )
 from admet.ui.theme import STATUS_COLORS, Theme
-from admet.engines.acquisition.camera.acquisition import GRID_CELL, as_8bit, cell_means, sharpness
+from admet.engines.acquisition.camera.acquisition import as_8bit, cell_means, grid_edges, sharpness
 from admet.ui.window import (
     connected_devices,
     log_state,
@@ -3973,26 +3973,23 @@ class PreviewDisplay(QWidget):
             painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                              self._overlay)
         if self._grid and self.frame_rect.width() > 0:
-            # A grid every 32 camera pixels; each cell is tinted by its mean level, blue low to red high,
-            # lightly enough that the picture stays visible.
+            # A grid of about 256 cells whatever the frame's size; each cell is tinted by its mean level,
+            # blue low to red high, lightly enough that the picture stays visible.
             scale = self.frame_rect.width() / max(width, 1)
-            cell = GRID_CELL
-            if self._cells is not None and self._cells.size:
-                low, high = heat_range(self._cells)
-                for i, row in enumerate(self._cells):
+            row_edges, col_edges = grid_edges(width, height)
+            xs = [int(self.frame_rect.x() + x * scale) for x in col_edges]
+            ys = [int(self.frame_rect.y() + y * scale) for y in row_edges]
+            cells = self._cells
+            if cells is not None and cells.shape == (len(ys) - 1, len(xs) - 1):
+                low, high = heat_range(cells)
+                for i, row in enumerate(cells):
                     for j, value in enumerate(row):
-                        x0 = int(self.frame_rect.x() + j * cell * scale)
-                        y0 = int(self.frame_rect.y() + i * cell * scale)
-                        x1 = int(self.frame_rect.x() + min((j + 1) * cell, width) * scale)
-                        y1 = int(self.frame_rect.y() + min((i + 1) * cell, height) * scale)
-                        painter.fillRect(QRect(x0, y0, x1 - x0, y1 - y0),
+                        painter.fillRect(QRect(xs[j], ys[i], xs[j + 1] - xs[j], ys[i + 1] - ys[i]),
                                          QColor(*heat_rgb((float(value) - low) / (high - low)), 70))
             painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
-            for x in range(cell, width, cell):
-                px = int(self.frame_rect.x() + x * scale)
+            for px in xs[1:-1]:
                 painter.drawLine(px, self.frame_rect.y(), px, self.frame_rect.bottom())
-            for y in range(cell, height, cell):
-                py = int(self.frame_rect.y() + y * scale)
+            for py in ys[1:-1]:
                 painter.drawLine(self.frame_rect.x(), py, self.frame_rect.right(), py)
         if self._nerd:
             font = painter.font()
