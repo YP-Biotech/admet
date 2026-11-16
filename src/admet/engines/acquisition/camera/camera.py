@@ -30,6 +30,7 @@ class Camera:
         self._pylon = pylon_module
         self.device = None
         self._is_grabbing = False
+        self._mono8_converter = None
 
     @property
     def connected(self) -> bool:
@@ -211,13 +212,32 @@ class Camera:
                 self._pylon_module().TimeoutHandling_Return,
             )
             if result and result.GrabSucceeded():
-                return result.GetArray()
+                if self._is_mono8(result):
+                    return result.GetArray()
+                return self._to_mono8().Convert(result).GetArray()
             return None
         except Exception:
             return None
         finally:
             if result:
                 result.Release()
+
+    def _is_mono8(self, result: Any) -> bool:
+        """Mono10, Mono10p and the like are converted: the preview and the writer want one byte a pixel,
+        and a 10-bit value shifted by eight is black."""
+        try:
+            return result.GetPixelType() == self._pylon_module().PixelType_Mono8
+        except Exception:
+            return True                      # a source that cannot say is taken at its word
+
+    def _to_mono8(self) -> Any:
+        """pylon's converter to Mono8, made once; it keeps the top eight bits of a 10 or 12-bit pixel."""
+        if self._mono8_converter is None:
+            pylon = self._pylon_module()
+            converter = pylon.ImageFormatConverter()
+            converter.OutputPixelFormat = pylon.PixelType_Mono8
+            self._mono8_converter = converter
+        return self._mono8_converter
 
     def get_resulting_framerate(self) -> float:
         for name in ("ResultingFrameRate", "ResultingFrameRateAbs"):

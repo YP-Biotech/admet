@@ -96,6 +96,106 @@ def live_stats(metadata: dict[str, Any]) -> str:
     return "connected · not live"
 
 
+class FocusTracker:
+    """The sharpness of the last half second of frames against the best seen since the reset.
+
+    Turn the focus until the fraction reads 1: it falls on either side of the sharpest position.
+    """
+
+    def __init__(self, window_s: float = 0.5) -> None:
+        self.window_s = window_s
+        self.samples: list[tuple[float, float]] = []
+        self.best = 0.0
+
+    def add(self, score: float, now: float) -> None:
+        self.samples.append((now, score))
+        self.samples = [(t, s) for t, s in self.samples if now - t <= self.window_s]
+        self.best = max(self.best, self.current)
+
+    @property
+    def current(self) -> float:
+        return sum(s for _, s in self.samples) / len(self.samples) if self.samples else 0.0
+
+    @property
+    def fraction(self) -> float | None:
+        """The current sharpness as a share of the best, None before any frame."""
+        if not self.samples or self.best <= 0:
+            return None
+        return min(self.current / self.best, 1.0)
+
+    def reset(self) -> None:
+        self.samples = []
+        self.best = 0.0
+
+
+NERD_SEPARATOR = "  "
+
+
+def heat_rgb(t: float) -> tuple[int, int, int]:
+    """Blue for the lowest level through green to red for the highest, t in 0..1."""
+    t = min(max(t, 0.0), 1.0)
+    stops = [(0, 0, 255), (0, 200, 255), (0, 220, 0), (255, 220, 0), (255, 0, 0)]
+    position = t * (len(stops) - 1)
+    i = min(int(position), len(stops) - 2)
+    f = position - i
+    return tuple(int(round(a + (b - a) * f)) for a, b in zip(stops[i], stops[i + 1]))
+
+
+def heat_range(cells: Any, min_span: float = 4.0) -> tuple[float, float]:
+    """The levels the colours span: the cells' lowest and highest, at least min_span apart so a
+    flat picture does not paint its noise."""
+    values = [float(v) for row in cells for v in row]
+    if not values:
+        return (0.0, min_span)
+    low, high = min(values), max(values)
+    if high - low < min_span:
+        middle = (low + high) / 2
+        low, high = middle - min_span / 2, middle + min_span / 2
+    return (low, high)
+
+
+def nerd_line(metadata: dict[str, Any], mean: float | None = None, focus: float | None = None,
+              cells: tuple[float, float] | None = None) -> str:
+    """The camera's numbers for the curious, short: size, format, mean level, grid span, exposure, gain, data rate,
+    focus. Fields are two spaces apart; a field holds one space at most."""
+    if not metadata.get("camera_connected"):
+        return ""
+    parameters = metadata.get("camera_parameters") or {}
+
+    def value(name: str) -> Any:
+        return (parameters.get(name) or {}).get("value")
+
+    shape = metadata.get("camera_frame_shape") or []
+    width, height = (shape[1], shape[0]) if len(shape) >= 2 else (value("Width"), value("Height"))
+    parts = []
+    if width and height:
+        parts.append(f"{int(width)}x{int(height)}")
+    fmt = value("PixelFormat")
+    if fmt:
+        parts.append(str(fmt))
+    if mean is not None:
+        parts.append(f"avg {mean:.1f}")
+    if cells is not None:
+        parts.append(f"grid {cells[0]:.0f}-{cells[1]:.0f}")      # blue at the first level, red at the second
+    if value("ExposureTime") is not None:
+        parts.append(f"exp {float(value('ExposureTime')):.0f}us")
+    if value("Gain") is not None:
+        parts.append(f"gain {float(value('Gain')):g}dB")
+    fps = metadata.get("camera_fps")
+    if fps and width and height:
+        parts.append(f"{float(fps) * int(width) * int(height) * bytes_per_pixel(fmt) / 1e6:.1f}MB/s")
+    if focus is not None:
+        parts.append(f"focus {focus * 100:.0f}%")        # last, so the focus bar sits next to it
+    return NERD_SEPARATOR.join(parts)
+
+
+def bytes_per_pixel(pixel_format: Any) -> float:
+    name = str(pixel_format or "Mono8")
+    if name.endswith("p"):                       # packed: Mono10p is 10 bits a pixel, Mono12p 12
+        return int("".join(ch for ch in name if ch.isdigit()) or 8) / 8
+    return 2.0 if any(bits in name for bits in ("10", "12", "16")) else 1.0
+
+
 def _clock(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"

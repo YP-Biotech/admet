@@ -59,6 +59,18 @@ class FakeGrabResult:
         self.released = True
 
 
+class FakeTenBitResult(FakeGrabResult):
+    def GetPixelType(self):
+        return "Mono10"
+
+
+class FakeConverter:
+    OutputPixelFormat = None
+
+    def Convert(self, result):
+        return FakeGrabResult((result.frame >> 2).astype(np.uint8))
+
+
 class FakeInstantCamera:
     def __init__(self, device):
         self.transport_device = device
@@ -66,6 +78,7 @@ class FakeInstantCamera:
         self.grabbing = False
         self.strategy = None
         self.frame = np.array([[1, 2], [3, 4]], dtype=np.uint8)
+        self.result = None
         self.UserSetSelector = FakeParam()
         self.UserSetLoad = FakeParam()
         self.DeviceLinkThroughputLimitMode = FakeParam("On")
@@ -98,7 +111,7 @@ class FakeInstantCamera:
         self.grabbing = False
 
     def RetrieveResult(self, timeout_ms, timeout_handling):
-        return FakeGrabResult(self.frame)
+        return self.result or FakeGrabResult(self.frame)
 
 
 class FakeTlFactory:
@@ -128,6 +141,8 @@ class FakePylon:
             return cls.factory
 
     InstantCamera = FakeInstantCamera
+    ImageFormatConverter = FakeConverter
+    PixelType_Mono8 = "Mono8"
 
 
 class EmptyFakePylon:
@@ -170,6 +185,19 @@ class CameraTests(unittest.TestCase):
 
         camera.close()
         self.assertIsNone(camera.device)
+
+    def test_a_ten_bit_frame_is_converted_to_mono8_at_grab(self):
+        camera = Camera(FakePylon)
+        self.assertTrue(camera.open())
+        camera.start_grabbing()
+        camera.device.result = FakeTenBitResult(np.full((2, 2), 800, dtype=np.uint16))
+
+        frame = camera.grab_frame()
+
+        self.assertEqual(frame.dtype, np.uint8)
+        self.assertEqual(int(frame.max()), 200)
+        self.assertEqual(camera._to_mono8().OutputPixelFormat, "Mono8")
+        camera.close()
 
     def test_preflight_treats_no_devices_as_refreshable_state(self):
         camera = Camera(EmptyFakePylon)
