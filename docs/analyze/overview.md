@@ -53,10 +53,17 @@ over the frame.
 Droplets are found as what is darker than the empty channel. The background is the
 bright side of each pixel over frames sampled across the video, each frame is matched
 to it in brightness (so a lamp that drifts does not matter), and a pixel counts as
-droplet when it is darker than the background by a few times the camera noise. An
-opening the size of a satellite droplet keeps satellites, wall lines and specks off
-the main droplets. Droplets are then followed from frame to frame and counted once
-each as they pass a gate line, which gives the generation rate.
+droplet when it is darker than the background by a few times the camera noise, never
+less than two levels. A closed rim is filled; a rim open on its bright side, as a
+droplet lit from one side shows, is completed by its convex hull when that hull has
+a droplet's size and shape. An opening the size of a satellite droplet keeps
+satellites, wall lines and specks off the main droplets. Droplets are then followed
+from frame to frame for their speed, and the generation rate is the train's speed
+over the spacing between neighbouring droplets, which needs no droplet to be
+followed; when too few neighbours are seen, droplets are counted as they pass a gate
+line instead. When the recording's record carries the set flows, the rate cell also
+shows the rate those flows must make at the measured droplet size, every flow but
+the oil over the volume of a sphere of the median diameter.
 
 **µm/px** and **FPS** are applied when results are read, not by the run: the engine
 measures in pixels and frames, so changing either updates Results and the export at

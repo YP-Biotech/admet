@@ -1,10 +1,12 @@
 """Droplets as what is darker than the empty channel.
 
-A droplet darkens the whole of its footprint against the channel, by far more than the
-camera noise, so a threshold set a few times above the noise gives solid droplets. The
-background is the bright side of each pixel over the video, each frame is matched to it
-in brightness before differencing, and an opening the size of a satellite droplet keeps
-satellites, wall lines and specks off the main droplets.
+A droplet darkens its rim against the channel, and often its whole footprint, by more
+than the camera noise, so a threshold set a few times above the noise gives its outline.
+The background is the bright side of each pixel over the video, each frame is matched to
+it in brightness before differencing, a closed rim is filled, and a rim left open where
+the light passed through is completed by its convex hull when that hull is the size and
+shape of a droplet. An opening the size of a satellite droplet then keeps satellites, wall
+lines and specks off the main droplets.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ DEFAULTS: dict[str, Any] = {
     "min_area": 150.0,       # px²
     "max_area": 50000.0,     # px²
     "min_solidity": 0.85,
+    "min_threshold": 2.0,    # levels: the threshold never falls below this, however quiet the frame
+    "min_roundness": 0.7,    # of a hull, to complete an open rim with it
     "skip_left_pct": 0.0,    # % of the width left out on the left (the nozzle)
     "skip_right_pct": 0.0,   # % of the width left out on the right (the outlet)
     "border": 3,             # px: a droplet this close to the top or bottom edge is cut off
@@ -71,13 +75,15 @@ def detect(frame: np.ndarray, background: np.ndarray, config: dict[str, Any] | N
         darker = cv2.GaussianBlur(darker, (blur | 1, blur | 1), 0)
     # Noise from the whole frame: droplets are a minority of pixels, so the MAD is the background's.
     sigma = 1.4826 * float(np.median(np.abs(darker.astype(np.float32) - np.median(darker)))) + 0.5
-    threshold = max(6.0, float(cfg["k_sigma"]) * sigma)
+    threshold = max(float(cfg["min_threshold"]), float(cfg["k_sigma"]) * sigma)
     _, mask = cv2.threshold(darker, threshold, 255, cv2.THRESH_BINARY)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _ellipse(5))
     padded = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
     fill = np.zeros((padded.shape[0] + 2, padded.shape[1] + 2), np.uint8)
     cv2.floodFill(padded, fill, (0, 0), 255)
     filled = cv2.bitwise_or(mask, cv2.bitwise_not(padded)[1:-1, 1:-1])
+    completed = complete_rims(filled, float(cfg["min_area"]), float(cfg["max_area"]), float(cfg["min_solidity"]),
+                              float(cfg["min_roundness"]))
     bodies = cv2.morphologyEx(filled, cv2.MORPH_OPEN, _ellipse(max(3, int(cfg["satellite"]))))
     crumbs = cv2.subtract(filled, cv2.dilate(bodies, _ellipse(5)))
 
@@ -106,8 +112,29 @@ def detect(frame: np.ndarray, background: np.ndarray, config: dict[str, Any] | N
         if 15 <= area < float(cfg["min_area"]) and low < x and x + w < high:
             satellites.append({"area": area, "centroid_x": x + w / 2, "centroid_y": y + h / 2, "contour": contour})
     return {"properties": droplets, "contours": contours, "rejected": rejected, "satellites": satellites, "sigma": sigma,
-            "threshold": threshold, "window": (low, high),
+            "threshold": threshold, "window": (low, high), "completed": completed,
             "images": {"matched": matched, "darker": darker, "mask": mask, "bodies": bodies}}
+
+
+def complete_rims(filled: np.ndarray, min_area: float, max_area: float, min_solidity: float,
+                  min_roundness: float) -> int:
+    """Fill, in place, each open rim whose convex hull is a droplet: the right size, round, and far
+    from solid itself. A droplet lit from one side shows a dark rim on that side only, so the fill
+    from outside leaks in; its hull is still the droplet. How many were completed."""
+    completed = 0
+    for contour in cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        hull = cv2.convexHull(contour)
+        hull_area = float(cv2.contourArea(hull))
+        if not min_area <= hull_area <= max_area or float(cv2.contourArea(contour)) >= min_solidity * hull_area:
+            continue
+        perimeter = float(cv2.arcLength(hull, True))
+        _, _, w, h = cv2.boundingRect(hull)
+        roundness = 4 * np.pi * hull_area / perimeter ** 2 if perimeter > 0 else 0.0
+        if roundness < min_roundness or not 0.6 <= w / max(h, 1) <= 1.7:
+            continue
+        cv2.fillConvexPoly(filled, hull, 255)
+        completed += 1
+    return completed
 
 
 def properties(contour) -> dict[str, Any]:

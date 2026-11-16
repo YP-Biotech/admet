@@ -10,6 +10,9 @@ from pathlib import Path
 from admet.ui.analyze_results import (
     FileResult,
     StoredRun,
+    results_cells,
+    expected_rate_hz,
+    dispersed_flow_ul_min,
     bin_labels,
     cv_chart,
     diameter_chart,
@@ -82,6 +85,34 @@ class FileResultTests(unittest.TestCase):
         self.assertAlmostEqual(result.rate_hz, 40.0)                     # 5 frames apart at 200 fps
         self.assertAlmostEqual(result.speed_mm_s, 8.0)                   # 10 px/frame · 4 µm/px · 200 fps
         self.assertEqual((result.scale, result.fps, result.settings["fps"]), (4.0, 200.0, 200.0))
+        self.assertEqual(result.expected_hz, 0.0)                        # no flow known: nothing expected
+
+    def test_the_expected_rate_comes_from_the_dispersed_flow_and_the_droplet_size(self):
+        record = {"channels": [{"label": "Oil L", "mode": "flow", "flow_ul_min": 300.0},
+                               {"label": "Cells M", "mode": "flow", "flow_ul_min": 40.0},
+                               {"label": "Beads M", "mode": "flow", "flow_ul_min": 40.0}]}
+        self.assertEqual(dispersed_flow_ul_min(record), 80.0)
+        self.assertEqual(dispersed_flow_ul_min({"channels": [{"label": "Oil L", "flow_ul_min": 300.0}]}), 0.0)
+        self.assertEqual(dispersed_flow_ul_min(None), 0.0)
+        self.assertAlmostEqual(expected_rate_hz(80.0, 124.0), 1336, delta=2)   # 1.333 µL/s over 1.0 nL
+        self.assertEqual(expected_rate_hz(80.0, 0.0), 0.0)
+
+        scales = {("opencv", "/p/study.admetp/media/v.avi"): (2.0, 100.0, 80.0)}
+        result, = file_results(_run(Path("/p/study.admetp")), _rows(), scales=scales)
+
+        self.assertEqual(result.dispersed_ul_min, 80.0)
+        self.assertAlmostEqual(result.expected_hz, expected_rate_hz(80.0, 42.0), delta=1)   # the median diameter
+        self.assertIn("expected", results_cells(result, "#000")["rate"])
+
+    def test_a_rate_from_speed_over_spacing_is_taken_as_the_engine_gave_it(self):
+        rows = _rows()
+        rows[0]["values"]["generation"] = {"method": "spacing", "spacing_px": 50.0, "period_frames": 5.0,
+                                           "crossings": 0, "rate_hz": 20.0}
+
+        result, = file_results(_run(Path("/p/study.admetp")), rows)
+
+        self.assertAlmostEqual(result.rate_hz, 20.0)                     # 100 fps over 5 frames
+        self.assertEqual(result.rate_note, "speed over spacing")
 
     def test_two_files_with_the_same_sample_name_stay_two_results(self):
         rows = []

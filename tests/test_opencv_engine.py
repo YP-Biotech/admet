@@ -135,6 +135,10 @@ class OpenCVEngineTests(unittest.TestCase):
         self.assertLess(generation["period_sd_frames"], 0.05)
         self.assertAlmostEqual(result.metadata["speed_px_frame"], 90, delta=2)
         self.assertAlmostEqual(result.metadata["frequency_hz"], 200 / expected_period, delta=5)
+        # The rate is the train's speed over its spacing, which needs no droplet to be followed.
+        self.assertEqual(generation["method"], "spacing")
+        self.assertAlmostEqual(generation["spacing_px"], 114, delta=3)
+        self.assertGreater(generation["spacing_samples"], 100)
         self.assertAlmostEqual(result.metadata["total_droplets"], generation["crossings"], delta=6)
 
 
@@ -155,6 +159,48 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(len(found["properties"]), 1)
         self.assertAlmostEqual(found["properties"][0]["equivalent_diameter"], 20, delta=1.5)
         self.assertEqual(found["properties"][0]["solidity"] > 0.9, True)
+
+    def test_a_rim_open_on_its_bright_side_is_completed_to_the_droplet(self):
+        """Lit from one side, a droplet shows a dark rim on that side only; its hull is the droplet."""
+        from admet.engines.opencv.detection import detect
+
+        background = np.full((60, 320), 157, np.uint8)
+        background[:6, :] = 100                                      # channel walls
+        background[-6:, :] = 100
+        frame = background.copy()
+        cv2.circle(frame, (160, 30), 22, 90, 3)                      # the rim, 3 px
+        cv2.ellipse(frame, (160, 30), (26, 26), 0, -50, 50, 157, 10)  # erased on the right: the bright side
+        self.assertLess(frame[30, 180], 100)                          # a gap in the rim, not a closed ring
+        self.assertEqual(int(frame[30, 185]), 157)
+
+        found = detect(frame, background, {"satellite": 9, "min_area": 600})
+
+        self.assertEqual(found["completed"], 1)
+        self.assertEqual(len(found["properties"]), 1)
+        droplet = found["properties"][0]
+        self.assertAlmostEqual(droplet["equivalent_diameter"], 46, delta=3)
+        self.assertGreater(droplet["solidity"], 0.95)
+        self.assertAlmostEqual(droplet["centroid_x"], 160, delta=2)
+
+    def test_faint_rims_over_a_quiet_background_are_found(self):
+        """Four levels of contrast on half a level of noise: the floor of 6 levels used to hide it."""
+        from admet.engines.opencv.detection import detect
+
+        rng = np.random.default_rng(1)
+        background = np.full((60, 320), 80, np.uint8)
+        background[:6, :] = 50
+        background[-6:, :] = 50
+        frame = background.astype(np.float32)
+        cv2.circle(frame, (160, 30), 22, 76, 3)                      # a full rim, 4 levels darker
+        frame = np.clip(frame + rng.normal(0, 0.5, frame.shape), 0, 255).astype(np.uint8)
+
+        found = detect(frame, background, {"satellite": 9, "min_area": 600})
+
+        self.assertLess(found["threshold"], 4)
+        self.assertEqual(len(found["properties"]), 1)
+        self.assertAlmostEqual(found["properties"][0]["equivalent_diameter"], 46, delta=3)
+        self.assertEqual(detect(frame, background, {"satellite": 9, "min_area": 600, "min_threshold": 6})
+                         ["properties"], [])
 
     def test_satellites_are_set_aside_and_the_window_is_respected(self):
         from admet.engines.opencv.detection import detect
