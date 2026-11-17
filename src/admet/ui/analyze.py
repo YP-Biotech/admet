@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from admet.core.discovery import discover_projects, project_ref_label, projects_root
-from admet.core.engine import EngineRegistry
+from admet.core.engine import EngineRegistry, ParamKind
 from admet.core.project import ProjectStore
 from admet.core.session import session_path
 from admet.engines.cellpose.detection import CellposeDetection, read_image_8bit
@@ -29,9 +29,11 @@ from admet.ui import theme
 from admet.ui.analyze_matrix import (
     analyse_columns,
     analyse_row,
+    apply_setting,
     cast_matrix_value,
     files_columns,
     files_row,
+    mass_edit_fields,
     matrix_field_kind,
     results_columns,
     wire_analyse_table,
@@ -568,6 +570,8 @@ class AnalyzeWorkflowView:
         from nicegui import ui
 
         with ui.column().classes("panel w-full gap-2 p-3"):
+            if self.matrix:
+                self._render_mass_edit()
             table = ui.table(columns=analyse_columns(), rows=self._analyse_rows(), row_key="uid").classes(
                 "slim-table matrix-table w-full").props("dense flat hide-bottom")
             self._register_table("analyse", table)
@@ -575,6 +579,51 @@ class AnalyzeWorkflowView:
             table.on("rowClick", self._select_row_event)
             if not self.matrix:
                 ui.label("No files. Add them on 1. Files.").classes("muted text-xs")
+
+    def _render_mass_edit(self) -> None:
+        """One setting for every ticked file at once: pick it, give the value, apply."""
+        from nicegui import ui
+
+        fields = mass_edit_fields({row.engine for row in self.matrix})
+        if not fields:
+            return
+        kinds = {field: kind for field, _label, kind in fields}
+        with ui.row().classes("items-center gap-2 no-wrap mass-edit"):
+            ui.label("Apply to ticked files").classes("text-xs muted")
+            select = ui.select({field: label for field, label, _kind in fields}, value=fields[0][0]).props(
+                "dense outlined options-dense").classes("mass-edit-field")
+            number = ui.number(value=None).props("dense outlined step=any").classes("mass-edit-value")
+            number.bind_visibility_from(select, "value", backward=lambda v: kinds.get(v) is not ParamKind.BOOLEAN)
+            switch = ui.switch("on").props("dense")
+            switch.bind_visibility_from(select, "value", backward=lambda v: kinds.get(v) is ParamKind.BOOLEAN)
+
+            def apply() -> None:
+                field = select.value
+                value = switch.value if kinds.get(field) is ParamKind.BOOLEAN else number.value
+                if value is None and kinds.get(field) is not ParamKind.BOOLEAN:
+                    self._notify("Give the value first.", "warning")
+                    return
+                self._apply_to_ticked(field, value)
+
+            ui.button("Apply", on_click=apply).props("dense no-caps unelevated size=sm")
+            ticked = sum(1 for row in self.matrix if row.active)
+            ui.label(f"{ticked} ticked").classes("text-xs muted")
+
+    def _apply_to_ticked(self, field: str, value: Any) -> list[MatrixRow]:
+        """The value onto every ticked file the setting applies to; the files it changed."""
+        changed = apply_setting(self.matrix, field, value)
+        label = next((label for name, label, _kind in mass_edit_fields({"opencv", "cellpose"}) if name == field), field)
+        if not changed:
+            self._notify(f"{label}: no ticked file takes it, or every one has it already.", "secondary")
+            return []
+        shown = ("on" if value else "off") if isinstance(value, bool) else f"{value}"
+        self._sync_previews()
+        self._sync_tables()
+        self._sync_action_box()
+        self._mount_sidebar()
+        self._save_setup()
+        self._notify(f"{label} = {shown} on {len(changed)} ticked file(s).", "positive")
+        return changed
 
     def _analyse_rows(self) -> list[dict[str, Any]]:
         rows = []
