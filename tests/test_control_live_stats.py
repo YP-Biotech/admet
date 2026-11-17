@@ -3,7 +3,17 @@ import unittest
 import numpy as np
 
 from admet.engines.acquisition.camera.acquisition import as_8bit, cell_means, grid_edges, sharpness
-from admet.ui.window import FocusTracker, bytes_per_pixel, heat_range, heat_rgb, live_stats, nerd_line
+from admet.ui.window import (
+    FocusTracker,
+    bytes_per_pixel,
+    frame_pixel,
+    heat_range,
+    heat_rgb,
+    live_stats,
+    nerd_line,
+    optics_record,
+    scale_from_walls,
+)
 
 
 class LiveStatsTests(unittest.TestCase):
@@ -113,6 +123,24 @@ class FocusTrackerTests(unittest.TestCase):
         tracker.reset()
         self.assertIsNone(tracker.fraction)
         self.assertEqual(tracker.best, 0.0)
+
+
+class ScaleMeasurementTests(unittest.TestCase):
+    def test_the_scale_is_the_channel_width_over_the_wall_distance(self):
+        self.assertAlmostEqual(scale_from_walls(3, 58, 125.0), 125 / 55)
+        self.assertAlmostEqual(scale_from_walls(58, 3, 125.0), 125 / 55)          # either order
+        self.assertEqual(scale_from_walls(10, 10, 125.0), 0.0)
+        record = optics_record(3, 58, 125.0, [60, 320], "2026-11-17T10:00:00")
+        self.assertEqual((record["microns_per_pixel"], record["wall_px"], record["frame"], record["method"]),
+                         (2.2727, [3.0, 58.0], [320, 60], "walls"))
+
+    def test_a_click_on_the_widget_maps_to_the_frame_pixel(self):
+        rect, shape = (10, 20, 640, 120), (60, 320)                           # the frame shown twice its size
+        self.assertEqual(frame_pixel((10, 20), rect, shape), (0.0, 0.0))
+        self.assertEqual(frame_pixel((330, 80), rect, shape), (160.0, 30.0))
+        self.assertIsNone(frame_pixel((5, 80), rect, shape))                 # left of the frame
+        self.assertIsNone(frame_pixel((330, 200), rect, shape))              # below it
+        self.assertIsNone(frame_pixel((330, 80), (0, 0, 0, 0), shape))       # nothing shown yet
 
 
 if __name__ == "__main__":

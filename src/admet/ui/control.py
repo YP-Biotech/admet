@@ -87,10 +87,12 @@ from admet.ui.window import (
     log_state,
     NERD_SEPARATOR,
     FocusTracker,
+    frame_pixel,
     heat_range,
     heat_rgb,
     live_stats,
     nerd_line,
+    optics_record,
     panel_specs,
     structure_changed,
     structure_signature,
@@ -400,6 +402,7 @@ class ControlWindow(QMainWindow):
         self._focus = FocusTracker()
         self._calibration_sources: dict[str, QTableWidgetItem] = {}
         self._load_rig_calibration(apply=False)
+        self._load_optics()
         self.protocol_editors = {}
         self._last_protocol_log = None
         self.last_result: RunResult | None = None
@@ -830,6 +833,7 @@ class ControlWindow(QMainWindow):
         self._append_log(f"project: created {self.project_path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
+        self._load_optics()
         self._render_current_stage()
 
     def _clone_project(self) -> None:
@@ -865,6 +869,7 @@ class ControlWindow(QMainWindow):
         self._append_log(f"project: cloned {source} into {self.project_path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
+        self._load_optics()
         self._render_current_stage()
 
     def _ensure_preflight(self) -> PreflightPanel:
@@ -955,6 +960,7 @@ class ControlWindow(QMainWindow):
         self._append_log(f"project: selected {path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
+        self._load_optics()
         self._render_current_stage()
 
     def _save_project(self) -> None:
@@ -1235,6 +1241,7 @@ class ControlWindow(QMainWindow):
         if self.preview is None:
             self.preview = PreviewDisplay()
             self.preview.frame_painted.connect(self._acknowledge_camera_frame)
+            self.preview.frame_clicked.connect(self._preview_clicked)
             self.preview.setObjectName("CameraPreview")
             self.preview.setMinimumSize(420, PREVIEW_MIN_HEIGHT)
             self.preview.setMaximumHeight(PREVIEW_MAX_HEIGHT)
@@ -1390,12 +1397,13 @@ class ControlWindow(QMainWindow):
                 state.active,
                 state.toggle,
             )
+        label = _short_control_label(control.label)
         state = action_button_state(
             control,
             self._guard_value,
             enabled=self._action_enabled(action) if action is not None else True,
             active=False,
-            label=_short_control_label(control.label),
+            label=label,
         )
         return (
             state.label,
@@ -1801,6 +1809,9 @@ class ControlWindow(QMainWindow):
             self.log_label.setText("\n".join(state.lines) or state.empty_text)
 
     def _handle_control(self, stage: Stage, control: StageControl) -> None:
+        if control.action == "measure_scale":
+            self._begin_scale_measurement()
+            return
         if control.action is not None:
             result = self._run(control.action)
             if control.completes:
@@ -2591,6 +2602,7 @@ class ControlWindow(QMainWindow):
         # Channels on this profile take its new terms.
         if any(self.values.get(f"{prefix}_profile") == profile.id for prefix, *_rest in FLUIDIC_CHANNELS):
             self._load_rig_calibration()
+            self._load_optics()
 
     def _edit_liquid_number(self, liquid, field: str, widget: QLineEdit) -> None:
         number = self._typed_number(field, widget)
@@ -2635,6 +2647,73 @@ class ControlWindow(QMainWindow):
                 self.values[name] = self._param_by_name(name).validate(value)
             except Exception as exc:
                 self._append_log(f"calibration: ignored {name}={value!r} from {profile.name}: {exc}")
+
+    # -- µm per pixel, measured on the preview ------------------------------------------
+
+    def _begin_scale_measurement(self) -> None:
+        """Two clicks on the preview, the upper wall then the lower, then the channel's width."""
+        if self.preview is None or self.preview.current_frame is None:
+            self._notify("Start Live first: the walls are measured on the preview.", "warning")
+            return
+        self._scale_clicks = []
+        self.preview.set_marks([])
+        self._notify("Click the upper channel wall on the preview.", "primary", timeout_ms=0)
+
+    def _preview_clicked(self, x: int, y: int) -> None:
+        if getattr(self, "_scale_clicks", None) is None:
+            return
+        self._scale_clicks.append(float(y))
+        self.preview.set_marks(list(self._scale_clicks))
+        if len(self._scale_clicks) == 1:
+            self._notify("Now the lower channel wall.", "primary", timeout_ms=0)
+            return
+        upper, lower = self._scale_clicks[:2]
+        self._scale_clicks = None
+        self._finish_scale_measurement(upper, lower)
+
+    def _finish_scale_measurement(self, upper: float, lower: float) -> None:
+        if abs(lower - upper) < 2:
+            self.preview.set_marks([])
+            self._notify("The two clicks are on the same row; measure again.", "warning")
+            return
+        width = self._ask_channel_width()
+        self.preview.set_marks([])
+        if not width:
+            self._notify("Measurement dropped.", "secondary")
+            return
+        shape = self.last_metadata.get("camera_frame_shape") or list(self.preview.current_frame.shape[:2])
+        optics = optics_record(upper, lower, width, shape, datetime.now().isoformat(timespec="seconds"))
+        if not self._save_optics(optics):
+            return
+        self.values["camera_microns_per_pixel"] = optics["microns_per_pixel"]
+        self._notify(f"{optics['microns_per_pixel']:.3f} µm/px: {width:g} µm over {abs(lower - upper):.1f} px. "
+                     "Recordings from now on carry it.", "positive", timeout_ms=6000)
+        self._remount_current_stage()
+
+    def _save_optics(self, optics: dict[str, Any]) -> bool:
+        """The scale into the project, so recordings from now on carry it."""
+        if self.api.session is None:
+            return True                                   # no project yet: the table keeps the value
+        try:
+            self.api.save_optics(optics)
+        except Exception as exc:
+            self._notify(f"Could not keep the scale: {exc}", "danger", timeout_ms=0)
+            return False
+        return True
+
+    def _load_optics(self) -> None:
+        """The scale this project last measured or typed, into the table."""
+        try:
+            self.values["camera_microns_per_pixel"] = float(self.api.optics.get("microns_per_pixel") or 0.0)
+        except (TypeError, ValueError):
+            self.values["camera_microns_per_pixel"] = 0.0
+
+    def _ask_channel_width(self) -> float:
+        """The channel's width in µm, the last one measured offered first."""
+        last = float(self.api.optics.get("channel_width_um") or 125.0)
+        value, accepted = QInputDialog.getDouble(self, "Channel width", "Width between the walls, µm", last, 1.0,
+                                                 10000.0, 1)
+        return float(value) if accepted else 0.0
 
     def _save_channel_profile(self, prefix: str) -> None:
         """Keep the channel's profile in the project."""
@@ -2841,6 +2920,10 @@ class ControlWindow(QMainWindow):
             # A new setting, or Nerd mode switched on, starts the focus best over.
             self._focus.reset()
             self._sync_preview_overlay()
+        if name == "camera_microns_per_pixel":
+            self._save_optics({"microns_per_pixel": round(float(self.values[name]), 4), "method": "typed",
+                               "measured_at": datetime.now().isoformat(timespec="seconds")}
+                              if self.values[name] else {})
         for editor in self.protocol_editors.values():
             if editor.builtin and name in editor.stage.settings.defaults():
                 editor.edited()
@@ -3855,6 +3938,7 @@ def _wrap_parts(parts: list[str], width: int, measure) -> list[str]:
 
 class PreviewDisplay(QWidget):
     frame_painted = Signal()
+    frame_clicked = Signal(int, int)        # a click, in frame pixels
 
     def __init__(self) -> None:
         super().__init__()
@@ -3868,6 +3952,20 @@ class PreviewDisplay(QWidget):
         self._grid = False
         self._focus: float | None = None
         self._cells: np.ndarray | None = None
+        self._marks: list[float] = []            # frame rows marked while the walls are measured
+
+    def set_marks(self, rows: list[float]) -> None:
+        self._marks = list(rows)
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if self.current_frame is None:
+            return
+        rect = self.frame_rect
+        pixel = frame_pixel((event.position().x(), event.position().y()),
+                            (rect.x(), rect.y(), rect.width(), rect.height()), self.current_frame.shape[:2])
+        if pixel is not None:
+            self.frame_clicked.emit(int(pixel[0]), int(pixel[1]))
 
     def set_frame(self, frame: np.ndarray | None) -> bool:
         if frame is None:
@@ -3990,6 +4088,11 @@ class PreviewDisplay(QWidget):
             for px in xs[1:-1]:
                 painter.drawLine(px, self.frame_rect.y(), px, self.frame_rect.bottom())
             for py in ys[1:-1]:
+                painter.drawLine(self.frame_rect.x(), py, self.frame_rect.right(), py)
+        if self._marks and self.frame_rect.height() > 0:
+            painter.setPen(QPen(QColor(0, 220, 255), 2))
+            for row in self._marks:
+                py = int(self.frame_rect.y() + row * self.frame_rect.height() / max(height, 1))
                 painter.drawLine(self.frame_rect.x(), py, self.frame_rect.right(), py)
         if self._nerd:
             font = painter.font()

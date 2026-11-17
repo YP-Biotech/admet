@@ -98,6 +98,33 @@ def live_stats(metadata: dict[str, Any]) -> str:
     return "connected · not live"
 
 
+def scale_from_walls(y_upper: float, y_lower: float, channel_width_um: float) -> float:
+    """µm per pixel from the two channel walls clicked on the frame and the channel's width."""
+    pixels = abs(float(y_lower) - float(y_upper))
+    return float(channel_width_um) / pixels if pixels > 0 and channel_width_um > 0 else 0.0
+
+
+def optics_record(y_upper: float, y_lower: float, channel_width_um: float, frame_shape: Any,
+                  measured_at: str) -> dict[str, Any]:
+    """What the measurement was, kept with the project and stamped into every recording."""
+    shape = list(frame_shape or [])
+    return {"microns_per_pixel": round(scale_from_walls(y_upper, y_lower, channel_width_um), 4),
+            "channel_width_um": float(channel_width_um), "wall_px": [round(float(y_upper), 1), round(float(y_lower), 1)],
+            "frame": [int(shape[1]), int(shape[0])] if len(shape) >= 2 else [], "measured_at": measured_at,
+            "method": "walls"}
+
+
+def frame_pixel(point: tuple[float, float], frame_rect: tuple[float, float, float, float],
+                frame_shape: Any) -> tuple[float, float] | None:
+    """The frame pixel under a point of the widget, or None outside the frame."""
+    x, y = point
+    left, top, width, height = frame_rect
+    shape = list(frame_shape or [])
+    if width <= 0 or height <= 0 or len(shape) < 2 or not (left <= x < left + width and top <= y < top + height):
+        return None
+    return ((x - left) * shape[1] / width, (y - top) * shape[0] / height)
+
+
 class FocusTracker:
     """The sharpness of the last half second of frames against the best seen since the reset.
 

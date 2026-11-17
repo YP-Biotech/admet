@@ -88,7 +88,7 @@ class ProjectStore:
 
     # What a project carries that is about the rig and the work, not about one run:
     # the clone of a project keeps exactly these.
-    SETTINGS_KEYS = ("acquisition_mode", "calibration", "profiles", "liquids", "qt_checkup")
+    SETTINGS_KEYS = ("acquisition_mode", "calibration", "profiles", "liquids", "qt_checkup", "optics")
 
     @classmethod
     def clone_settings(cls, source: ProjectStore, project_path: str | Path, project_id: str = "") -> ProjectStore:

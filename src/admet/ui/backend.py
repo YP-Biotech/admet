@@ -47,6 +47,19 @@ class DesktopBackend:
             self.service.project.update_metadata(calibration=calibration)
 
     @property
+    def optics(self):
+        """The µm per pixel measured on the preview, with how it was measured; empty until then."""
+        if self.service.project is None:
+            return {}
+        optics = self.service.project.session.metadata.get("optics")
+        return dict(optics) if isinstance(optics, dict) else {}
+
+    def save_optics(self, optics):
+        if self.service.project is not None:
+            self.service.project.update_metadata(optics=optics)
+            self.service._tell_engine_project()          # recordings from now on carry it
+
+    @property
     def liquids(self):
         """Liquids added in this project; the defaults are not listed here."""
         entries = self.session.metadata.get("liquids") if self.session else None
