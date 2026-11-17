@@ -656,7 +656,7 @@ class AnalyzeWorkflowView:
                 self._slider_editor(target, "skip_right_pct", "Skip right, %", 0, 90)
                 self._slider_editor(target, "gate_pct", "Gate, % (droplets counted here)", 0, 100, default=50)
                 self._slider_editor(target, "satellite_px", "Satellite size, px", 3, 60, default=13)
-                self._slider_editor(target, "min_area", "Min droplet area, px²", 0, 5000, default=150)
+                self._slider_editor(target, "min_area", "Min droplet area, px²", 0, 5000, default=800)
                 self._slider_editor(target, "k_sigma", "Threshold, × noise", 1, 12, default=4)
 
     def _render_timeline(self, target: MatrixRow, frames: int) -> None:
