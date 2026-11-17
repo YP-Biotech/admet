@@ -39,14 +39,15 @@ from admet.ui.analyze_matrix import (
     wire_results_table,
 )
 from admet.ui.analyze_results import (
+    FileResult,
     RESULT_FIELDS,
     RESULT_LABELS,
-    FileResult,
     StoredRun,
     chart_color,
-    correction_key,
     corrected_inclusions,
+    correction_key,
     corrections_summary,
+    dispersed_flow_ul_min,
     export_csv_zip,
     file_results,
     iter_raw_rows,
@@ -1086,8 +1087,8 @@ class AnalyzeWorkflowView:
         listed = {self._row_key(row) for row in self.matrix if row.active or not ticked_only}
         fixes = json.dumps([[engine, source, value] for (engine, source), value in self._corrections().items()],
                            sort_keys=True)
-        scales = json.dumps([[row.engine, self._row_key(row)[2], *self._row_scale(row)] for row in self.matrix],
-                            sort_keys=True)
+        scales = json.dumps([[row.engine, self._row_key(row)[2], *self._row_scale(row), self._row_flow(row)]
+                             for row in self.matrix], sort_keys=True)
         results = []
         for run in self._stored_runs():
             results.extend(result for result in _cached_results(run, fixes, scales)
@@ -1099,6 +1100,12 @@ class AnalyzeWorkflowView:
         if row.engine == "cellpose":
             return _row_float(row, "px_to_um", 0.0), 0.0
         return _row_float(row, "microns_per_pixel", 0.0), _row_float(row, "fps", 0.0)
+
+    def _row_flow(self, row: MatrixRow) -> float:
+        """The flow that made the file's droplets, µL/min, from the recording's own record."""
+        if row.engine == "cellpose":
+            return 0.0
+        return dispersed_flow_ul_min(_video_record(self._resolve_media_path(row.source_path, row.project_path)))
 
     def _row_key(self, row: MatrixRow) -> tuple[str, str, str]:
         return (Path(row.project_path).name, row.engine,
@@ -1729,7 +1736,7 @@ def _results_of(project_path: str, raw_path: str, _mtime: float, run_id: str, fi
     if run is None:
         return ()
     corrections = {(engine, source): value for engine, source, value in json.loads(fixes)}
-    scale_of = {(engine, source): (scale, fps) for engine, source, scale, fps in json.loads(scales)}
+    scale_of = {(engine, source): (scale, fps, *flow) for engine, source, scale, fps, *flow in json.loads(scales)}
     return tuple(file_results(run, iter_raw_rows(run.project_path, run.raw_path), corrections, scale_of))
 
 

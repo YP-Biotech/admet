@@ -49,7 +49,9 @@ class FileResult:
     droplets: int
     rate_hz: float
     speed_mm_s: float
-    rate_note: str = ""                                    # when the rate is not the gate's
+    rate_note: str = ""                                    # how the rate was had, when not from the gate
+    expected_hz: float = 0.0                               # from the dispersed flow and the droplet size
+    dispersed_ul_min: float = 0.0
     arrivals_s: tuple[float, ...] = ()                     # each droplet's first sighting, s from the first frame
     diameters: tuple[float, ...] = ()                      # µm
     areas: tuple[float, ...] = ()                          # µm²
@@ -163,7 +165,7 @@ def file_results(run: StoredRun, rows, corrections: dict[tuple[str, str], dict[s
                                 "seen": 0, "inclusions": [], "frames": set(), "um": False, "job": job,
                                 "source": source, "rng": random.Random(0),
                                 "fixes": (corrections or {}).get((key[0], source), {}),
-                                "scale": (scales or {}).get((key[0], source), (0.0, 0.0))}
+                                "scale": tuple((scales or {}).get((key[0], source), (0.0, 0.0)))}
         if kind == "run_context":
             acc["context"] = _values(row)
             continue
@@ -257,8 +259,10 @@ def _finish(run: StoredRun, key: tuple[str, str], acc: dict[str, Any]) -> FileRe
     gate_rate = (fps / period_frames if fps and period_frames else
                  _num(generation.get("rate_hz")) or _num(meta.get("frequency_hz")) or _num(context.get("frequency_hz")))
     rate_note = ""
-    if gate_rate and (crossings >= len(arrivals) / 2 or not arrival_rate):
+    method = str(generation.get("method") or "")
+    if gate_rate and (method == "spacing" or crossings >= len(arrivals) / 2 or not arrival_rate):
         rate = gate_rate
+        rate_note = "speed over spacing" if method == "spacing" else ""
     elif arrival_rate:
         # The gate saw too few of the droplets to be trusted (it sits where tracks start or end):
         # the rate is then droplets seen per second of analysed video.
@@ -268,6 +272,8 @@ def _finish(run: StoredRun, key: tuple[str, str], acc: dict[str, Any]) -> FileRe
         rate = 1.0 / mean(periods) if periods else 0.0
     speed_px = _num(context.get("speed_px_frame")) or 0.0
     speed = speed_px * scale * fps / 1000.0 if speed_px and fps else (mean(speeds) if speeds else 0.0)
+    dispersed = float(acc["scale"][2]) if len(acc["scale"]) > 2 and acc["scale"][2] else 0.0
+    expected = expected_rate_hz(dispersed, median(diameters)) if dispersed and diameters else 0.0
     analyzed_at = str(meta.get("analyzed_at") or "")
     points = sorted(acc["points"])
     settings = _run_settings(run, job, analysis, _as_dict(context.get("detection")))
@@ -289,6 +295,8 @@ def _finish(run: StoredRun, key: tuple[str, str], acc: dict[str, Any]) -> FileRe
         rate_hz=float(rate or 0.0),
         speed_mm_s=float(speed or 0.0),
         rate_note=rate_note,
+        expected_hz=expected,
+        dispersed_ul_min=dispersed,
         arrivals_s=tuple((a - arrivals[0]) / fps for a in arrivals) if arrivals and fps else (),
         diameters=tuple(diameters),
         areas=tuple(areas),
@@ -367,6 +375,25 @@ RESULT_LABELS = {"sample": "Sample", "droplets": "Droplets", "inclusions": "Incl
                  "analysed": "Analysed"}
 
 
+def dispersed_flow_ul_min(record: dict[str, Any] | None) -> float:
+    """The flow that becomes droplets, from a recording's record: every flow-controlled channel
+    but the oil, in µL/min; 0 when the record says nothing."""
+    total = 0.0
+    for channel in (record or {}).get("channels") or []:
+        if not isinstance(channel, dict) or "oil" in str(channel.get("label", "")).lower():
+            continue
+        total += float(channel.get("flow_ul_min") or 0.0)
+    return total
+
+
+def expected_rate_hz(dispersed_ul_min: float, diameter_um: float) -> float:
+    """Droplets a second the flow must make at this size: the dispersed flow over a sphere's volume."""
+    if dispersed_ul_min <= 0 or diameter_um <= 0:
+        return 0.0
+    volume_um3 = math.pi / 6 * diameter_um ** 3
+    return dispersed_ul_min / 60 * 1e9 / volume_um3
+
+
 def results_cells(result: FileResult, color: str, *, active: bool = True) -> dict[str, str]:
     """One file's row of the results table, each cell as HTML: the number with its distribution."""
     off = "" if active else " results-off"
@@ -387,7 +414,9 @@ def results_cells(result: FileResult, color: str, *, active: bool = True) -> dic
         "cv": cell(f"{result.cv_percent:.1f}" if result.diameters else "—"),
         "rate": cell((_distribution(result.rate_hz, 0.0, [1.0 / p for p in result.periods_s if p > 0], 1)
                       + (f'<div class="sub" title="{html.escape(result.rate_note)}">{html.escape(result.rate_note)}</div>'
-                         if result.rate_note else "")) if result.rate_hz else "—"),
+                         if result.rate_note else "")
+                      + (f'<div class="sub">expected {result.expected_hz:.0f} from {result.dispersed_ul_min:g} µL/min'
+                         '</div>' if result.expected_hz else "")) if result.rate_hz else "—"),
         "speed": cell(_distribution(result.speed_mm_s, 0.0, result.speeds_mm_s, 2) if result.speed_mm_s else "—"),
         "analysed": cell(f'{html.escape(result.analyzed_at or "earlier")}'
                          f'<div class="sub" title="{html.escape(summary)}">{html.escape(_short(summary, 48))}</div>'),
@@ -685,12 +714,13 @@ def _summary_csv(results: list[FileResult]) -> bytes:
     writer = csv.writer(out)
     writer.writerow(["project", "sample", "engine", "source", "analysed_at", "frames", "droplets", "inclusions",
                      "mean_diameter_um", "sd_diameter_um", "cv_percent", "mean_area_um2", "sd_area_um2",
-                     "rate_hz", "speed_mm_s", "fps", "um_per_px", "settings"])
+                     "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings"])
     for result in results:
         writer.writerow([result.project, result.sample_id, result.engine, result.source_path, result.analyzed_at,
                          result.frames, result.droplets, result.inclusions,
                          _fmt(result.mean_diameter, 3), _fmt(result.std_diameter, 3), _fmt(result.cv_percent, 3),
                          _fmt(result.mean_area, 2), _fmt(result.std_area, 2), _fmt(result.rate_hz, 3),
+                         _fmt(result.expected_hz, 1), _fmt(result.dispersed_ul_min, 2),
                          _fmt(result.speed_mm_s, 3), _fmt(result.fps, 3), _fmt(result.scale, 4),
                          settings_summary(result.settings)])
     return out.getvalue().encode("utf-8")

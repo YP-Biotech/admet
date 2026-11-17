@@ -16,6 +16,19 @@ from .tracking import Tracker
 logger = get_logger("Pipeline")
 
 
+MIN_SPACING_SAMPLES = 10     # neighbour pairs seen before the spacing is trusted
+
+
+def _spacings(properties: list[dict]) -> list[float]:
+    """The gaps between neighbouring droplets along the channel in one frame, between 1.2 and 6
+    diameters: closer is one droplet seen twice, farther is a gap in the train."""
+    if len(properties) < 2:
+        return []
+    diameter = float(np.median([p["equivalent_diameter"] for p in properties]))
+    xs = sorted(p["centroid_x"] for p in properties)
+    return [b - a for a, b in zip(xs, xs[1:]) if 1.2 * diameter <= b - a <= 6 * diameter]
+
+
 class DropletPipeline:
     """background -> per frame: match, difference, threshold, bodies -> tracks -> gate."""
 
@@ -30,6 +43,7 @@ class DropletPipeline:
         self.progress_callback: Callable[[int, str], None] | None = None
         self.frame_callback: Callable[[dict], None] | None = None
         self.tracker: Tracker | None = None
+        self.spacings: list[float] = []      # px between neighbouring droplets in one frame
 
         # What the run keeps for its rows and its viewer.
         self.stored_frame_data: dict[int, dict] = {}
@@ -132,6 +146,7 @@ class DropletPipeline:
             if absolute >= end_frame:
                 break
             result = self._process_frame(frame, absolute)
+            self.spacings.extend(_spacings(result["properties"]))
             self.tracker.update(result["properties"], absolute)
             self._cache_detection_assets(result)
             if store_preview_frames and (processed % preview_stride == 0 or processed == total_frames - 1):
@@ -405,7 +420,16 @@ class DropletPipeline:
         mean_diameter_um = float(np.mean(diameters)) if diameters else 0.0
         std_diameter_um = float(np.std(diameters)) if diameters else 0.0
         generation = self.tracker.generation(fps) if self.tracker else {}
-        if generation.get("rate_hz"):
+        speed_px = self.tracker.speed() if self.tracker else 0.0
+        spacing = float(np.median(self.spacings)) if len(self.spacings) >= MIN_SPACING_SAMPLES else 0.0
+        if spacing and speed_px > 0:
+            # The train's own geometry, no tracking needed: droplets pass at speed over spacing.
+            generation = {**generation, "method": "spacing", "spacing_px": spacing,
+                          "spacing_samples": len(self.spacings), "period_frames": spacing / speed_px,
+                          "rate_hz": speed_px * fps / spacing if fps else None}
+            frequency = float(generation["rate_hz"] or 0.0)
+        elif generation.get("rate_hz"):
+            generation = {**generation, "method": "gate"}
             frequency = float(generation["rate_hz"])
         elif tracks:
             first = min(t["first_frame"] for t in tracks)
@@ -413,7 +437,6 @@ class DropletPipeline:
             frequency = (len(tracks) - 1) * fps / (last - first) if last > first else 0.0
         else:
             frequency = 0.0
-        speed_px = self.tracker.speed() if self.tracker else 0.0
         true_stats, droplet_geometry = self._compute_true_statistics(tracks)
         return {
             "total_droplets": len(tracks),
