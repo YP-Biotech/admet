@@ -70,7 +70,7 @@ left once the video is whole.
 
 ## Live QC
 
-While the camera is live, once a second the next eight consecutive frames are
+While a step records, once a second the next eight consecutive frames are
 measured the way analyze measures a video, without following any droplet: the
 train's speed from the shift between one frame and the next, the rate as speed over
 the spacing between neighbours, and the size and its CV from every whole droplet
@@ -83,10 +83,13 @@ seen. A line under the live line shows them with 95 % intervals and the state:
 Rate, droplets made since the recording started, diameter (µm once the scale is
 measured, px before), CV, and the state, green **STABLE** when the CV's whole
 interval sits below 5 %, red **UNSTABLE** when it sits above, amber **SETTLING**
-while it straddles the limit or too few droplets have been seen. Every recording
-gets the same rows beside its video, `<recording>.qc.csv`, one a burst. The
-measurement runs in its own thread and drops a burst when it is still busy, so the
-recording never waits; **Live QC** in the camera settings switches it off.
+while it straddles the limit or too few droplets have been seen. The line shows
+only while a recording runs and starts from nothing with each one. The recording
+gets the same rows beside its video, `<recording>.qc.csv`, one a burst, stamped
+with the wall clock and the seconds since the recording started, the clock the
+fluidics CSV and the recording's record use, so the three cover the same seconds.
+The measurement runs in its own thread and drops a burst when it is still busy, so
+the recording never waits; **Live QC** in the camera settings switches it off.
 
 To check that a machine keeps up with the camera, run `uv run python
 tools/camera_bench.py` with the camera connected and control closed; `--contend`

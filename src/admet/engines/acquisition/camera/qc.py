@@ -1,6 +1,6 @@
-"""Live quality control from bursts of consecutive frames.
+"""Live quality control from bursts of consecutive frames, while a recording runs.
 
-What analyze measures, measured while the camera runs, without following a droplet: the
+What analyze measures, measured as the video is made, without following a droplet: the
 detection is the OpenCV engine's own, the speed is the train's common shift between one
 frame and the next, the rate is speed over the spacing between neighbours, the size and
 its CV come from every whole droplet seen. Each number carries a 95 % interval, and the
@@ -141,6 +141,13 @@ class BurstQC:
         self.count = 0.0
         self._last_counted = None
 
+    def reset(self) -> None:
+        """A new recording starts from nothing: no background, no samples, no count."""
+        self._frames.clear()
+        self._background = None
+        self.samples.clear()
+        self.reset_count()
+
     def analyse(self, frames: list[np.ndarray], fps: float, at: float | None = None) -> BurstSample:
         """One burst of consecutive frames: its speed, spacing, rate and droplet sizes."""
         from admet.engines.opencv.detection import detect, percentile_background
@@ -228,6 +235,8 @@ class QCWorker:
     """Takes a burst when it is free, measures it in its own thread, and tells the summary.
 
     A burst offered while the last one is still being measured is dropped: the camera never waits.
+    Bursts come only while a recording runs, so the QC, the video and the fluidics CSV cover the
+    same seconds, on the same clock.
     """
 
     def __init__(self, qc: BurstQC, on_summary: Callable[[QCSummary], None] | None = None) -> None:
@@ -254,14 +263,20 @@ class QCWorker:
         return True
 
     def start_log(self, path: Path) -> None:
+        """A recording starts: its rows go to path, and the measurements start over."""
         with self._lock:
             self._close_log()
+            self._pending = None
+            self.qc.reset()
+            self.summary = None
             self._log = QCLog(path)
-            self.qc.reset_count()
 
     def stop_log(self) -> None:
+        """The recording stopped: no more rows, and nothing left to show."""
         with self._lock:
             self._close_log()
+            self._pending = None
+            self.summary = None
 
     def _close_log(self) -> None:
         if self._log is not None:

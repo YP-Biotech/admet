@@ -141,7 +141,7 @@ class CameraAcquisitionThread(Thread):
         self.max_frames: int | None = None
         self.max_time: float | None = None
         self.preview_enabled = True
-        # Live QC: every burst_interval_s the next burst_frames consecutive frames go to the sink.
+        # Live QC, while recording: every burst_interval_s the next burst_frames consecutive frames go to the sink.
         self.qc_sink: Callable[[list[np.ndarray], float], Any] | None = None
         self.burst_frames = BURST_FRAMES
         self.burst_interval_s = BURST_INTERVAL_S
@@ -179,8 +179,7 @@ class CameraAcquisitionThread(Thread):
         self._stop_event.clear()
         self.live_started_monotonic = time.monotonic()
         self.last_stats_time = time.time()
-        # Every frame, live too: the QC bursts must be consecutive frames, and the loop keeps up.
-        self.camera.start_grabbing(latest_only=False)
+        self.camera.start_grabbing(latest_only=True)
         while not self._stop_event.is_set():
             frame = self.camera.grab_frame()
             if frame is None:
@@ -201,8 +200,8 @@ class CameraAcquisitionThread(Thread):
         if self.preview_enabled and not self._frame_pending.is_set() and self.preview_callback:
             self._frame_pending.set()
             self.preview_callback(frame)
-        if self.qc_sink is not None:
-            self._collect_burst(frame)
+        if self.qc_sink is not None and self._recording_event.is_set() and not self._recording_paused.is_set():
+            self._collect_burst(frame)           # the recording's frames are consecutive: the bursts are too
 
         current_time = time.time()
         if self.stats_callback and current_time - self.last_stats_time >= self.stats_interval_s:
@@ -253,6 +252,7 @@ class CameraAcquisitionThread(Thread):
         self.frame_count = 0
         self.start_time = time.time()
         self._recording_paused.clear()
+        self._burst, self._last_burst_at = None, 0.0        # the first burst comes at once
         if not self.writer.start():
             self.writer = None
             return False
@@ -275,6 +275,7 @@ class CameraAcquisitionThread(Thread):
             self.writer.stop()
             self.writer = None
         self.last_recording_frames = frames
+        self._burst = None
         if self.on_recording_stopped is not None:
             try:
                 self.on_recording_stopped()
@@ -282,7 +283,7 @@ class CameraAcquisitionThread(Thread):
                 log.exception("recording stop hook failed")
         if not self._stop_event.is_set():
             self.camera.stop_grabbing()
-            self.camera.start_grabbing(latest_only=False)
+            self.camera.start_grabbing(latest_only=True)
         if notify_complete and self.recording_complete_callback:
             try:
                 self.recording_complete_callback()

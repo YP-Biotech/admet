@@ -108,8 +108,9 @@ class BurstMeasurementTests(unittest.TestCase):
         self.assertEqual(summary.diameter_unit, "px")
         qc.analyse(train_burst(4000), 4000.0, at=1.0)
         self.assertGreater(qc.count, 0)
-        qc.reset_count()
-        self.assertEqual(qc.count, 0.0)
+        qc.reset()                                                           # the next recording starts from nothing
+        self.assertEqual((qc.count, len(qc.samples)), (0.0, 0))
+        self.assertIsNone(qc.summary(at=2.0))
 
 
 class WorkerTests(unittest.TestCase):
@@ -130,7 +131,7 @@ class WorkerTests(unittest.TestCase):
                                  diameter_unit="px", cv_percent=3.0, cv_half=0.3, n=40, bursts=4,
                                  speed_px_frame=48.0, spacing_px=128.0, state="STABLE")
 
-            def reset_count(self):
+            def reset(self):
                 pass
 
         seen = []
@@ -151,6 +152,7 @@ class WorkerTests(unittest.TestCase):
                 worker.stop_log()
                 rows = (Path(tmp) / "clip.qc.csv").read_text().splitlines()
             self.assertEqual(len(seen), 1)
+            self.assertIsNone(worker.summary)                                   # nothing shown between recordings
             self.assertEqual(rows[0].split(",")[:3], ["timestamp", "elapsed_s", "rate_hz"])
             self.assertEqual(len(rows), 2)
             self.assertIn("STABLE", rows[1])

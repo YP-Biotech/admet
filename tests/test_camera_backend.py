@@ -415,7 +415,7 @@ class FakeWriter:
 
 
 class CameraAcquisitionThreadTests(unittest.TestCase):
-    def test_recording_writes_frames_and_grabs_every_frame_before_and_after(self):
+    def test_recording_writes_frames_and_switches_grab_strategy(self):
         camera = FakeRecordingCamera()
         writer = FakeWriter()
         previews = []
@@ -433,12 +433,12 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
         self.assertTrue(writer.stopped)
         self.assertEqual(len(writer.frames), 2)
         self.assertEqual(previews[0].shape, (2, 2))
-        self.assertEqual(camera.strategies, [False, False])        # one by one, live too: QC bursts are consecutive
+        self.assertEqual(camera.strategies, [False, True])
         self.assertEqual(complete_calls, [True])
         self.assertEqual(acquisition.last_recording_frames, 2)
         self.assertEqual(acquisition.last_writer_frame_count, 2)
 
-    def test_a_burst_of_consecutive_frames_goes_to_the_qc_sink_once_an_interval(self):
+    def test_bursts_of_consecutive_frames_go_to_the_qc_sink_only_while_recording(self):
         camera = FakeRecordingCamera()
         bursts = []
         acquisition = CameraAcquisitionThread(camera, preview_callback=lambda frame: None)
@@ -446,6 +446,11 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
         acquisition.burst_frames, acquisition.burst_interval_s = 3, 0.05
         acquisition.frame_rate_hint = 4032.0
 
+        for value in range(5):                                      # live, not recording: nothing measured
+            acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
+        self.assertEqual(bursts, [])
+
+        self.assertTrue(acquisition.start_recording(FakeWriter(), max_frames=100))
         for value in range(5):                                      # one burst, then two frames of waiting
             acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
         self.assertEqual(bursts, [(3, 4032.0)])
@@ -453,6 +458,11 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
         for value in range(3):
             acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
         self.assertEqual(bursts, [(3, 4032.0), (3, 4032.0)])
+        acquisition.stop_recording()
+        time.sleep(0.06)
+        for value in range(3):
+            acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
+        self.assertEqual(len(bursts), 2)
 
     def test_the_recording_hooks_bracket_the_writer(self):
         camera = FakeRecordingCamera()

@@ -56,7 +56,7 @@ CAMERA_SETTINGS = ParamSchema(
         Param("camera_microns_per_pixel", "µm per pixel", ParamKind.FLOAT, default=0.0, minimum=0.0, step=0.01,
               description="The frame's scale: measured with Measure µm/px, or typed; 0 means unknown"),
         Param("camera_live_qc", "Live QC", ParamKind.BOOLEAN, default=True,
-              description="Rate, size and CV measured on bursts of frames while live, on the preview and beside each video"),
+              description="Rate, size and CV measured on bursts of frames while recording, on the preview and beside the video"),
         Param("camera_nerd_mode", "Nerd mode", ParamKind.BOOLEAN, default=False,
               description="Pixel grid, mean level, size, exposure and data rate on the preview"),
         Param("camera_gain", "Gain", ParamKind.FLOAT, default=0.0, minimum=0.0),

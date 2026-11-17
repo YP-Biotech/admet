@@ -182,8 +182,10 @@ class CameraController:
             self._qc_summary = summary
 
     def _recording_started(self, writer: Any) -> None:
-        """The QC rows of a recording go beside its video, and the count starts from zero."""
+        """The QC measures this recording from its first frame; its rows go beside the video."""
         video = getattr(writer, "video_path", None) or getattr(writer, "path", None)
+        with self._lock:
+            self._qc_summary = None
         if self._qc is not None and video:
             try:
                 self._qc.start_log(Path(video).with_suffix(".qc.csv"))
@@ -193,6 +195,8 @@ class CameraController:
     def _recording_stopped(self) -> None:
         if self._qc is not None:
             self._qc.stop_log()
+        with self._lock:
+            self._qc_summary = None                        # nothing is measured between recordings
 
     def apply_configuration(self, settings: dict[str, Any]) -> None:
         self.qc_enabled = bool(settings.get("camera_live_qc", True))
