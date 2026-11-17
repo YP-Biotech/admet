@@ -171,7 +171,13 @@ def create_control_workflow() -> Workflow:
                         "Start Live to preview the connected camera and apply camera settings.",
                         "camera_connected and not camera_live",
                     ),
-                    StageInstruction("Camera live preview is active. Adjust camera settings or move to Fluigent."),
+                    StageInstruction(
+                        "Camera live preview is active. Adjust camera settings, or measure µm/px: click the upper "
+                        "and the lower channel wall on the preview, then type the channel width.",
+                        "camera_live",
+                    ),
+                    StageInstruction("Camera live preview is active. Adjust camera settings or move to Fluigent.",
+                                     "camera_connected and not camera_live"),
                 ),
                 settings=ParamSchema((Param(
                     "acquisition_mode", "Acquisition", ParamKind.CHOICE, default="fluidics_only",
@@ -199,6 +205,7 @@ def create_control_workflow() -> Workflow:
                         active_when="camera_live",
                         kind="toggle",
                     ),
+                    StageAction("Measure µm/px", "measure_scale", guard="camera_live", variant="secondary"),
                     StageAction("Continue", completes=True, guard="acquisition_ready", variant="warning"),
                 ),
                 editor=CONTROL_LIVE_EDITOR,

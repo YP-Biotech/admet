@@ -67,7 +67,9 @@ the oil over the volume of a sphere of the median diameter.
 
 **µm/px** and **FPS** are applied when results are read, not by the run: the engine
 measures in pixels and frames, so changing either updates Results and the export at
-once. Crop, frame range and the detection settings change what is detected and need
+once. Both are filled from the recording's own record when control measured them,
+the FPS as the frames arrived and the µm/px from the walls clicked on the preview;
+a typed value wins. Crop, frame range and the detection settings change what is detected and need
 a new run.
 
 Detection settings, per file: **skip left / right** (% of the width left out, where

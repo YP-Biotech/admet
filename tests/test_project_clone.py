@@ -15,6 +15,7 @@ def _filled_project(root: Path) -> ProjectStore:
         profiles=[{"id": "water-x2", "scale": 2.0}],
         liquids=[{"id": "beads", "viscosity_mpa_s": 1.4}],
         qt_checkup={"conditions": {"tubing": "0.5 mm"}},
+        optics={"microns_per_pixel": 2.27, "channel_width_um": 125.0, "wall_px": [3.0, 58.0]},
         cache_root="C:\\Users\\ADMIN\\.admet-cache",
         analysis_setup={"matrix": [{"source": "records/camera/run.avi"}]},
     )

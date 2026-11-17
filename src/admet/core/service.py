@@ -225,8 +225,13 @@ class Admet:
         """The acquisition engine stamps recordings with the project they belong to."""
         engine = self._engines.get("acquisition")
         if engine is not None and hasattr(engine, "recording_context"):
-            engine.recording_context = (
-                {"project_id": self.project.session.project_id} if self.project is not None else {})
+            context: dict[str, Any] = {}
+            if self.project is not None:
+                context["project_id"] = self.project.session.project_id
+                optics = self.project.session.metadata.get("optics")
+                if isinstance(optics, dict) and optics.get("microns_per_pixel"):
+                    context["optics"] = dict(optics)       # µm per px as measured on the preview
+            engine.recording_context = context
 
     def _list_tagged_recordings(self) -> None:
         """Any video in records/camera that carries its record but is not listed gets listed."""

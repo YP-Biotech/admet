@@ -1494,7 +1494,7 @@ class AnalyzeWorkflowView:
 
     def _prefill_settings(self, row: MatrixRow) -> None:
         """Fill what a file does not have yet: frames and crop from the video, detection defaults,
-        and the FPS control recorded with it. µm/px has no source and stays empty until set."""
+        the FPS control recorded with it, and the µm/px control measured on its preview."""
         if row.engine == "cellpose":
             for key, value in IMAGING_DEFAULTS.items():
                 row.settings.setdefault(key, value)
@@ -1510,6 +1510,9 @@ class AnalyzeWorkflowView:
         captured = _recorded_capture_fps(row)
         if captured and not _row_float(row, "fps", 0.0):
             row.settings["fps"] = round(captured, 3)
+        measured = _recorded_scale(row)
+        if measured and not _row_float(row, "microns_per_pixel", 0.0):
+            row.settings["microns_per_pixel"] = round(measured, 4)
 
     def _project_options(self) -> dict[str, str]:
         return {str(ref.path): project_ref_label(ref) for ref in self.project_refs}
@@ -1960,6 +1963,15 @@ def _recorded_capture_fps(row: MatrixRow) -> float:
     except Exception:
         pass
     return float((_video_record(source) or {}).get("acquisition_fps") or 0.0)
+
+
+def _recorded_scale(row: MatrixRow) -> float:
+    """The µm per pixel the recording carries, measured on control's preview; 0 when it has none."""
+    optics = (_video_record(Path(row.source_path).resolve()) or {}).get("optics") or {}
+    try:
+        return float(optics.get("microns_per_pixel") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _video_record(source: Path) -> dict[str, Any] | None:
