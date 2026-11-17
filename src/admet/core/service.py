@@ -607,15 +607,20 @@ class Admet:
                     "recording_label": plan["run_id"], "include_video": False,
                     "recording_max_frames": 0, "recording_max_seconds": 0,
                 })
+                fluidics_csv = self._project_relative(recording.get("csv_path"))
+                qc_csv = f"records/camera/{plan['run_id']}.qc.csv"           # where the live QC appends its rows
                 if plan["recording"]["video_steps"]:
-                    # Video is per step, opened and closed by the steps themselves.
+                    # Video is per step, opened and closed by the steps themselves. Every recording's
+                    # record names the run's fluidics and QC files, so its slice of both is one cut by time.
                     engine.arm_step_video(self.project.records_dir / "camera", plan["run_id"], {
                         "project_id": self.project.session.project_id, "run_id": plan["run_id"],
                         "protocol": str(plan.get("name") or plan.get("protocol_name") or plan.get("operation_id") or ""),
+                        "fluidics_csv": fluidics_csv, "qc_csv": qc_csv,
                     })
                 artifact = self._run_artifacts[plan_id]
                 artifact["recording"] = True
                 artifact["artifacts"]["fluidics_csv"] = recording.get("csv_path")
+                artifact["artifacts"]["qc_csv"] = qc_csv
                 artifact["artifacts"]["polling_origin_monotonic"] = self.polling_started_monotonic()
                 artifact["artifacts"]["recording_closed"] = False
             result = op.run(self, deepcopy(plan["normalized_settings"]))
@@ -658,6 +663,15 @@ class Admet:
         store = self._plan_store(plan["plan_id"])
         if store is not None and plan.get("run_id"):
             store.plan(plan)
+
+    def _project_relative(self, path: Any) -> str:
+        """A path as the project stores it: relative to the project when it lies inside."""
+        if not path:
+            return ""
+        try:
+            return Path(path).resolve().relative_to(self.project.path.resolve()).as_posix()
+        except (ValueError, AttributeError):
+            return str(path)
 
     def _finish_plan(self, plan):
         artifact = self._run_artifacts.get(plan["plan_id"])

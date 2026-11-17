@@ -266,6 +266,15 @@ class DesktopBackendTests(unittest.TestCase):
 
     def test_a_record_step_archives_its_own_video_and_nothing_else_records(self):
         camera = self.camera_fake()
+        writers = []
+        from tests.test_control_engine import FakeVideoWriter
+
+        def collecting_factory(*args):
+            writer = FakeVideoWriter(*args)
+            writers.append(writer)
+            return writer
+
+        self.backend.engine._video_writer_factory = collecting_factory
         recorded = definition(duration=1.0)
         recorded["steps"][0]["record"] = True
         plan = self.backend.preview("experiment_1", recorded)
@@ -291,6 +300,13 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
         indexed = json.loads((Path(self.backend.workdir) / "records/metadata.json").read_text())["recordings"]
         self.assertIn(Path(videos[0]["video_path"]).stem, [r.get("recording_id") for r in indexed])
+        # The run's fluidics and QC files are named in the run's summary and in the recording's own record.
+        run_id = completed["run_id"]
+        self.assertEqual(summary["artifacts"]["qc_csv"], f"records/camera/{run_id}.qc.csv")
+        record = writers[-1].record
+        self.assertEqual(record["qc_csv"], f"records/camera/{run_id}.qc.csv")
+        self.assertEqual(record["fluidics_csv"], Path(summary["artifacts"]["fluidics_csv"]).as_posix())
+        self.assertTrue(record["fluidics_csv"].startswith("records/fluidics/"))
 
     def test_a_camera_that_cannot_start_pauses_the_protocol_with_channels_at_zero(self):
         camera = self.camera_fake()
