@@ -193,7 +193,7 @@ class DesktopBackendTests(unittest.TestCase):
 
     def test_dropseq_template_simulated_collection_gates_and_artifacts(self):
         self.connect()
-        document = template_documents()["dropseq"]
+        document = template_documents()["dropseq_3n"]
         document["parameter_values"]["target_ul"] = 5                          # a 5 uL test aliquot per replicate
         saved = self.backend.call("save_protocol", {"protocol": document})
         plan = self.backend.plan_file(saved["path"])

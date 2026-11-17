@@ -84,7 +84,8 @@ class JsonProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with chdir(tmp):
                 self.assertEqual(set(template_documents()), {
-                    "dead_volume", "density", "dropseq", "flow_stability_scout", "gravimetry", "viscosity",
+                    "dead_volume", "density", "dropseq_1n", "dropseq_3n", "flow_stability_scout", "gravimetry",
+                    "viscosity",
                 })
             directory = Path(tmp) / "templates"
             directory.mkdir()
@@ -93,7 +94,7 @@ class JsonProtocolTests(unittest.TestCase):
                 self.assertEqual(set(template_documents()), {"short_run"})
 
     def test_dropseq_template_runs_three_replicates_with_bounded_execution(self):
-        document = template_documents()["dropseq"]
+        document = template_documents()["dropseq_3n"]
         steps = resolve(document)["steps"]
         self.assertEqual([step["name"] for step in steps], ["set01_rep01", "set01_rep02", "set01_rep03", "Finish set01"])
         for step in steps[:3]:
@@ -110,8 +111,18 @@ class JsonProtocolTests(unittest.TestCase):
         self.assertEqual(plan["expected_duration_s"], 90)
         self.assertEqual(plan["steps"][0]["flow_setpoints_ul_min"], {"0": 300, "1": 40, "2": 40})
 
+    def test_dropseq_1n_is_one_collection_with_the_same_parameters(self):
+        one, three = template_documents()["dropseq_1n"], template_documents()["dropseq_3n"]
+        self.assertEqual(set(one["parameters"]), set(three["parameters"]))
+        steps = resolve(one)["steps"]
+        self.assertEqual([step["name"] for step in steps], ["set01_rep01", "Finish set01"])
+        self.assertEqual(steps[0]["trigger_params"], resolve(three)["steps"][0]["trigger_params"])
+        self.assertIn("Collection:", steps[0]["confirm_message"])
+        one["parameter_values"]["record_video"] = True
+        self.assertEqual([step.get("record") for step in resolve(one)["steps"]], [True, None])
+
     def test_dropseq_records_each_collection_only_when_asked(self):
-        document = template_documents()["dropseq"]
+        document = template_documents()["dropseq_3n"]
         self.assertEqual([step.get("record") for step in resolve(document)["steps"]], [False, False, False, None])
         self.assertTrue(all("record_max_s" not in step for step in resolve(document)["steps"]))
         document["parameter_values"].update({"record_video": True, "record_s": 60})
@@ -129,7 +140,7 @@ class JsonProtocolTests(unittest.TestCase):
             resolve(document)
 
     def test_control_puts_each_channel_under_flow_or_pressure(self):
-        document = template_documents()["dropseq"]
+        document = template_documents()["dropseq_3n"]
         document["parameter_values"].update({"oil_control": "pressure", "oil_value": 1300})
         step = resolve(document)["steps"][0]
 

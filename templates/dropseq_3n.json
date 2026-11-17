@@ -1,5 +1,5 @@
 {
-  "name": "dropseq",
+  "name": "dropseq_3n",
   "parameters": {
     "oil_control": {"type": "choice", "label": "Oil L control", "default": "flow", "options": ["flow", "pressure"]},
     "oil_value": ["Oil L setpoint (µL/min or mbar)", 300],

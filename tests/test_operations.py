@@ -291,7 +291,7 @@ class ProjectAwareTests(unittest.TestCase):
             try:
                 from admet.workflows.json_protocol import template_documents
 
-                admet.do("run_json_protocol", {"protocol": template_documents()["dropseq"], "tick_s": 0.1})
+                admet.do("run_json_protocol", {"protocol": template_documents()["dropseq_3n"], "tick_s": 0.1})
                 self.assertTrue(admet.state()["running"])
             finally:
                 admet.do("stop_protocol")
