@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -317,6 +318,38 @@ class VideoWorkerTests(unittest.TestCase):
             self.assertEqual(encoded["shape"], (2, 2, 30.0))
             self.assertFalse((Path(tmpdir) / "sample.raw").exists())          # gone once the video is whole
             self.assertFalse((Path(tmpdir) / "sample.video.json").exists())   # the video carries the record now
+
+    def test_a_writer_told_to_wait_keeps_its_raw_file_until_encode_is_called(self):
+        import threading
+
+        encoded = []
+
+        def fake_encoder(raw, video, width, height, fps):
+            encoded.append(raw.read_bytes())
+            video.write_bytes(b"AVI")
+            return True, ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worker = VideoWorker(tmpdir, "later", 2, 2, 30.0, encoder=fake_encoder)
+            worker.encode_at_stop = False
+            finished = threading.Event()
+            worker.on_finished = lambda path, ok, reason: finished.set()
+            self.assertTrue(worker.start())
+            self.assertTrue(worker.write(np.full((2, 2), 7, dtype=np.uint8)))
+            path = Path(worker.stop())
+
+            raw, info = Path(tmpdir) / "later.raw", Path(tmpdir) / "later.video.json"
+            self.assertTrue(raw.exists())
+            self.assertEqual(json.loads(info.read_text())["status"], "recorded")
+            self.assertEqual(encoded, [])
+            self.assertFalse(finished.is_set())
+
+            self.assertEqual(worker.encode(), (True, ""))
+
+            self.assertEqual(encoded, [bytes([7, 7, 7, 7])])
+            self.assertTrue(path.exists() and finished.is_set())
+            self.assertFalse(raw.exists() or info.exists())
+            self.assertEqual(worker.encode(), (False, "nothing recorded"))     # done once
 
     def test_a_recording_left_unencoded_is_finished_later_with_its_whole_frames(self):
         import json

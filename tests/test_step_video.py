@@ -70,6 +70,9 @@ class StepVideoTests(unittest.TestCase):
         self.assertFalse(self.camera.recording)
         self.assertEqual([(v["step"], v["part"], v["stopped_by"]) for v in video.videos], [(2, 1, "completed")])
         self.assertTrue(Path(video.videos[0]["video_path"]).name.startswith("run_ab12_step02_"))
+        self.assertFalse(Path(video.videos[0]["video_path"]).is_file())    # encoded once the run is over
+        video.on_event(event(-1, "completed", name=""))
+        video.wait(5)
         self.assertTrue(Path(video.videos[0]["video_path"]).is_file())
         recorded = video.videos[0]                                          # the fake camera reports 3 frames
         self.assertGreater(recorded["acquisition_fps"], 0)
@@ -98,6 +101,26 @@ class StepVideoTests(unittest.TestCase):
         video.close("emergency stop")
         self.assertEqual(video.videos[-1]["stopped_by"], "emergency stop")
         self.assertFalse(self.camera.recording)
+
+    def test_step_videos_are_encoded_after_the_run_in_order(self):
+        video = self.video([step("collect", record=True), step("wash"), step("collect2", record=True)])
+        video.on_event(event(0))
+        video.on_event(event(1, name="wash"))
+        video.on_event(event(2, name="collect2"))
+        self.assertEqual([w.encode_at_stop for w in self.writers], [False, False])
+        self.assertFalse(self.writers[0].path.exists())             # nothing encoded while the run goes on
+        video.on_event(event(-1, "completed", name=""))
+        video.wait(5)
+        self.assertTrue(all(w.path.exists() for w in self.writers))
+        self.assertLess(self.writers[0].encoded_at, self.writers[1].encoded_at)
+
+    def test_an_emergency_stop_still_encodes_what_was_recorded(self):
+        video = self.video([step("collect", record=True)])
+        video.on_event(event(0))
+        video.close("emergency stop")
+        video.finish()
+        video.wait(5)
+        self.assertTrue(self.writers[0].path.exists())
 
     def test_a_step_never_records_past_its_limit(self):
         self.assertEqual(self.video([step("a", record=True, record_max_s=500)]).limit(0), RECORD_CAP_S)

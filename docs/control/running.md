@@ -52,6 +52,9 @@ Every run records fluidics (pressure and flow of each channel) to
 `records/fluidics/`. Steps marked `"record": true` also record video, one file per
 step (see [Video](../protocols/format#video)). The run's
 `summary.json` points at both and holds the rig mapping and corrections in force.
+The step videos are encoded once the run is over, one after another, so no encode
+competes with the next step's recording for the disk; they appear in the project
+as each one finishes. A recording made outside a protocol is encoded at once.
 
 Each video carries its own record inside the file (the AVI's `INFO` comment): the
 project and run it belongs to, the step and part, when it started and stopped, the
