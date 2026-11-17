@@ -19,7 +19,7 @@ logger = get_logger("Pipeline")
 MIN_SPACING_SAMPLES = 10     # neighbour pairs seen before the spacing is trusted
 
 
-def _spacings(properties: list[dict]) -> list[float]:
+def spacings(properties: list[dict]) -> list[float]:
     """The gaps between neighbouring droplets along the channel in one frame, between 1.2 and 6
     diameters: closer is one droplet seen twice, farther is a gap in the train."""
     if len(properties) < 2:
@@ -146,7 +146,7 @@ class DropletPipeline:
             if absolute >= end_frame:
                 break
             result = self._process_frame(frame, absolute)
-            self.spacings.extend(_spacings(result["properties"]))
+            self.spacings.extend(spacings(result["properties"]))
             self.tracker.update(result["properties"], absolute)
             self._cache_detection_assets(result)
             if store_preview_frames and (processed % preview_stride == 0 or processed == total_frames - 1):

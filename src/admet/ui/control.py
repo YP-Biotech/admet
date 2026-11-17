@@ -82,6 +82,7 @@ from admet.ui.data import (
 )
 from admet.ui.theme import STATUS_COLORS, Theme
 from admet.engines.acquisition.camera.acquisition import as_8bit, cell_means, grid_edges, sharpness
+from admet.engines.acquisition.camera.qc import qc_line
 from admet.ui.window import (
     connected_devices,
     log_state,
@@ -2293,6 +2294,8 @@ class ControlWindow(QMainWindow):
             return
         self.preview.set_overlay(live_stats(self.last_metadata),
                                  recording=bool(self.last_metadata.get("camera_recording")))
+        qc = self.last_metadata.get("camera_qc") if self.values.get("camera_live_qc", True) else None
+        self.preview.set_qc(qc_line(qc), str((qc or {}).get("state") or ""))
         nerd = bool(self.values.get("camera_nerd_mode"))
         focus = self._focus.fraction if nerd else None
         cells = self._cells if nerd else None
@@ -2920,6 +2923,11 @@ class ControlWindow(QMainWindow):
             # A new setting, or Nerd mode switched on, starts the focus best over.
             self._focus.reset()
             self._sync_preview_overlay()
+        if name == "camera_live_qc" and hasattr(self.api.engine, "set_live_qc"):
+            try:
+                self.api.engine.set_live_qc(bool(self.values[name]))
+            except Exception as exc:
+                self._notify(f"Live QC: {exc}", "warning")
         if name == "camera_microns_per_pixel":
             self._save_optics({"microns_per_pixel": round(float(self.values[name]), 4), "method": "typed",
                                "measured_at": datetime.now().isoformat(timespec="seconds")}
@@ -3936,6 +3944,9 @@ def _wrap_parts(parts: list[str], width: int, measure) -> list[str]:
     return lines or [""]
 
 
+QC_COLORS = {"STABLE": QColor(90, 220, 130), "UNSTABLE": QColor(255, 96, 96), "SETTLING": QColor(255, 200, 60)}
+
+
 class PreviewDisplay(QWidget):
     frame_painted = Signal()
     frame_clicked = Signal(int, int)        # a click, in frame pixels
@@ -3953,6 +3964,13 @@ class PreviewDisplay(QWidget):
         self._focus: float | None = None
         self._cells: np.ndarray | None = None
         self._marks: list[float] = []            # frame rows marked while the walls are measured
+        self._qc_text = ""
+        self._qc_state = ""
+
+    def set_qc(self, text: str, state: str = "") -> None:
+        if (text, state) != (self._qc_text, self._qc_state):
+            self._qc_text, self._qc_state = text, state
+            self.update()
 
     def set_marks(self, rows: list[float]) -> None:
         self._marks = list(rows)
@@ -4061,15 +4079,22 @@ class PreviewDisplay(QWidget):
             font.setPointSize(13)
             font.setBold(True)
             painter.setFont(font)
-            band_height = painter.fontMetrics().height() + 10
+            line_height = painter.fontMetrics().height()
+            rows = 2 if self._qc_text else 1
+            band_height = line_height * rows + 10
             if self.frame_rect.y() >= band_height:
                 band = QRect(0, self.frame_rect.y() - band_height, self.width(), band_height)
             else:
                 band = QRect(self.frame_rect.x(), self.frame_rect.y(), self.frame_rect.width(), band_height)
                 painter.fillRect(band, QColor(0, 0, 0, 150))
+            first = QRect(band.x() + 10, band.y() + 5, band.width() - 20, line_height)
             painter.setPen(QColor(255, 96, 96) if self._overlay_recording else Qt.GlobalColor.white)
-            painter.drawText(band.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                             self._overlay)
+            painter.drawText(first, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._overlay)
+            if self._qc_text:
+                # The live QC under it, in the colour of its state.
+                painter.setPen(QC_COLORS.get(self._qc_state, QColor(255, 200, 60)))
+                painter.drawText(first.translated(0, line_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                 self._qc_text)
         if self._grid and self.frame_rect.width() > 0:
             # A grid of about 256 cells whatever the frame's size; each cell is tinted by its mean level,
             # blue low to red high, lightly enough that the picture stays visible.

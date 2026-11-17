@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from collections.abc import Callable
 from dataclasses import asdict
 from threading import Lock
@@ -11,6 +12,7 @@ import numpy as np
 
 from .acquisition import CameraAcquisitionThread
 from .camera import Camera
+from .qc import BurstQC, QCSummary, QCWorker, qc_as_dict
 
 
 log = logging.getLogger(__name__)
@@ -34,6 +36,11 @@ class CameraController:
         self._parameters: dict[str, Any] = {}
         self._resulting_fps = 0.0
         self._parameters_read_at = 0.0
+        # Live QC: a worker per live view, measuring bursts the acquisition thread hands over.
+        self.qc_enabled = True
+        self.microns_per_pixel = 0.0
+        self._qc: QCWorker | None = None
+        self._qc_summary: QCSummary | None = None
 
     @property
     def live(self) -> bool:
@@ -128,14 +135,67 @@ class CameraController:
             preview_callback=self._on_frame,
             stats_callback=self._on_stats,
         )
+        self._acquisition.frame_rate_hint = self._resulting_fps
+        self._acquisition.on_recording_started = self._recording_started
+        self._acquisition.on_recording_stopped = self._recording_stopped
+        if self.qc_enabled:
+            self._start_qc()
         self._acquisition.start()
 
     def stop_live(self) -> None:
         if self._acquisition:
             self._acquisition.stop()
         self._acquisition = None
+        self._stop_qc()
+
+    def set_qc_enabled(self, enabled: bool) -> None:
+        """Switch the live QC on or off, live view or not."""
+        self.qc_enabled = bool(enabled)
+        if self._acquisition is None:
+            return
+        if self.qc_enabled and self._qc is None:
+            self._start_qc()
+        elif not self.qc_enabled:
+            self._stop_qc()
+
+    @property
+    def qc_summary(self) -> QCSummary | None:
+        with self._lock:
+            return self._qc_summary
+
+    def _start_qc(self) -> None:
+        self._qc = QCWorker(BurstQC(microns_per_pixel=self.microns_per_pixel), on_summary=self._on_qc)
+        if self._acquisition is not None:
+            self._acquisition.qc_sink = self._qc.offer
+
+    def _stop_qc(self) -> None:
+        if self._acquisition is not None:
+            self._acquisition.qc_sink = None
+        if self._qc is not None:
+            self._qc.stop()
+            self._qc = None
+        with self._lock:
+            self._qc_summary = None
+
+    def _on_qc(self, summary: QCSummary) -> None:
+        with self._lock:
+            self._qc_summary = summary
+
+    def _recording_started(self, writer: Any) -> None:
+        """The QC rows of a recording go beside its video, and the count starts from zero."""
+        video = getattr(writer, "video_path", None) or getattr(writer, "path", None)
+        if self._qc is not None and video:
+            try:
+                self._qc.start_log(Path(video).with_suffix(".qc.csv"))
+            except OSError:
+                log.exception("could not open the QC log")
+
+    def _recording_stopped(self) -> None:
+        if self._qc is not None:
+            self._qc.stop_log()
 
     def apply_configuration(self, settings: dict[str, Any]) -> None:
+        self.qc_enabled = bool(settings.get("camera_live_qc", True))
         offset_x = _snap_offset(settings["camera_offset_x"])
         offset_y = _snap_offset(settings["camera_offset_y"])
         if offset_x != 0 or offset_y != 0:
@@ -205,7 +265,12 @@ class CameraController:
         if not stats.get("recording") and time.monotonic() - self._parameters_read_at >= PARAMETER_READ_INTERVAL_S:
             self.read_parameters()
             metadata["camera_fps"] = self._resulting_fps if self.camera.connected else 0.0
+            if self._acquisition is not None:
+                self._acquisition.frame_rate_hint = self._resulting_fps
         metadata["camera_parameters"] = self._parameters
+        if self._qc is not None:
+            self._qc.qc.microns_per_pixel = self.microns_per_pixel
+        metadata["camera_qc"] = qc_as_dict(self.qc_summary)
         return metadata
 
     def observation(self) -> dict[str, Any]:

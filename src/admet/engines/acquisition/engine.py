@@ -110,6 +110,7 @@ CAMERA_CONFIGURATION_PARAMS = (
     "camera_framerate_hz",
     "camera_throughput_enabled",
     "camera_throughput_mbps",
+    "camera_live_qc",
 )
 
 ACQUISITION_ACTIONS = (
@@ -218,7 +219,7 @@ class AcquisitionEngine:
         self.on_video_finished: Callable[[str, bool, str], None] | None = None
 
         # Where a recording belongs (project, run): the service says, the engine does not know.
-        self.recording_context: dict[str, Any] = {}
+        self._recording_context: dict[str, Any] = {}
 
         def writer_factory(*args):
             writer = base_writer_factory(*args)
@@ -917,6 +918,22 @@ class AcquisitionEngine:
     @property
     def camera_live(self) -> bool:
         return self._camera.live
+
+    @property
+    def recording_context(self) -> dict[str, Any]:
+        return self._recording_context
+
+    @recording_context.setter
+    def recording_context(self, context: dict[str, Any]) -> None:
+        self._recording_context = dict(context or {})
+        optics = self._recording_context.get("optics") or {}
+        try:
+            self._camera.microns_per_pixel = float(optics.get("microns_per_pixel") or 0.0)   # the live QC's scale
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+    def set_live_qc(self, enabled: bool) -> None:
+        self._camera.set_qc_enabled(enabled)
 
     def start_camera_live(self) -> None:
         self._camera.start_live()

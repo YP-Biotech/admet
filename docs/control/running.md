@@ -68,6 +68,26 @@ another machine) is listed again from the file when the project is opened, and
 `admet check <project>` reports such videos (`--fix` lists them). No side file is
 left once the video is whole.
 
+## Live QC
+
+While the camera is live, once a second the next eight consecutive frames are
+measured the way analyze measures a video, without following any droplet: the
+train's speed from the shift between one frame and the next, the rate as speed over
+the spacing between neighbours, and the size and its CV from every whole droplet
+seen. A line under the live line shows them with 95 % intervals and the state:
+
+```
+1171±21/s  15 675  d 124.0±0.5um  cv 2.7±0.3%  STABLE
+```
+
+Rate, droplets made since the recording started, diameter (µm once the scale is
+measured, px before), CV, and the state, green **STABLE** when the CV's whole
+interval sits below 5 %, red **UNSTABLE** when it sits above, amber **SETTLING**
+while it straddles the limit or too few droplets have been seen. Every recording
+gets the same rows beside its video, `<recording>.qc.csv`, one a burst. The
+measurement runs in its own thread and drops a burst when it is still busy, so the
+recording never waits; **Live QC** in the camera settings switches it off.
+
 To check that a machine keeps up with the camera, run `uv run python
 tools/camera_bench.py` with the camera connected and control closed; `--contend`
 adds the load the window puts on the interpreter while it paints. It says whether
