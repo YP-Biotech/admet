@@ -57,6 +57,7 @@ CAMERA_SURFACE_OPTIONS = {
             "params": (
                 "camera_video_fps",
                 "camera_preview_off_recording",
+                "camera_live_qc",
                 "camera_nerd_mode",
             ),
         },
@@ -94,6 +95,7 @@ CAMERA_MAIN_SETTINGS = (
     "camera_pixel_format",
     "camera_readout",
     "camera_microns_per_pixel",
+    "camera_live_qc",
     "camera_nerd_mode",
 )
 FLUIDICS_MAIN_SETTINGS = ("simulated",)

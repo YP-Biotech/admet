@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -436,6 +437,45 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
         self.assertEqual(complete_calls, [True])
         self.assertEqual(acquisition.last_recording_frames, 2)
         self.assertEqual(acquisition.last_writer_frame_count, 2)
+
+    def test_bursts_of_consecutive_frames_go_to_the_qc_sink_only_while_recording(self):
+        camera = FakeRecordingCamera()
+        bursts = []
+        acquisition = CameraAcquisitionThread(camera, preview_callback=lambda frame: None)
+        acquisition.qc_sink = lambda frames, fps: bursts.append((len(frames), fps))
+        acquisition.burst_frames, acquisition.burst_interval_s = 3, 0.05
+        acquisition.frame_rate_hint = 4032.0
+
+        for value in range(5):                                      # live, not recording: nothing measured
+            acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
+        self.assertEqual(bursts, [])
+
+        self.assertTrue(acquisition.start_recording(FakeWriter(), max_frames=100))
+        for value in range(5):                                      # one burst, then two frames of waiting
+            acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
+        self.assertEqual(bursts, [(3, 4032.0)])
+        time.sleep(0.06)
+        for value in range(3):
+            acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
+        self.assertEqual(bursts, [(3, 4032.0), (3, 4032.0)])
+        acquisition.stop_recording()
+        time.sleep(0.06)
+        for value in range(3):
+            acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
+        self.assertEqual(len(bursts), 2)
+
+    def test_the_recording_hooks_bracket_the_writer(self):
+        camera = FakeRecordingCamera()
+        writer = FakeWriter()
+        seen = []
+        acquisition = CameraAcquisitionThread(camera, preview_callback=lambda frame: None)
+        acquisition.on_recording_started = lambda w: seen.append(("started", w is writer))
+        acquisition.on_recording_stopped = lambda: seen.append(("stopped", True))
+
+        self.assertTrue(acquisition.start_recording(writer, max_frames=1))
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8))
+
+        self.assertEqual(seen, [("started", True), ("stopped", True)])
 
     def test_preview_can_be_disabled(self):
         previews = []

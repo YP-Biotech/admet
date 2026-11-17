@@ -13,6 +13,24 @@ from typing import Any
 import numpy as np
 
 
+def train_shift(previous: list[tuple], current: list[tuple], *, max_shift: float = 250.0,
+                bin_px: float = 4.0) -> tuple[float, float] | None:
+    """The 2-D displacement most droplets agree on between one frame's positions and the next's,
+    never backwards along the flow; None when the two frames share no droplet."""
+    votes: dict[tuple, list] = {}
+    for px, py in previous:
+        for cx, cy in current:
+            dx, dy = cx - px, cy - py
+            if -bin_px <= dx <= max_shift and abs(dy) <= max_shift:
+                votes.setdefault((int(dx // bin_px), int(dy // bin_px)), []).append((dx, dy))
+    if not votes:
+        return None
+    best = max(len(v) for v in votes.values())
+    bins = sorted((b for b, v in votes.items() if len(v) == best), key=lambda b: b[0] ** 2 + b[1] ** 2)
+    chosen = votes[bins[0]]
+    return float(np.median([d[0] for d in chosen])), float(np.median([d[1] for d in chosen]))
+
+
 class Tracker:
     def __init__(self, *, max_shift: float = 250.0, bin_px: float = 4.0, tolerance_px: float = 15.0,
                  max_miss: int = 2, gate_x: float | None = None):
@@ -28,8 +46,9 @@ class Tracker:
     def update(self, detections: list[dict[str, Any]], frame_index: int) -> None:
         """Match this frame's detections to the tracks; each gets a track_id and droplet_id."""
         live = [t for t in self.tracks.values() if frame_index - t["frames"][-1] == 1]
-        shift = self._train_shift([(t["cx"][-1], t["cy"][-1]) for t in live],
-                                  [(d["centroid_x"], d["centroid_y"]) for d in detections])
+        shift = train_shift([(t["cx"][-1], t["cy"][-1]) for t in live],
+                            [(d["centroid_x"], d["centroid_y"]) for d in detections],
+                            max_shift=self.max_shift, bin_px=self.bin_px)
         if shift is not None:
             self.shift = shift
         used: set[int] = set()
@@ -75,20 +94,6 @@ class Tracker:
         track["missed"] = 0
         detection["track_id"] = track["id"]
         detection["droplet_id"] = track["id"]
-
-    def _train_shift(self, previous: list[tuple], current: list[tuple]) -> tuple[float, float] | None:
-        votes: dict[tuple, list] = {}
-        for px, py in previous:
-            for cx, cy in current:
-                dx, dy = cx - px, cy - py
-                if -self.bin_px <= dx <= self.max_shift and abs(dy) <= self.max_shift:
-                    votes.setdefault((int(dx // self.bin_px), int(dy // self.bin_px)), []).append((dx, dy))
-        if not votes:
-            return None
-        best = max(len(v) for v in votes.values())
-        bins = sorted((b for b, v in votes.items() if len(v) == best), key=lambda b: b[0] ** 2 + b[1] ** 2)
-        chosen = votes[bins[0]]
-        return float(np.median([d[0] for d in chosen])), float(np.median([d[1] for d in chosen]))
 
     def finish(self) -> list[dict[str, Any]]:
         """Every track, the ones still open included; the tracker is done."""

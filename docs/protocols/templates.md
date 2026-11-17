@@ -87,9 +87,11 @@ Calculation: [Flow scout](../calculations/other#flow-stability-scout).
 
 ## Drop-Seq
 
-Three Drop-Seq collections in one set: oil on L, cells on M1 and beads on M2, all at
-once after a gate for each collection. Each stops when L has delivered the target
-volume, then a last gate finishes the run.
+Two templates, `dropseq_3n` and `dropseq_1n`, with the same parameters. The first
+runs three Drop-Seq collections in one set: oil on L, cells on M1 and beads on M2,
+all at once after a gate for each collection. Each stops when L has delivered the
+target volume, then a last gate finishes the run. The second is one collection and
+the finishing gate, for a single run of the same settings.
 
 | Parameter | Default |
 |---|---|
