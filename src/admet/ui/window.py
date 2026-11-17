@@ -110,7 +110,8 @@ def optics_record(y_upper: float, y_lower: float, channel_width_um: float, frame
     shape = list(frame_shape or [])
     return {"microns_per_pixel": round(scale_from_walls(y_upper, y_lower, channel_width_um), 4),
             "channel_width_um": float(channel_width_um), "wall_px": [round(float(y_upper), 1), round(float(y_lower), 1)],
-            "frame": [int(shape[1]), int(shape[0])] if len(shape) >= 2 else [], "measured_at": measured_at}
+            "frame": [int(shape[1]), int(shape[0])] if len(shape) >= 2 else [], "measured_at": measured_at,
+            "method": "walls"}
 
 
 def frame_pixel(point: tuple[float, float], frame_rect: tuple[float, float, float, float],

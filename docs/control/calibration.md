@@ -7,12 +7,13 @@ flow it reports — and regulates to — is the corrected one.
 
 ## µm per pixel
 
-The camera's scale is measured once per optics setup, on **1. Setup** with the
-camera live: press **Measure µm/px**, click the upper channel wall on the preview,
-then the lower one, and type the channel's width in µm. The scale is the width over
-the distance between the clicks. It is kept in the project (a clone carries it) and
+The camera's scale is the **µm per pixel** setting of **1. Setup** (the Optics
+group). Type it, or measure it with the camera live: press **Measure µm/px**, click
+the upper channel wall on the preview, then the lower one, and type the channel's
+width in µm; the scale is the width over the distance between the clicks and lands
+in the setting. Either way it is kept in the project (a clone carries it) and
 written into the record of every recording made from then on, so analyze fills the
-file's µm/px from it. The button shows the scale once measured.
+file's µm/px from it. 0 means unknown.
 
 ## The Calibration page
 

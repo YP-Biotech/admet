@@ -402,6 +402,7 @@ class ControlWindow(QMainWindow):
         self._focus = FocusTracker()
         self._calibration_sources: dict[str, QTableWidgetItem] = {}
         self._load_rig_calibration(apply=False)
+        self._load_optics()
         self.protocol_editors = {}
         self._last_protocol_log = None
         self.last_result: RunResult | None = None
@@ -832,6 +833,7 @@ class ControlWindow(QMainWindow):
         self._append_log(f"project: created {self.project_path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
+        self._load_optics()
         self._render_current_stage()
 
     def _clone_project(self) -> None:
@@ -867,6 +869,7 @@ class ControlWindow(QMainWindow):
         self._append_log(f"project: cloned {source} into {self.project_path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
+        self._load_optics()
         self._render_current_stage()
 
     def _ensure_preflight(self) -> PreflightPanel:
@@ -957,6 +960,7 @@ class ControlWindow(QMainWindow):
         self._append_log(f"project: selected {path}")
         self._reset_project_workflow()
         self._load_rig_calibration()
+        self._load_optics()
         self._render_current_stage()
 
     def _save_project(self) -> None:
@@ -1394,8 +1398,6 @@ class ControlWindow(QMainWindow):
                 state.toggle,
             )
         label = _short_control_label(control.label)
-        if action == "measure_scale" and self.api.optics.get("microns_per_pixel"):
-            label = f"µm/px {float(self.api.optics['microns_per_pixel']):.2f}"
         state = action_button_state(
             control,
             self._guard_value,
@@ -2600,6 +2602,7 @@ class ControlWindow(QMainWindow):
         # Channels on this profile take its new terms.
         if any(self.values.get(f"{prefix}_profile") == profile.id for prefix, *_rest in FLUIDIC_CHANNELS):
             self._load_rig_calibration()
+            self._load_optics()
 
     def _edit_liquid_number(self, liquid, field: str, widget: QLineEdit) -> None:
         number = self._typed_number(field, widget)
@@ -2680,14 +2683,30 @@ class ControlWindow(QMainWindow):
             return
         shape = self.last_metadata.get("camera_frame_shape") or list(self.preview.current_frame.shape[:2])
         optics = optics_record(upper, lower, width, shape, datetime.now().isoformat(timespec="seconds"))
+        if not self._save_optics(optics):
+            return
+        self.values["camera_microns_per_pixel"] = optics["microns_per_pixel"]
+        self._notify(f"{optics['microns_per_pixel']:.3f} µm/px: {width:g} µm over {abs(lower - upper):.1f} px. "
+                     "Recordings from now on carry it.", "positive", timeout_ms=6000)
+        self._remount_current_stage()
+
+    def _save_optics(self, optics: dict[str, Any]) -> bool:
+        """The scale into the project, so recordings from now on carry it."""
+        if self.api.session is None:
+            return True                                   # no project yet: the table keeps the value
         try:
             self.api.save_optics(optics)
         except Exception as exc:
             self._notify(f"Could not keep the scale: {exc}", "danger", timeout_ms=0)
-            return
-        self._notify(f"{optics['microns_per_pixel']:.3f} µm/px: {width:g} µm over {abs(lower - upper):.1f} px. "
-                     "Recordings from now on carry it.", "positive", timeout_ms=6000)
-        self._refresh_action_box(self.workflow.current_stage(self.workflow_state))
+            return False
+        return True
+
+    def _load_optics(self) -> None:
+        """The scale this project last measured or typed, into the table."""
+        try:
+            self.values["camera_microns_per_pixel"] = float(self.api.optics.get("microns_per_pixel") or 0.0)
+        except (TypeError, ValueError):
+            self.values["camera_microns_per_pixel"] = 0.0
 
     def _ask_channel_width(self) -> float:
         """The channel's width in µm, the last one measured offered first."""
@@ -2901,6 +2920,10 @@ class ControlWindow(QMainWindow):
             # A new setting, or Nerd mode switched on, starts the focus best over.
             self._focus.reset()
             self._sync_preview_overlay()
+        if name == "camera_microns_per_pixel":
+            self._save_optics({"microns_per_pixel": round(float(self.values[name]), 4), "method": "typed",
+                               "measured_at": datetime.now().isoformat(timespec="seconds")}
+                              if self.values[name] else {})
         for editor in self.protocol_editors.values():
             if editor.builtin and name in editor.stage.settings.defaults():
                 editor.edited()

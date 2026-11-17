@@ -53,6 +53,8 @@ CAMERA_SETTINGS = ParamSchema(
         Param("camera_binning_h", "Binning H", ParamKind.INTEGER, default=1, minimum=1),
         Param("camera_binning_v", "Binning V", ParamKind.INTEGER, default=1, minimum=1),
         Param("camera_exposure_us", "Exposure", ParamKind.FLOAT, default=150.0, minimum=1.0, step=10.0),
+        Param("camera_microns_per_pixel", "µm per pixel", ParamKind.FLOAT, default=0.0, minimum=0.0, step=0.01,
+              description="The frame's scale: measured with Measure µm/px, or typed; 0 means unknown"),
         Param("camera_nerd_mode", "Nerd mode", ParamKind.BOOLEAN, default=False,
               description="Pixel grid, mean level, size, exposure and data rate on the preview"),
         Param("camera_gain", "Gain", ParamKind.FLOAT, default=0.0, minimum=0.0),

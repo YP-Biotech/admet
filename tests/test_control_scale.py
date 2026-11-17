@@ -57,10 +57,30 @@ class ScaleOnThePreviewTests(unittest.TestCase):
 
         optics = self.api.optics
         self.assertAlmostEqual(optics["microns_per_pixel"], 125 / 55, places=3)
+        self.assertEqual(optics["method"], "walls")
+        self.assertAlmostEqual(window.values["camera_microns_per_pixel"], 125 / 55, places=3)   # into the table
         self.assertEqual((optics["channel_width_um"], optics["wall_px"], optics["frame"]), (125.0, [3.0, 58.0], [320, 60]))
         self.assertEqual(preview._marks, [])
         self.assertAlmostEqual(self.api.engine.recording_context["optics"]["microns_per_pixel"], 125 / 55, places=3)
         self.assertAlmostEqual(self.api.engine.recording_facts()["optics"]["microns_per_pixel"], 125 / 55, places=3)
+
+    def test_a_scale_typed_in_the_table_is_kept_and_stamped_like_a_measured_one(self):
+        window = self.window
+        window._set_value("camera_microns_per_pixel", 2.5)
+
+        self.assertEqual(self.api.optics["microns_per_pixel"], 2.5)
+        self.assertEqual(self.api.optics["method"], "typed")
+        self.assertEqual(self.api.engine.recording_context["optics"]["microns_per_pixel"], 2.5)
+
+        window._set_value("camera_microns_per_pixel", 0)
+        self.assertEqual(self.api.optics, {})
+        self.assertNotIn("optics", self.api.engine.recording_context)
+
+    def test_the_project_scale_fills_the_table_when_the_window_opens(self):
+        self.api.save_optics({"microns_per_pixel": 2.27, "method": "walls"})
+        window = ControlWindow(self.api)
+        self.addCleanup(window.close)
+        self.assertEqual(window.values["camera_microns_per_pixel"], 2.27)
 
     def test_a_click_on_the_widget_reaches_the_window_in_frame_pixels(self):
         preview = PreviewDisplay()

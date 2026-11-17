@@ -47,6 +47,11 @@ CAMERA_SURFACE_OPTIONS = {
             ),
         },
         {
+            "title": "Optics",
+            "icon": "straighten",
+            "params": ("camera_microns_per_pixel",),
+        },
+        {
             "title": "Capture",
             "icon": "fiber_manual_record",
             "params": (
@@ -88,6 +93,7 @@ CAMERA_MAIN_SETTINGS = (
     "camera_gain",
     "camera_pixel_format",
     "camera_readout",
+    "camera_microns_per_pixel",
     "camera_nerd_mode",
 )
 FLUIDICS_MAIN_SETTINGS = ("simulated",)

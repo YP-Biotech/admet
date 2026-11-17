@@ -131,7 +131,8 @@ class ScaleMeasurementTests(unittest.TestCase):
         self.assertAlmostEqual(scale_from_walls(58, 3, 125.0), 125 / 55)          # either order
         self.assertEqual(scale_from_walls(10, 10, 125.0), 0.0)
         record = optics_record(3, 58, 125.0, [60, 320], "2026-11-17T10:00:00")
-        self.assertEqual((record["microns_per_pixel"], record["wall_px"], record["frame"]), (2.2727, [3.0, 58.0], [320, 60]))
+        self.assertEqual((record["microns_per_pixel"], record["wall_px"], record["frame"], record["method"]),
+                         (2.2727, [3.0, 58.0], [320, 60], "walls"))
 
     def test_a_click_on_the_widget_maps_to_the_frame_pixel(self):
         rect, shape = (10, 20, 640, 120), (60, 320)                           # the frame shown twice its size
