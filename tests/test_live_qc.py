@@ -15,6 +15,7 @@ from admet.engines.acquisition.camera.qc import (
     QCSummary,
     QCWorker,
     cv_interval,
+    qc_log_path,
     interval,
     qc_as_dict,
     qc_line,
@@ -139,7 +140,8 @@ class WorkerTests(unittest.TestCase):
         worker = QCWorker(slow, on_summary=seen.append)
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                worker.start_log(Path(tmp) / "clip.qc.csv")
+                log = Path(tmp) / "run_a.qc.csv"
+                worker.start_log(log, {"recording_id": "run_a_step01", "step": 1, "part": 1})
                 self.assertTrue(worker.offer([np.zeros((2, 2), np.uint8)], 100.0))
                 time.sleep(0.1)                                             # the worker is inside analyse now
                 self.assertFalse(worker.offer([np.zeros((2, 2), np.uint8)], 100.0))
@@ -150,14 +152,30 @@ class WorkerTests(unittest.TestCase):
                         break
                     time.sleep(0.02)
                 worker.stop_log()
-                rows = (Path(tmp) / "clip.qc.csv").read_text().splitlines()
-            self.assertEqual(len(seen), 1)
-            self.assertIsNone(worker.summary)                                   # nothing shown between recordings
-            self.assertEqual(rows[0].split(",")[:3], ["timestamp", "elapsed_s", "rate_hz"])
-            self.assertEqual(len(rows), 2)
+                self.assertIsNone(worker.summary)                               # nothing shown between recordings
+                slow.release.clear()
+                worker.start_log(log, {"recording_id": "run_a_step02", "step": 2, "part": 1})   # the next step
+                self.assertTrue(worker.offer([np.zeros((2, 2), np.uint8)], 100.0))
+                slow.release.set()
+                for _ in range(50):
+                    if len(seen) == 2:
+                        break
+                    time.sleep(0.02)
+                worker.stop_log()
+                rows = log.read_text().splitlines()
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(rows[0].split(",")[:5], ["timestamp", "elapsed_s", "recording_id", "step", "part"])
+            self.assertEqual(len(rows), 3)                                      # one header, a row a recording
+            self.assertEqual([r.split(",")[2:5] for r in rows[1:]], [["run_a_step01", "1", "1"], ["run_a_step02", "2", "1"]])
             self.assertIn("STABLE", rows[1])
         finally:
             worker.stop()
+
+    def test_the_qc_file_is_the_runs_beside_the_videos(self):
+        video = Path("/p/records/camera/run_a_step01_20261117_101500.avi")
+        self.assertEqual(qc_log_path(video, {"run_id": "run_a", "recording_id": "run_a_step01_20261117_101500"}),
+                         Path("/p/records/camera/run_a.qc.csv"))
+        self.assertEqual(qc_log_path(video, {}), Path("/p/records/camera/run_a_step01_20261117_101500.qc.csv"))
 
 
 class PreviewLineTests(unittest.TestCase):

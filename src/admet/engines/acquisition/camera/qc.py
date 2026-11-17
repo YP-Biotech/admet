@@ -201,22 +201,30 @@ class BurstQC:
         )
 
 
-QC_COLUMNS = ("timestamp", "elapsed_s", "rate_hz", "rate_half", "count", "diameter", "diameter_unit", "diameter_half",
-              "cv_percent", "cv_half", "n", "bursts", "speed_px_frame", "spacing_px", "state")
+QC_COLUMNS = ("timestamp", "elapsed_s", "recording_id", "step", "part", "rate_hz", "rate_half", "count", "diameter",
+              "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n", "bursts", "speed_px_frame", "spacing_px",
+              "state")
 
 
 class QCLog:
-    """The summaries of one recording, a row a burst, beside the video."""
+    """The run's QC rows, one a burst, appended recording after recording to one file beside the videos.
 
-    def __init__(self, path: Path) -> None:
+    Each row names its recording, step and part; elapsed_s counts from that recording's start."""
+
+    def __init__(self, path: Path, recording: dict[str, Any] | None = None) -> None:
         self.path = Path(path)
+        self.recording = dict(recording or {})
         self._started = time.monotonic()
-        self._handle = self.path.open("w", newline="", encoding="utf-8")
+        new = not self.path.exists() or self.path.stat().st_size == 0
+        self._handle = self.path.open("a", newline="", encoding="utf-8")
         self._writer = csv.writer(self._handle)
-        self._writer.writerow(QC_COLUMNS)
+        if new:
+            self._writer.writerow(QC_COLUMNS)
 
     def write(self, summary: QCSummary) -> None:
         self._writer.writerow([datetime.now().isoformat(timespec="milliseconds"), f"{summary.at - self._started:.3f}",
+                               self.recording.get("recording_id", ""), self.recording.get("step", ""),
+                               self.recording.get("part", ""),
                                f"{summary.rate_hz:.2f}", _num(summary.rate_half), f"{summary.count:.1f}",
                                f"{summary.diameter:.3f}", summary.diameter_unit, _num(summary.diameter_half),
                                f"{summary.cv_percent:.3f}", _num(summary.cv_half), summary.n, summary.bursts,
@@ -225,6 +233,12 @@ class QCLog:
 
     def close(self) -> None:
         self._handle.close()
+
+
+def qc_log_path(video: Path, record: dict[str, Any] | None) -> Path:
+    """One QC file a run, beside the videos: <run_id>.qc.csv; a recording outside a run gets its own."""
+    run_id = str((record or {}).get("run_id") or "")
+    return Path(video).parent / (f"{run_id}.qc.csv" if run_id else f"{Path(video).stem}.qc.csv")
 
 
 def _num(value: float) -> str:
@@ -262,14 +276,14 @@ class QCWorker:
         self._wake.set()
         return True
 
-    def start_log(self, path: Path) -> None:
-        """A recording starts: its rows go to path, and the measurements start over."""
+    def start_log(self, path: Path, recording: dict[str, Any] | None = None) -> None:
+        """A recording starts: its rows are appended to path, and the measurements start over."""
         with self._lock:
             self._close_log()
             self._pending = None
             self.qc.reset()
             self.summary = None
-            self._log = QCLog(path)
+            self._log = QCLog(path, recording)
 
     def stop_log(self) -> None:
         """The recording stopped: no more rows, and nothing left to show."""

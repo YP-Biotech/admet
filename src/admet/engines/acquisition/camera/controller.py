@@ -12,7 +12,7 @@ import numpy as np
 
 from .acquisition import CameraAcquisitionThread
 from .camera import Camera
-from .qc import BurstQC, QCSummary, QCWorker, qc_as_dict
+from .qc import BurstQC, QCSummary, QCWorker, qc_as_dict, qc_log_path
 
 
 log = logging.getLogger(__name__)
@@ -182,13 +182,14 @@ class CameraController:
             self._qc_summary = summary
 
     def _recording_started(self, writer: Any) -> None:
-        """The QC measures this recording from its first frame; its rows go beside the video."""
+        """The QC measures this recording from its first frame; its rows join the run's QC file."""
         video = getattr(writer, "video_path", None) or getattr(writer, "path", None)
         with self._lock:
             self._qc_summary = None
         if self._qc is not None and video:
+            record = dict(getattr(writer, "record", None) or {})
             try:
-                self._qc.start_log(Path(video).with_suffix(".qc.csv"))
+                self._qc.start_log(qc_log_path(Path(video), record), record)
             except OSError:
                 log.exception("could not open the QC log")
 
