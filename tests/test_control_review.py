@@ -136,3 +136,101 @@ class ReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def qc_run(root: Path, run_id: str = "run_q") -> Path:
+    """A run with timestamps on its fluidics rows and a QC file: one 20 s collection of 1170 droplets a second."""
+    import csv
+    import json
+
+    project = Path(root)
+    directory = project / "records" / "protocols" / run_id
+    directory.mkdir(parents=True)
+    fluidics = project / "records" / "fluidics" / f"{run_id}.csv"
+    fluidics.parent.mkdir(parents=True, exist_ok=True)
+    with fluidics.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "elapsed_s", "pressure_0_mbar", "pressure_1_mbar", "pressure_2_mbar",
+                         "flow_0_ul_min", "flow_1_ul_min", "flow_2_ul_min"])
+        for tick in range(81):                                                  # 10:00:00 to 10:00:40, every 0.5 s
+            seconds = tick * 0.5
+            on = 10 <= seconds <= 30
+            writer.writerow([f"10:00:{seconds:06.3f}", f"{seconds:.3f}", 1300 if on else 0, 420 if on else 0,
+                             410 if on else 0, 300 if on else 0, 40 if on else 0, 40 if on else 0])
+    qc = project / "records" / "camera" / f"{run_id}.qc.csv"
+    qc.parent.mkdir(parents=True, exist_ok=True)
+    with qc.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "elapsed_s", "recording_id", "step", "part", "rate_hz", "rate_half", "count",
+                         "diameter", "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n", "bursts",
+                         "speed_px_frame", "spacing_px", "state"])
+        for k, second in enumerate(range(11, 30)):
+            state = "SETTLING" if k < 2 else "STABLE"
+            writer.writerow([f"2026-11-17T10:00:{second:02d}.100", f"{k + 1}.000", f"{run_id}_step01", 1, 1,
+                             1170, 21 if k > 2 else "", 1170 * (k + 1), 124.0, "um", 0.5, 2.7, 0.3, 200, k + 1, 48, 128, state])
+    events = [{"step_index": 0, "step_name": "collect", "state": "running", "outcome": "running", "monotonic": 110},
+              {"step_index": 0, "step_name": "collect", "state": "running", "outcome": "completed", "monotonic": 130}]
+    (directory / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    (directory / "summary.json").write_text(json.dumps({
+        "run_id": run_id, "state": "completed", "executed_at": "2026-11-17T10:00:00", "completed_at": "2026-11-17T10:00:40",
+        "artifacts": {"fluidics_csv": f"records/fluidics/{run_id}.csv", "qc_csv": f"records/camera/{run_id}.qc.csv",
+                      "polling_origin_monotonic": 100, "recording_closed": True}}))
+    return directory
+
+
+class DropletQCTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyleSheet(ui.stylesheet())
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.run = qc_run(self.root)
+
+    def test_the_qc_rows_land_on_the_fluidics_clock_with_the_expected_rate_from_the_flows(self):
+        from admet.core.droplets import expected_rate_hz
+
+        run = project_run(self.run, "run_q")
+
+        self.assertIsNotNone(run.qc)
+        self.assertEqual([round(t, 1) for t in run.qc.t[:3]], [11.1, 12.1, 13.1])            # wall clock → elapsed_s
+        self.assertEqual(run.qc.diameter_unit, "um")
+        self.assertAlmostEqual(run.qc.expected[5], expected_rate_hz(80.0, 124.0), delta=1)   # cells + beads, no oil
+        self.assertTrue(all(s == "STABLE" for s in run.qc.state[2:]))
+        self.assertEqual(run.qc.recording[0], "run_q_step01")
+        self.assertEqual([(at, label) for at, label, _ in run.markers], [(10, "▶ 1"), (30, "■ 1")])
+
+    def test_a_row_past_midnight_lands_on_the_next_day(self):
+        from admet.ui.review import read_qc_csv
+
+        path = self.root / "late.qc.csv"
+        path.write_text("timestamp,rate_hz,rate_half,count,diameter,diameter_unit,cv_percent,cv_half,state,recording_id\n"
+                        "2026-11-18T00:00:05.000,1000,10,5,120,um,3,0.3,STABLE,r\n")
+        qc = read_qc_csv(path, (23 * 3600 + 59 * 60 + 55.0, 500.0))               # fluidics began at 23:59:55 = 500 s
+        self.assertAlmostEqual(qc.t[0], 510.0)
+
+    def test_the_page_draws_the_rate_its_band_the_expected_line_and_the_cv_and_fills_the_columns(self):
+        from admet.ui.review import qc_cells
+
+        panel = ReviewPanel()
+        self.addCleanup(panel.close)
+        panel.set_project(str(self.root))
+        self.assertEqual(panel.table.rowCount(), 1)
+        panel.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+
+        run = panel.shown_runs()[0][1]
+        self.assertEqual(len(panel.droplet_plot.listDataItems()), 2)            # the rate and the expected line
+        self.assertTrue(any(getattr(item, "qc_item", False) for item in panel.droplet_plot.items()))   # the band
+        self.assertEqual(len(panel.cv_plot.listDataItems()), 2)                 # SETTLING, then STABLE
+        self.assertEqual(qc_cells(run.qc), ("22 230", "1170", "2.7 STABLE"))
+        self.assertEqual([panel.table.item(0, c).text() for c in (6, 7, 8)], ["22 230", "1170", "2.7 STABLE"])
+        self.assertEqual(panel.table.horizontalHeaderItem(8).text(), "CV, %")
+
+        panel.align.setCurrentIndex(1)                                           # stacked: the step from 0
+        self.assertEqual(len(panel.droplet_plot.listDataItems()), 2)
+        panel.table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertEqual(len(panel.droplet_plot.listDataItems()), 0)
+        self.assertFalse(any(getattr(item, "qc_item", False) for item in panel.droplet_plot.items()))

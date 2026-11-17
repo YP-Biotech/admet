@@ -20,9 +20,19 @@ saved files only; it needs no device and changes nothing on the rig.
     is drawn from 0, so steps and replicates overlay;
   - *Recorded time* shows each run as recorded, in seconds since ADMET began reading
     the Fluigent.
-- **Reset view** fits both plots to the data again.
+- **Reset view** fits the plots to the data again.
 
-Pressure and flow share the time axis. Step starts (▶) and ends (■) are marked as on
+The four plots sit in a grid, pressure and flow above, droplets and their CV below,
+all on one time axis. The droplet plots show the QC each recording wrote while it
+ran (see [Live QC](./running#live-qc)): the rate with its 95 % interval shaded and,
+dashed, the rate the flows measured at that moment must make at the size measured
+then; and the CV in the colour of its state, green stable, amber settling, red
+unstable, with the 5 % limit drawn. Each recording is its own curve, so nothing is
+drawn across the gaps between them. The runs table adds the droplets made over the
+run's recordings, the median rate, and the median CV with the state at the end. A
+loaded file has no QC and leaves those plots empty.
+
+Pressure and flow share the time axis with the droplet plots. Step starts (▶) and ends (■) are marked as on
 the live plots, for runs recorded in the project. A crosshair follows the cursor with
 the time and value under it; a click pins a reference (+), after which the readout
 also shows the difference from it, and a double-click clears it.
