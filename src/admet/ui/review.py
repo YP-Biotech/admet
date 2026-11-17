@@ -15,9 +15,11 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QTableWidgetItem, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
+from admet.core.droplets import dispersed_channels, expected_rate_hz, time_of_day
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme as ui
 from admet.ui.tables import GridTable, fit_table_height
@@ -29,6 +31,9 @@ from admet.workflows.calculations import recorded_runs
 # Oil L solid, Cells M long dashes, Beads M dash-dot; dash lengths are in line widths.
 CHANNEL_DASHES = (None, (5.0, 2.5), (5.0, 2.0, 0.01, 2.0))
 LINE_WIDTH = 2.5
+# The droplet QC a recording wrote beside its video: the CV in the colour of its state.
+QC_STATE_COLORS = {"STABLE": Theme.SUCCESS_HOVER, "UNSTABLE": Theme.DANGER_HOVER, "SETTLING": Theme.WARNING}
+QC_LIMIT_PERCENT = 5.0
 
 
 def channel_pen(color: str, channel: int) -> QPen:
@@ -58,12 +63,40 @@ def run_color(row: int) -> str:
 
 
 @dataclass
+class QCSeries:
+    """The run's droplet QC rows on the fluidics clock: one row a burst, each from one recording."""
+    t: np.ndarray
+    rate: np.ndarray
+    rate_half: np.ndarray
+    cv: np.ndarray
+    cv_half: np.ndarray
+    diameter: np.ndarray
+    diameter_unit: str
+    count: np.ndarray
+    state: list[str]
+    recording: list[str]
+    expected: np.ndarray            # from the flows at that moment and the size then; NaN when unknown
+
+    def chunks(self, mask: np.ndarray) -> list[np.ndarray]:
+        """The indices in mask, one array per recording, in order."""
+        indices = np.flatnonzero(mask)
+        pieces: list[list[int]] = []
+        for index in indices:
+            if pieces and self.recording[pieces[-1][-1]] == self.recording[index]:
+                pieces[-1].append(int(index))
+            else:
+                pieces.append([int(index)])
+        return [np.array(piece) for piece in pieces]
+
+
+@dataclass
 class ReviewRun:
     name: str
     t: np.ndarray
     pressures: list[np.ndarray]
     flows: list[np.ndarray]
     markers: list[tuple[float, str, str]] = field(default_factory=list)
+    qc: QCSeries | None = None
 
     @property
     def anchor(self) -> float:
@@ -126,6 +159,62 @@ def _number(text) -> float:
         return math.nan
 
 
+def fluidics_anchor(path: Path) -> tuple[float, float] | None:
+    """The first row's time of day and elapsed_s, which put a wall-clock stamp on the CSV's clock."""
+    try:
+        with Path(path).open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                stamp, elapsed = time_of_day(row.get("timestamp")), _number(row.get("elapsed_s"))
+                if stamp is not None and math.isfinite(elapsed):
+                    return stamp, elapsed
+                return None
+    except OSError:
+        return None
+    return None
+
+
+def read_qc_csv(path: Path, anchor: tuple[float, float]) -> QCSeries | None:
+    """The QC rows of a run on the fluidics clock: each row's wall-clock stamp against the fluidics
+    CSV's first row. A row past midnight is placed on the next day."""
+    anchor_stamp, anchor_elapsed = anchor
+    columns: dict[str, list] = {key: [] for key in ("t", "rate", "rate_half", "cv", "cv_half", "diameter", "count")}
+    states, recordings, units = [], [], []
+    with Path(path).open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            stamp = time_of_day(row.get("timestamp"))
+            if stamp is None:
+                continue
+            if stamp < anchor_stamp - 43200:
+                stamp += 86400.0
+            columns["t"].append(anchor_elapsed + stamp - anchor_stamp)
+            for key, column in (("rate", "rate_hz"), ("rate_half", "rate_half"), ("cv", "cv_percent"),
+                                ("cv_half", "cv_half"), ("diameter", "diameter"), ("count", "count")):
+                columns[key].append(_number(row.get(column)))
+            states.append(str(row.get("state") or ""))
+            recordings.append(str(row.get("recording_id") or ""))
+            units.append(str(row.get("diameter_unit") or ""))
+    if not columns["t"]:
+        return None
+    arrays = {key: np.array(values, dtype=float) for key, values in columns.items()}
+    unit = next((u for u in units if u), "")
+    return QCSeries(arrays["t"], arrays["rate"], arrays["rate_half"], arrays["cv"], arrays["cv_half"],
+                    arrays["diameter"], unit, arrays["count"], states, recordings,
+                    np.full(len(states), math.nan))
+
+
+def expected_rates(qc: QCSeries, t: np.ndarray, flows: list[np.ndarray]) -> np.ndarray:
+    """At each QC row, the rate the flows then measured must make at the size then: every channel
+    but the oil over a sphere of the row's diameter. NaN until the size is in µm."""
+    if qc.diameter_unit != "um" or not len(t):
+        return np.full(len(qc.t), math.nan)
+    dispersed = np.zeros(len(qc.t))
+    for channel in dispersed_channels(FLUIDIC_CHANNEL_LABELS):
+        if channel < len(flows):
+            dispersed += np.interp(qc.t, t, np.nan_to_num(flows[channel]))
+    return np.array([expected_rate_hz(float(q), float(d)) if q > 0 and d > 0 else math.nan
+                     for q, d in zip(dispersed, qc.diameter)])
+
+
 def step_markers(events: list[dict], origin: float) -> list[tuple[float, str, str]]:
     """Step starts and ends on the CSV's clock, marked as on the live plots."""
     markers, current = [], None
@@ -147,13 +236,33 @@ def step_markers(events: list[dict], origin: float) -> list[tuple[float, str, st
 def project_run(directory: Path, name: str) -> ReviewRun:
     directory = Path(directory)
     summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
-    t, pressures, flows = read_fluidics_csv(recording_path(directory, summary))
+    fluidics = recording_path(directory, summary)
+    t, pressures, flows = read_fluidics_csv(fluidics)
     origin = summary.get("artifacts", {}).get("polling_origin_monotonic")
     events = []
     if type(origin) in (int, float) and (directory / "events.jsonl").is_file():
         events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()
                   if line.strip()]
-    return ReviewRun(name, t, pressures, flows, step_markers(events, origin) if events else [])
+    return ReviewRun(name, t, pressures, flows, step_markers(events, origin) if events else [],
+                     qc=run_qc(directory, summary, fluidics, t, flows))
+
+
+def run_qc(directory: Path, summary: dict, fluidics: Path, t: np.ndarray, flows: list[np.ndarray]) -> QCSeries | None:
+    """The run's droplet QC, when it wrote one and the fluidics CSV carries the clock to place it."""
+    stored = summary.get("artifacts", {}).get("qc_csv")
+    if not isinstance(stored, str) or not stored:
+        return None
+    path = Path(stored) if Path(stored).is_absolute() else directory.parents[2] / stored
+    anchor = fluidics_anchor(fluidics)
+    if not path.is_file() or anchor is None:
+        return None
+    try:
+        qc = read_qc_csv(path, anchor)
+    except (OSError, ValueError):
+        return None
+    if qc is not None:
+        qc.expected = expected_rates(qc, t, flows)
+    return qc
 
 
 def file_run(path: Path) -> ReviewRun:
@@ -172,7 +281,7 @@ def _bin(t: np.ndarray, y: np.ndarray, size: float) -> tuple[np.ndarray, np.ndar
     return np.bincount(index, weights=t)[used] / counts[used], np.bincount(index, weights=y)[used] / counts[used]
 
 
-COLUMNS = ("", "Colour", "Run", "Recorded", "State", "Duration")
+COLUMNS = ("", "Colour", "Run", "Recorded", "State", "Duration", "Droplets", "Rate, /s", "CV, %")
 
 
 class _Crosshair:
@@ -228,7 +337,8 @@ class _Crosshair:
 
 
 class ReviewPanel(QWidget):
-    """The runs table on top, one row of view controls, then Pressure and Flow sharing the time axis."""
+    """The runs table on top, one row of view controls, then four plots in a grid sharing the time axis:
+    pressure and flow above, the droplet rate and its CV below, from the QC each recording wrote."""
 
     def __init__(self):
         super().__init__()
@@ -302,13 +412,24 @@ class ReviewPanel(QWidget):
 
         self.pressure_plot = self._plot("Pressure", "mbar")
         self.flow_plot = self._plot("Flow", "µL/min")
-        self.flow_plot.setXLink(self.pressure_plot)
+        self.droplet_plot = self._plot("Droplets", "/s")
+        self.cv_plot = self._plot("Droplet CV", "%")
+        for plot in (self.flow_plot, self.droplet_plot, self.cv_plot):
+            plot.setXLink(self.pressure_plot)
+        limit = pg.InfiniteLine(QC_LIMIT_PERCENT, angle=0, pen=pg.mkPen(Theme.DANGER, width=1, style=Qt.PenStyle.DashLine),
+                                label=f"{QC_LIMIT_PERCENT:g} %", labelOpts={"position": 0.02, "color": Theme.DANGER})
+        self.cv_plot.addItem(limit)                                  # in the range, so the limit is always in view
         self.crosshairs = {self.pressure_plot: _Crosshair(pg, self.pressure_plot, "mbar"),
-                           self.flow_plot: _Crosshair(pg, self.flow_plot, "µL/min")}
-        for plot in self.crosshairs:
+                           self.flow_plot: _Crosshair(pg, self.flow_plot, "µL/min"),
+                           self.droplet_plot: _Crosshair(pg, self.droplet_plot, "/s"),
+                           self.cv_plot: _Crosshair(pg, self.cv_plot, "%")}
+        grid = QGridLayout()
+        grid.setSpacing(ui.spacing("default"))
+        for index, plot in enumerate(self.crosshairs):
             plot.scene().sigMouseMoved.connect(self._hover)
             plot.scene().sigMouseClicked.connect(lambda event, plot=plot: self._click(plot, event))
-            root.addWidget(plot)
+            grid.addWidget(plot, index // 2, index % 2)       # all four in view at once
+        root.addLayout(grid)
         self.status = QLabel()
         self.status.setObjectName("MutedText")
         root.addWidget(self.status)
@@ -317,7 +438,7 @@ class ReviewPanel(QWidget):
         plot = self._pg.PlotWidget(title=title, labels={"left": unit, "bottom": "s"})
         plot.setBackground(Theme.BG_DARK)
         plot.showGrid(x=True, y=True, alpha=0.15)
-        plot.setMinimumHeight(300)
+        plot.setMinimumHeight(260)
         return plot
 
     def set_project(self, project) -> None:
@@ -344,7 +465,7 @@ class ReviewPanel(QWidget):
             tick.setCheckState(Qt.CheckState.Checked if key in checked else Qt.CheckState.Unchecked)
             tick.setData(Qt.ItemDataRole.UserRole, key)
             self.table.setItem(row, 0, tick)
-            for column, text in enumerate(("■", name, recorded or "—", state, duration), 1):
+            for column, text in enumerate(("■", name, recorded or "—", state, duration, "", "", ""), 1):
                 item = QTableWidgetItem(text)
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 item.setToolTip(key)
@@ -396,7 +517,8 @@ class ReviewPanel(QWidget):
     def redraw(self, *_args) -> None:
         pg = self._pg
         for plot in self.crosshairs:
-            for item in list(plot.listDataItems()) + [i for i in plot.items() if getattr(i, "step_marker", False)]:
+            for item in list(plot.listDataItems()) + [i for i in plot.items()
+                                                     if getattr(i, "step_marker", False) or getattr(i, "qc_item", False)]:
                 plot.removeItem(item)
         shown, points = self.shown_runs(), 0
         rows = {self.table.item(row, 0).data(Qt.ItemDataRole.UserRole): row for row in range(self.table.rowCount())}
@@ -417,9 +539,12 @@ class ReviewPanel(QWidget):
                         curve = plot.plot(t, y, pen=channel_pen(color, channel))
                         curve.setDownsampling(auto=True, method="peak")
                         curve.setClipToView(True)
-                if mode == "stacked":
-                    continue    # every step starts at 0; its curve ends where the step ended
-                shift = pieces[0][2]
+            if run.qc is not None:
+                points += self._draw_qc(run.qc, pieces, color)
+            if mode == "stacked":
+                continue    # every step starts at 0; its curve ends where the step ended
+            shift = pieces[0][2]
+            for plot in self.crosshairs:
                 for at, label, mark in run.markers:
                     line = pg.InfiniteLine(at + shift, pen=pg.mkPen(mark, width=1, style=Qt.PenStyle.DashLine),
                                            label=label if plot is self.flow_plot else None,
@@ -429,14 +554,52 @@ class ReviewPanel(QWidget):
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             key = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-            if key in self._runs and not self._sources[key][4]:
-                run = self._runs[key]
+            if key not in self._runs:
+                continue
+            run = self._runs[key]
+            if not self._sources[key][4]:
                 self.table.item(row, 5).setText(f"{run.t[-1] - run.t[0]:.0f} s" if len(run.t) > 1 else "")
+            for column, text in zip((6, 7, 8), qc_cells(run.qc)):
+                self.table.item(row, column).setText(text)
         self.table.blockSignals(False)
         bin_text = "off" if self.bin.value() <= 0 else f"{self.bin.value():g} s"
         hint = "Ctrl + wheel zooms · click pins a reference · double-click clears it"
         self.status.setText(f"{len(shown)} run(s) · {points:,} points · bin {bin_text} · {hint}"
                             if shown else "Tick a run to plot it.")
+
+    def _draw_qc(self, qc: QCSeries, pieces: list[tuple[float, float, float]], color: str) -> int:
+        """The rate with its interval and the expected rate, and the CV in the state's colour, one
+        curve a recording so nothing is drawn across the gaps between them; the points drawn."""
+        pg = self._pg
+        points = 0
+        for start, end, shift in pieces:
+            for chunk in qc.chunks((qc.t >= start) & (qc.t <= end)):
+                t = qc.t[chunk] + shift
+                rate, half = qc.rate[chunk], qc.rate_half[chunk]
+                known = np.isfinite(half)
+                if known.any():
+                    low = pg.PlotDataItem(t[known], (rate - half)[known])
+                    high = pg.PlotDataItem(t[known], (rate + half)[known])
+                    band = pg.FillBetweenItem(low, high, brush=pg.mkBrush(QColor(color).red(), QColor(color).green(),
+                                                                         QColor(color).blue(), 45))
+                    band.qc_item = True
+                    self.droplet_plot.addItem(band)
+                self.droplet_plot.plot(t, rate, pen=pg.mkPen(color, width=LINE_WIDTH))
+                expected = qc.expected[chunk]
+                if np.isfinite(expected).any():
+                    self.droplet_plot.plot(t, expected, pen=pg.mkPen(color, width=1.2, style=Qt.PenStyle.DashLine),
+                                           connect="finite")
+                points += len(t)
+                # The CV, each stretch of one state in that state's colour, joined to the next.
+                states = [qc.state[i] for i in chunk]
+                begin = 0
+                for i in range(1, len(chunk) + 1):
+                    if i == len(chunk) or states[i] != states[begin]:
+                        stop = min(i + 1, len(chunk))
+                        pen = pg.mkPen(QC_STATE_COLORS.get(states[begin], Theme.TEXT_MUTED), width=LINE_WIDTH)
+                        self.cv_plot.plot(t[begin:stop], qc.cv[chunk][begin:stop], pen=pen)
+                        begin = i
+        return points
 
     def _reset_view(self) -> None:
         for plot in self.crosshairs:
@@ -460,6 +623,20 @@ class ReviewPanel(QWidget):
             crosshair.clear()
         elif event.button() == Qt.MouseButton.LeftButton:
             crosshair.pin(point.x(), point.y())
+
+
+def qc_cells(qc: QCSeries | None) -> tuple[str, str, str]:
+    """Droplets made over the run's recordings, the median rate, the median CV with the state at the end."""
+    if qc is None or not len(qc.t):
+        return "", "", ""
+    made = 0.0
+    for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
+        counts = qc.count[chunk]
+        made += float(np.nanmax(counts)) if np.isfinite(counts).any() else 0.0
+    rates, cvs = qc.rate[np.isfinite(qc.rate) & (qc.rate > 0)], qc.cv[np.isfinite(qc.cv) & (qc.cv > 0)]
+    rate = f"{np.median(rates):.0f}" if len(rates) else "—"
+    cv = f"{np.median(cvs):.1f} {qc.state[-1]}" if len(cvs) else "—"
+    return f"{made:,.0f}".replace(",", " "), rate, cv
 
 
 def _duration(directory: Path) -> str:

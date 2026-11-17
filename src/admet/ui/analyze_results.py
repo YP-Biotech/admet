@@ -15,6 +15,7 @@ from pathlib import Path
 from statistics import mean, median, pstdev
 from typing import Any, Callable
 
+from admet.core.droplets import dispersed_flow_ul_min, expected_rate_hz  # noqa: F401  (analyze's names for them)
 from admet.ui import theme
 
 
@@ -373,25 +374,6 @@ RESULT_FIELDS = ("sample", "droplets", "inclusions", "diameter", "area", "cv", "
 RESULT_LABELS = {"sample": "Sample", "droplets": "Droplets", "inclusions": "Inclusions", "diameter": "Diameter, µm",
                  "area": "Area, µm²", "cv": "CV, %", "rate": "Rate, /s", "speed": "Speed, mm/s",
                  "analysed": "Analysed"}
-
-
-def dispersed_flow_ul_min(record: dict[str, Any] | None) -> float:
-    """The flow that becomes droplets, from a recording's record: every flow-controlled channel
-    but the oil, in µL/min; 0 when the record says nothing."""
-    total = 0.0
-    for channel in (record or {}).get("channels") or []:
-        if not isinstance(channel, dict) or "oil" in str(channel.get("label", "")).lower():
-            continue
-        total += float(channel.get("flow_ul_min") or 0.0)
-    return total
-
-
-def expected_rate_hz(dispersed_ul_min: float, diameter_um: float) -> float:
-    """Droplets a second the flow must make at this size: the dispersed flow over a sphere's volume."""
-    if dispersed_ul_min <= 0 or diameter_um <= 0:
-        return 0.0
-    volume_um3 = math.pi / 6 * diameter_um ** 3
-    return dispersed_ul_min / 60 * 1e9 / volume_um3
 
 
 def results_cells(result: FileResult, color: str, *, active: bool = True) -> dict[str, str]:
