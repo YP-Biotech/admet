@@ -18,14 +18,19 @@ class DesktopBackend:
         self.lock = threading.RLock()
         self._previews = {}
 
-    def preview(self, scope, document):
+    def preview(self, scope, document, tag=""):
+        """Plan a protocol for one stage; the tag names the run it will become."""
+        with self.lock:
+            self.discard_preview(scope)
+            plan = self.service.plan_protocol("run_json_protocol", {"protocol": document}, tag=tag)
+            self._previews[scope] = plan["plan_id"]
+            return plan
+
+    def discard_preview(self, scope):
         with self.lock:
             previous = self._previews.pop(scope, None)
             if previous:
                 self.service.discard_protocol_preview(previous)
-            plan = self.service.plan_protocol("run_json_protocol", {"protocol": document})
-            self._previews[scope] = plan["plan_id"]
-            return plan
 
     @property
     def settings(self):

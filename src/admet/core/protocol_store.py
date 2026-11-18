@@ -67,7 +67,8 @@ class ProtocolStore:
                     "fields": fields, "values": {key: None for key in fields},
                 })
         path = directory / "summary.json"
-        write_json(path, {"plan_id": plan["plan_id"], "run_id": plan.get("run_id"), "state": "executing"})
+        write_json(path, {"plan_id": plan["plan_id"], "run_id": plan.get("run_id"), "tag": plan.get("tag", ""),
+                          "state": "executing"})
         self.project.upsert_file_path(path, role="protocol_run", media_type="application/json")
         self.project.save()
         return directory
@@ -94,7 +95,7 @@ class ProtocolStore:
         for path in (self.root / "records" / "protocols").glob("*/measurements.json"):
             plan = json.loads((path.parent / "plan.json").read_text(encoding="utf-8"))
             result.append({"run_id": path.parent.name,
-                           "name": plan["normalized_settings"]["protocol"]["name"],
+                           "name": plan.get("tag") or plan["normalized_settings"]["protocol"]["name"],
                            "at": plan.get("executed_at", "")})
         return sorted(result, key=lambda entry: entry["at"], reverse=True)
 

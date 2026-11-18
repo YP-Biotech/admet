@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
-    QLineEdit, QPlainTextEdit,
+    QInputDialog, QLineEdit, QPlainTextEdit,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -325,6 +325,7 @@ class ProtocolEditor(QWidget):
         self._executing = False
         self._last_sequence = 0
         self._step_started: dict[int, float] = {}
+        self.run_name = ""                     # the name the operator gave the run at the last Plan
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self.editor = QPlainTextEdit()
@@ -511,13 +512,32 @@ class ProtocolEditor(QWidget):
         except Exception as exc:
             self.error(exc)
             return
+        tag = ""
+        if not self.builtin:
+            tag = self.ask_run_name()
+            if tag is None:
+                return
+            self.window._rename_protocol_stage(self.stage.id, tag)      # the step is the run from now on
         generation = self._edit_generation
 
         def received(plan):
             if generation == self._edit_generation:
                 self.add_plan(plan)
 
-        self.submit(lambda: self.backend.preview(self.stage.id, document), received)
+        self.submit(lambda: self.backend.preview(self.stage.id, document, tag), received)
+
+    def ask_run_name(self):
+        """The run's name, asked before every Plan; the step takes it. None when the operator backs out."""
+        import re
+
+        default = self.run_name or re.sub(r"^\d+\.\s*", "", self.stage.label)
+        name, accepted = QInputDialog.getText(
+            self, "Plan", "Name this run.\nThe name tags the run: its record, its recordings and the "
+            "lists in Review and Calculations carry it.", text=default)
+        if not accepted:
+            return None
+        self.run_name = name.strip() or default
+        return self.run_name
 
     def add_plan(self, plan):
         self.plan = plan

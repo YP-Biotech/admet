@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QToolButton,
     QProgressBar,
     QPushButton,
     QComboBox,
@@ -614,10 +615,21 @@ class ControlWindow(QMainWindow):
             label.setObjectName("TocStage")
             row_layout.addWidget(dot)
             row_layout.addWidget(label, 1)
+            remove = None
+            if stage.id.startswith("experiment_"):
+                remove = QToolButton()
+                remove.setObjectName("TocRemove")
+                remove.setText("×")
+                remove.setAutoRaise(True)
+                remove.setFixedSize(18, 18)
+                remove.setToolTip("Remove this step")
+                remove.setCursor(Qt.CursorShape.PointingHandCursor)
+                remove.clicked.connect(lambda _checked=False, stage_id=stage.id: self._remove_protocol_stage(stage_id))
+                row_layout.addWidget(remove)
             section_layout.addWidget(row)
 
             layout.addWidget(section)
-            self.toc_rows.append({"dot": dot, "label": label, "section": section})
+            self.toc_rows.append({"dot": dot, "label": label, "section": section, "remove": remove})
 
 
         layout.addStretch()
@@ -660,6 +672,66 @@ class ControlWindow(QMainWindow):
         self._rebuild_toc()
         self._select_stage(index)
         return stage
+
+    def _remove_protocol_stage(self, stage_id: str) -> bool:
+        """Take an experiment step out of the workflow; its plan goes with it, the runs it executed stay."""
+        stages = list(self.workflow.stages)
+        index = next((i for i, stage in enumerate(stages) if stage.id == stage_id), None)
+        if index is None or not stage_id.startswith("experiment_"):
+            return False
+        if stage_id == self._pipeline_stage_id and self._pipeline_active():
+            self._notify("Finish or abort this step's protocol before removing it.", "warning")
+            return False
+        label = re.sub(r"^\d+\.\s*", "", stages[index].label)
+        editor = self.protocol_editors.get(stage_id)
+        if editor is not None and editor.plan is not None and not self._confirm_step_removal(label):
+            return False
+        self.api.discard_preview(stage_id)
+        del stages[index]
+        self.workflow.stages = tuple(stages)
+        if self._pipeline_stage_id == stage_id:
+            self._clear_finished_pipeline_state(stages[index - 1])
+        if editor is not None:
+            del self.protocol_editors[stage_id]
+            editor.deleteLater()
+        page = self.stage_pages.pop(stage_id, None)
+        if page is not None:
+            if self.page_scroll is not None and self.page_scroll.widget() is page:
+                self.page_scroll.takeWidget()
+            if self.current_stage_page is page:
+                self.current_stage_page = None
+            page.deleteLater()
+        current = self.workflow_state.index
+        statuses = {key: value for key, value in self.workflow_state.statuses.items() if key != stage_id}
+        self.workflow_state = replace(self.workflow_state, index=current - 1 if current >= index else current,
+                                      statuses=statuses)
+        self._rebuild_toc()
+        self._select_stage(self.workflow_state.index)
+        self._append_log(f"Removed step {label}")
+        return True
+
+    def _rename_protocol_stage(self, stage_id: str, name: str) -> None:
+        """The step takes the run's name the operator typed at Plan: in the workflow, the list and its editor."""
+        name = name.strip()
+        stages = list(self.workflow.stages)
+        index = next((i for i, stage in enumerate(stages) if stage.id == stage_id), None)
+        if index is None or not name or stages[index].label == name:
+            return
+        stages[index] = replace(stages[index], label=name)
+        self.workflow.stages = tuple(stages)
+        editor = self.protocol_editors.get(stage_id)
+        if editor is not None:
+            editor.stage = stages[index]
+        if index < len(self.toc_rows):
+            self.toc_rows[index]["label"].setText(f"{index + 1}. {name}")
+        if self.workflow_state.index == index:
+            self._sync_action_box(stages[index])
+
+    def _confirm_step_removal(self, label: str) -> bool:
+        answer = QMessageBox.question(
+            self, "Remove step", f"Remove {label}? Its plan is discarded; the runs it executed stay in the data folder.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        return answer == QMessageBox.StandardButton.Yes
 
     def _flush_measurements(self):
         for editor in self.protocol_editors.values():

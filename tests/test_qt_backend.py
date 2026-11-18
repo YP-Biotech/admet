@@ -345,6 +345,22 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(completed["run_id"], result["run_id"])
         self.assertTrue((Path(self.backend.workdir) / "records" / "protocols" / result["run_id"] / "summary.json").exists())
 
+    def test_a_named_plan_tags_its_run_and_the_run_lists_carry_the_name(self):
+        from admet.workflows.calculations import recorded_runs
+
+        self.connect()
+        plan = self.backend.preview("experiment_1", definition(), tag="  oil 3 ")
+        self.assertEqual(plan["tag"], "oil 3")
+        self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
+        self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
+        completed = self.wait_completed(plan["plan_id"])
+
+        run = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
+        self.assertEqual(json.loads((run / "summary.json").read_text())["tag"], "oil 3")
+        self.assertEqual(recorded_runs(self.backend.workdir)[0]["name"], "oil 3")
+        self.assertEqual(self.backend.preview("experiment_1", definition())["tag"], "")   # unnamed: the protocol's name
+        self.assertEqual(json.loads((run / "plan.json").read_text())["tag"], "oil 3")
+
     def test_density_completion_closes_recording_without_running_calculations(self):
         from tests.test_fluid_density import recorded_density
 

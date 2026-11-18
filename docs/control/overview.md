@@ -23,7 +23,7 @@ The left-hand list (TOC) is the session, top to bottom:
 | **3. Calibration** | Set each channel's liquid, sensor table, correction and dead volume; **Apply All Corrections**. See [Calibration](./calibration). |
 | **4. Priming** | Fill the lines before an experiment. |
 | **5. Preflight** | Plan flow and phase ratios, the tubing map and liquid consumption. Nothing moves. |
-| **Experiments** | One stage per protocol step you add with **+ Protocol step**. See [Running protocols](./running). |
+| **Experiments** | One stage per protocol step you add with **+ Protocol step**; its **×** removes it. See [Running protocols](./running). |
 | **Calculations** | Calculate results from finished runs. See [Calculations](./calculations). |
 | **Wash** | Flush the lines afterwards. |
 | **Cleanup** | Reset safety if needed, then **Disconnect Devices**. |
