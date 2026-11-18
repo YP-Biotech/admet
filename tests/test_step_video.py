@@ -96,6 +96,7 @@ class StepVideoTests(unittest.TestCase):
             video.on_event(event(0))
             video.on_event(ending)
             self.assertFalse(self.camera.recording, ending)
+            video.wait(5)                              # a run's end encodes in the background; let it finish
         video = self.video([step("collect", record=True)])
         video.on_event(event(0))
         video.close("emergency stop")
