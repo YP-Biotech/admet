@@ -183,9 +183,9 @@ class CameraController:
         with self._lock:
             self._qc_summary = summary
             sink, record = self.qc_row_sink, dict(self._qc_record)
-        if sink is not None:
+        if sink is not None and record:                 # a row of the run's timeline, while a recording is open
             try:
-                sink(summary.at, record, summary)       # a row of the run's timeline
+                sink(summary.at, record, summary)
             except Exception:
                 log.exception("a QC row could not be written")
 

@@ -312,7 +312,7 @@ class StatusReadTests(unittest.TestCase):
 
         controller = CameraController(CountingCamera())
         rows = []
-        controller.qc_row_sink = lambda at, record, summary: rows.append((at, record["recording_id"], summary.state))
+        controller.qc_row_sink = lambda at, record, summary: rows.append((at, record.get("recording_id"), summary.state))
         controller._recording_started(SimpleNamespace(record={"recording_id": "run_a_step01", "step": 1}))
         summary = QCSummary(at=42.0, rate_hz=1170.0, rate_half=21.0, count=1.0, diameter=124.0, diameter_half=0.5,
                             diameter_unit="um", cv_percent=2.7, cv_half=0.3, n=200, bursts=5,
