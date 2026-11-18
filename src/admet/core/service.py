@@ -608,7 +608,7 @@ class Admet:
                     "recording_max_frames": 0, "recording_max_seconds": 0,
                 })
                 fluidics_csv = self._project_relative(recording.get("csv_path"))
-                qc_csv = f"records/camera/{plan['run_id']}.qc.csv"           # where the live QC appends its rows
+                qc_csv = fluidics_csv                                          # the QC rows are in the same file
                 if plan["recording"]["video_steps"]:
                     # Video is per step, opened and closed by the steps themselves. Every recording's
                     # record names the run's fluidics and QC files, so its slice of both is one cut by time.

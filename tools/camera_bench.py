@@ -168,8 +168,9 @@ def main() -> int:
     if args.qc:
         from admet.engines.acquisition.camera.qc import BurstQC, QCWorker
 
-        qc_worker = QCWorker(BurstQC(microns_per_pixel=2.27))
-        qc_worker.start_log(Path(args.dir) / "bench.qc.csv", {"recording_id": "bench", "step": 1, "part": 1})
+        summaries = []
+        qc_worker = QCWorker(BurstQC(microns_per_pixel=2.27), on_summary=summaries.append)
+        qc_worker.start_recording()
         thread.qc_sink = qc_worker.offer
     probes = [Probe("pipeline tick (0.1 s)", 0.1), Probe("window loop (30 ms, 3 ms of work)", 0.03, busy_ms=3.0)]
     for probe in probes:
@@ -201,9 +202,7 @@ def main() -> int:
     if qc_worker is not None:
         summary = qc_worker.summary
         qc_worker.stop()
-        rows = (Path(args.dir) / "bench.qc.csv").read_text().count("\n") - 1
-        (Path(args.dir) / "bench.qc.csv").unlink(missing_ok=True)
-        print(f"live QC: {rows} bursts measured, {qc_worker.dropped} dropped while busy"
+        print(f"live QC: {len(summaries)} bursts measured, {qc_worker.dropped} dropped while busy"
               + (f"; last: {summary.rate_hz:.0f}/s cv {summary.cv_percent:.1f}% {summary.state}" if summary else ""))
     for probe in probes:
         print(probe.report())

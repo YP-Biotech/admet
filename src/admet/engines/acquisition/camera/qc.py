@@ -9,18 +9,19 @@ state follows the CV's interval against the limit.
 
 from __future__ import annotations
 
-import csv
+import logging
 import math
 import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
 from statistics import mean, median, pstdev
 from typing import Any, Callable
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 BURST_FRAMES = 8            # consecutive frames a burst holds
 BURST_INTERVAL_S = 1.0      # one burst this often
@@ -207,42 +208,14 @@ class BurstQC:
         )
 
 
+# The columns a QC row carries, in the run's timeline CSV after the fluidics columns.
 QC_COLUMNS = ("timestamp", "elapsed_s", "recording_id", "step", "part", "rate_hz", "rate_half", "count", "diameter",
               "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n", "bursts", "speed_px_frame", "spacing_px",
               "state")
 
 
-class QCLog:
-    """The run's QC rows, one a burst, appended recording after recording to one file beside the videos.
-
-    Each row names its recording, step and part; elapsed_s counts from that recording's start."""
-
-    def __init__(self, path: Path, recording: dict[str, Any] | None = None) -> None:
-        self.path = Path(path)
-        self.recording = dict(recording or {})
-        self._started = time.monotonic()
-        new = not self.path.exists() or self.path.stat().st_size == 0
-        self._handle = self.path.open("a", newline="", encoding="utf-8")
-        self._writer = csv.writer(self._handle)
-        if new:
-            self._writer.writerow(QC_COLUMNS)
-
-    def write(self, summary: QCSummary) -> None:
-        self._writer.writerow([datetime.now().isoformat(timespec="milliseconds"), f"{summary.at - self._started:.3f}",
-                               self.recording.get("recording_id", ""), self.recording.get("step", ""),
-                               self.recording.get("part", ""),
-                               f"{summary.rate_hz:.2f}", _num(summary.rate_half), f"{summary.count:.1f}",
-                               f"{summary.diameter:.3f}", summary.diameter_unit, _num(summary.diameter_half),
-                               f"{summary.cv_percent:.3f}", _num(summary.cv_half), summary.n, summary.bursts,
-                               f"{summary.speed_px_frame:.3f}", f"{summary.spacing_px:.2f}", summary.state])
-        self._handle.flush()
-
-    def close(self) -> None:
-        self._handle.close()
-
-
 def qc_log_path(video: Path, record: dict[str, Any] | None) -> Path:
-    """One QC file a run, beside the videos: <run_id>.qc.csv; a recording outside a run gets its own."""
+    """Where a run's QC rows went before they joined the run's fluidics CSV: kept for reading old runs."""
     run_id = str((record or {}).get("run_id") or "")
     return Path(video).parent / (f"{run_id}.qc.csv" if run_id else f"{Path(video).stem}.qc.csv")
 
@@ -266,59 +239,52 @@ class QCWorker:
     """Takes a burst when it is free, measures it in its own thread, and tells the summary.
 
     A burst offered while the last one is still being measured is dropped: the camera never waits.
-    Bursts come only while a recording runs, so the QC, the video and the fluidics CSV cover the
-    same seconds, on the same clock.
+    Bursts come only while a recording runs, stamped with the time their frames were taken, so the
+    QC, the video and the fluidics cover the same seconds on one clock. The rows go to the run's
+    timeline through whoever listens to on_summary; the worker keeps no file.
     """
 
     def __init__(self, qc: BurstQC, on_summary: Callable[[QCSummary], None] | None = None) -> None:
         self.qc = qc
         self.on_summary = on_summary
-        self._pending: tuple[list[np.ndarray], float] | None = None
+        self._pending: tuple[list[np.ndarray], float, float | None] | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
-        self._log: QCLog | None = None
         self._busy = False
         self.dropped = 0
         self.summary: QCSummary | None = None
         self._thread = threading.Thread(target=self._run, name="LiveQC", daemon=True)
         self._thread.start()
 
-    def offer(self, frames: list[np.ndarray], fps: float) -> bool:
+    def offer(self, frames: list[np.ndarray], fps: float, at: float | None = None) -> bool:
+        """A burst, and the monotonic time its last frame was taken."""
         with self._lock:
             if self._pending is not None or self._busy:
                 self.dropped += 1
                 return False
-            self._pending = (frames, fps)
+            self._pending = (frames, fps, at)
         self._wake.set()
         return True
 
-    def start_log(self, path: Path, recording: dict[str, Any] | None = None) -> None:
-        """A recording starts: its rows are appended to path, and the measurements start over."""
+    def start_recording(self) -> None:
+        """A recording starts: the measurements start over."""
         with self._lock:
-            self._close_log()
             self._pending = None
             self.qc.reset()
             self.summary = None
-            self._log = QCLog(path, recording)
 
-    def stop_log(self) -> None:
-        """The recording stopped: no more rows, and nothing left to show."""
+    def stop_recording(self) -> None:
+        """The recording stopped: nothing left to show."""
         with self._lock:
-            self._close_log()
             self._pending = None
             self.summary = None
-
-    def _close_log(self) -> None:
-        if self._log is not None:
-            self._log.close()
-            self._log = None
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
         self._thread.join(2.0)
-        self.stop_log()
+        self.stop_recording()
 
     def _run(self) -> None:
         _below_normal_priority()                 # the camera, the writer and the window come first
@@ -331,10 +297,11 @@ class QCWorker:
             if job is None:
                 continue
             try:
-                frames, fps = job
-                self.qc.analyse(frames, fps)
-                summary = self.qc.summary()
+                frames, fps, at = job
+                self.qc.analyse(frames, fps, at)
+                summary = self.qc.summary(at)
             except Exception:
+                log.exception("a burst could not be measured")
                 summary = None
             finally:
                 with self._lock:
@@ -342,17 +309,6 @@ class QCWorker:
             if summary is None:
                 continue
             self.summary = summary
-            if summary is None:
-                continue
-            with self._lock:
-                log_file = self._log
-            if log_file is not None:
-                try:
-                    log_file.write(summary)             # outside the lock: a slow disk must not hold up offer()
-                except (OSError, ValueError):
-                    with self._lock:
-                        if self._log is log_file:
-                            self._close_log()
             if self.on_summary is not None:
                 try:
                     self.on_summary(summary)

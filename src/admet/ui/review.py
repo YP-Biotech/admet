@@ -147,7 +147,7 @@ def read_fluidics_csv(path: Path) -> tuple[np.ndarray, list[np.ndarray], list[np
                         + [_number(row.get(f"pressure_{i}_mbar")) for i in channels]
                         + [_number(row.get(f"flow_{i}_ul_min")) for i in channels])
     data = np.array(rows, dtype=float).reshape(-1, 1 + 2 * len(channels))
-    data = data[np.isfinite(data[:, 0])]
+    data = data[np.isfinite(data[:, 0]) & np.isfinite(data[:, 1:]).any(axis=1)]   # a QC row is not a reading
     count = len(channels)
     return data[:, 0], [data[:, 1 + i] for i in range(count)], [data[:, 1 + count + i] for i in range(count)]
 
@@ -173,20 +173,31 @@ def fluidics_anchor(path: Path) -> tuple[float, float] | None:
     return None
 
 
-def read_qc_csv(path: Path, anchor: tuple[float, float]) -> QCSeries | None:
-    """The QC rows of a run on the fluidics clock: each row's wall-clock stamp against the fluidics
-    CSV's first row. A row past midnight is placed on the next day."""
-    anchor_stamp, anchor_elapsed = anchor
+def read_qc_csv(path: Path, anchor: tuple[float, float] | None = None) -> QCSeries | None:
+    """The QC rows of a run on the fluidics clock. In the run's timeline file they carry elapsed_s on
+    that clock already; in the separate QC file of older runs each row's wall-clock stamp is placed
+    against the fluidics CSV's first row, a row past midnight on the next day."""
     columns: dict[str, list] = {key: [] for key in ("t", "rate", "rate_half", "cv", "cv_half", "diameter", "count")}
     states, recordings, units = [], [], []
     with Path(path).open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            stamp = time_of_day(row.get("timestamp"))
-            if stamp is None:
-                continue
-            if stamp < anchor_stamp - 43200:
-                stamp += 86400.0
-            columns["t"].append(anchor_elapsed + stamp - anchor_stamp)
+        reader = csv.DictReader(handle)
+        same_clock = anchor is None or "flow_0_ul_min" in (reader.fieldnames or [])
+        for row in reader:
+            if not str(row.get("state") or ""):
+                continue                                   # a fluidics row, or a QC row without a state
+            if same_clock:
+                t = _number(row.get("elapsed_s"))
+                if not math.isfinite(t):
+                    continue
+            else:
+                stamp = time_of_day(row.get("timestamp"))
+                if stamp is None:
+                    continue
+                anchor_stamp, anchor_elapsed = anchor
+                if stamp < anchor_stamp - 43200:
+                    stamp += 86400.0
+                t = anchor_elapsed + stamp - anchor_stamp
+            columns["t"].append(t)
             for key, column in (("rate", "rate_hz"), ("rate_half", "rate_half"), ("cv", "cv_percent"),
                                 ("cv_half", "cv_half"), ("diameter", "diameter"), ("count", "count")):
                 columns[key].append(_number(row.get(column)))
@@ -253,8 +264,10 @@ def run_qc(directory: Path, summary: dict, fluidics: Path, t: np.ndarray, flows:
     if not isinstance(stored, str) or not stored:
         return None
     path = Path(stored) if Path(stored).is_absolute() else directory.parents[2] / stored
-    anchor = fluidics_anchor(fluidics)
-    if not path.is_file() or anchor is None:
+    if not path.is_file():
+        return None
+    anchor = None if path.resolve() == Path(fluidics).resolve() else fluidics_anchor(fluidics)
+    if anchor is None and path.resolve() != Path(fluidics).resolve():
         return None
     try:
         qc = read_qc_csv(path, anchor)

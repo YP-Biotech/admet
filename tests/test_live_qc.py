@@ -115,21 +115,21 @@ class BurstMeasurementTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
-    def test_a_burst_offered_while_busy_is_dropped_and_rows_go_to_the_log(self):
+    def test_a_burst_offered_while_busy_is_dropped_and_summaries_reach_the_listener(self):
         class SlowQC:
             microns_per_pixel = 0.0
 
             def __init__(self):
-                self.calls = 0
+                self.calls = []
                 self.release = threading.Event()
 
             def analyse(self, frames, fps, at=None):
-                self.calls += 1
+                self.calls.append(at)
                 self.release.wait(2)
 
             def summary(self, at=None):
-                return QCSummary(at=0.0, rate_hz=1000.0, rate_half=10.0, count=5.0, diameter=50.0, diameter_half=1.0,
-                                 diameter_unit="px", cv_percent=3.0, cv_half=0.3, n=40, bursts=4,
+                return QCSummary(at=at or 0.0, rate_hz=1000.0, rate_half=10.0, count=5.0, diameter=50.0,
+                                 diameter_half=1.0, diameter_unit="px", cv_percent=3.0, cv_half=0.3, n=40, bursts=4,
                                  speed_px_frame=48.0, spacing_px=128.0, state="STABLE")
 
             def reset(self):
@@ -139,43 +139,52 @@ class WorkerTests(unittest.TestCase):
         slow = SlowQC()
         worker = QCWorker(slow, on_summary=seen.append)
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                log = Path(tmp) / "run_a.qc.csv"
-                worker.start_log(log, {"recording_id": "run_a_step01", "step": 1, "part": 1})
-                self.assertTrue(worker.offer([np.zeros((2, 2), np.uint8)], 100.0))
-                time.sleep(0.1)                                             # the worker is inside analyse now
-                self.assertFalse(worker.offer([np.zeros((2, 2), np.uint8)], 100.0))
-                self.assertEqual(worker.dropped, 1)
-                slow.release.set()
-                for _ in range(50):
-                    if seen:
-                        break
-                    time.sleep(0.02)
-                worker.stop_log()
-                self.assertIsNone(worker.summary)                               # nothing shown between recordings
-                slow.release.clear()
-                worker.start_log(log, {"recording_id": "run_a_step02", "step": 2, "part": 1})   # the next step
-                self.assertTrue(worker.offer([np.zeros((2, 2), np.uint8)], 100.0))
-                slow.release.set()
-                for _ in range(50):
-                    if len(seen) == 2:
-                        break
-                    time.sleep(0.02)
-                worker.stop_log()
-                rows = log.read_text().splitlines()
-            self.assertEqual(len(seen), 2)
-            self.assertEqual(rows[0].split(",")[:5], ["timestamp", "elapsed_s", "recording_id", "step", "part"])
-            self.assertEqual(len(rows), 3)                                      # one header, a row a recording
-            self.assertEqual([r.split(",")[2:5] for r in rows[1:]], [["run_a_step01", "1", "1"], ["run_a_step02", "2", "1"]])
-            self.assertIn("STABLE", rows[1])
+            worker.start_recording()
+            self.assertTrue(worker.offer([np.zeros((2, 2), np.uint8)], 100.0, at=12.5))
+            time.sleep(0.1)                                             # the worker is inside analyse now
+            self.assertFalse(worker.offer([np.zeros((2, 2), np.uint8)], 100.0, at=13.5))
+            self.assertEqual(worker.dropped, 1)
+            slow.release.set()
+            for _ in range(50):
+                if seen:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual((slow.calls, seen[0].at), ([12.5], 12.5))          # the burst's own time, kept
+            worker.stop_recording()
+            self.assertIsNone(worker.summary)                               # nothing shown between recordings
         finally:
             worker.stop()
 
-    def test_the_qc_file_is_the_runs_beside_the_videos(self):
+    def test_the_old_qc_file_name_is_still_known_for_reading_old_runs(self):
         video = Path("/p/records/camera/run_a_step01_20261117_101500.avi")
-        self.assertEqual(qc_log_path(video, {"run_id": "run_a", "recording_id": "run_a_step01_20261117_101500"}),
-                         Path("/p/records/camera/run_a.qc.csv"))
-        self.assertEqual(qc_log_path(video, {}), Path("/p/records/camera/run_a_step01_20261117_101500.qc.csv"))
+        self.assertEqual(qc_log_path(video, {"run_id": "run_a"}), Path("/p/records/camera/run_a.qc.csv"))
+
+
+class TimelineRowTests(unittest.TestCase):
+    def test_a_qc_row_joins_the_fluidics_file_on_its_clock(self):
+        import csv
+
+        from admet.engines.acquisition.fluidics.csv_logger import CsvLogger
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CsvLogger(tmp, filename="run.csv")
+            path = logger.start(3, 3, origin_monotonic=1000.0)
+            logger.write_row("10:00:00.000", 5.0, [1300, 420, 410], [300, 40, 40], [10, 2, 2], [True, True, True])
+            summary = QCSummary(at=1005.3, rate_hz=1170.0, rate_half=21.0, count=1234.0, diameter=124.0,
+                                diameter_half=0.5, diameter_unit="um", cv_percent=2.7, cv_half=0.3, n=200, bursts=5,
+                                speed_px_frame=48.0, spacing_px=128.0, state="STABLE")
+            logger.write_qc(summary.at, {"recording_id": "run_a_step01", "step": 1, "part": 1}, summary)
+            logger.write_row("10:00:00.100", 5.1, [1300, 420, 410], [300, 40, 40], [10, 2, 2], [True, True, True])
+            logger.stop()
+            rows = list(csv.DictReader(open(path, newline="")))
+
+        self.assertEqual([r["elapsed_s"] for r in rows], ["5.000", "5.300", "5.100"])   # the QC row on the same clock
+        qc = rows[1]
+        self.assertEqual((qc["recording_id"], qc["step"], qc["state"], qc["rate_hz"]), ("run_a_step01", "1", "STABLE", "1170.00"))
+        self.assertEqual((qc["flow_0_ul_min"], qc["pressure_0_mbar"]), ("", ""))         # fluidics columns empty
+        self.assertEqual((rows[0]["state"], rows[0]["rate_hz"]), ("", ""))                # and the other way round
+        self.assertRegex(qc["timestamp"], r"\d{2}:\d{2}:\d{2}\.\d{3}")
 
 
 class PreviewLineTests(unittest.TestCase):

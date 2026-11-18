@@ -217,12 +217,13 @@ class CameraAcquisitionThread(Thread):
         self.max_time: float | None = None
         self.preview_enabled = True
         # Live QC, while recording: every burst_interval_s the next burst_frames consecutive frames go to the sink.
-        self.qc_sink: Callable[[list[np.ndarray], float], Any] | None = None
+        self.qc_sink: Callable[[list[np.ndarray], float, float], Any] | None = None
         self.burst_frames = BURST_FRAMES
         self.burst_interval_s = BURST_INTERVAL_S
         self.frame_rate_hint = 0.0                  # the camera's rate, for the burst's speed
         self._burst: list[np.ndarray] | None = None
         self._last_burst_at = 0.0
+        self._last_ticks = 0
         self.on_recording_started: Callable[[Any], None] | None = None
         self.on_recording_stopped: Callable[[], None] | None = None
         self.clock = FrameClock()                   # the camera's time on the PC's
@@ -277,6 +278,7 @@ class CameraAcquisitionThread(Thread):
         self.latest_frame_monotonic = time.monotonic()
         if ticks or number:
             self.clock.observe(ticks, number, self.latest_frame_monotonic, self.frame_rate_hint)
+        self._last_ticks = ticks
         if self._recording_event.is_set() and not self._recording_paused.is_set() and self.writer:
             if self.writer.write(frame):
                 self.frame_count += 1
@@ -320,8 +322,9 @@ class CameraAcquisitionThread(Thread):
             return
         burst, self._burst = self._burst, None
         self._last_burst_at = now
+        taken = self.clock.time_of(self._last_ticks) if self._last_ticks else None
         try:
-            self.qc_sink(burst, self.frame_rate_hint)
+            self.qc_sink(burst, self.frame_rate_hint, taken if taken is not None else now)
         except Exception:
             log.exception("live QC refused a burst")
 

@@ -88,12 +88,11 @@ Rate, droplets made since the recording started, diameter (µm once the scale is
 measured, px before), CV, and the state, green **STABLE** when the CV's whole
 interval sits below 5 %, red **UNSTABLE** when it sits above, amber **SETTLING**
 while it straddles the limit or too few droplets have been seen. The line shows
-only while a recording runs and starts from nothing with each one. The run has
-one QC file beside its videos, `records/camera/<run>.qc.csv`, to which each
-recording appends its rows, one a burst, each naming its recording, step and part
-and stamped with the wall clock and the seconds since that recording started, the
-clock the fluidics CSV and the recording's record use, so the three cover the same
-seconds. A recording made outside a run gets `<recording>.qc.csv`.
+only while a recording runs and starts from nothing with each one. Each burst is
+also a row of the run's fluidics CSV, on its own columns after the readings, naming
+its recording, step and part, with `elapsed_s` on the same clock as every reading
+and stamped with the time its frames were taken, not the time the row was written.
+One file holds the whole run; nothing has to be lined up afterwards.
 The measurement runs in its own thread and drops a burst when it is still busy, so
 the recording never waits; **Live QC** in the camera settings switches it off.
 

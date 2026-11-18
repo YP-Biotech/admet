@@ -420,15 +420,22 @@ class RecordingCoordinator:
         fluidics_dir = Path(fluidics_dir_value)
         self.csv_logger = CsvLogger(fluidics_dir, prefix=csv_prefix, filename=csv_filename)
         state = self._hardware_state()
+        acquisition = self._acquisition()
+        origin = _poll_origin(acquisition)
         filepath = self.csv_logger.start(
             len(state.pressure_channels),
             len(state.sensor_channels),
+            origin_monotonic=float(origin) if origin else None,       # elapsed_s counts from the poll's start
         )
         self._recording = True
-        acquisition = self._acquisition()
         if acquisition:
             acquisition.set_csv_logger(self.csv_logger)
         return filepath
+
+    @property
+    def qc_sink(self):
+        """Where a QC row goes while the timeline is open; None between recordings."""
+        return self.csv_logger.write_qc if self._recording else None
 
     def _stop_csv_recording(self) -> None:
         self._recording = False
@@ -493,6 +500,15 @@ def _safe_recording_label(value: str) -> str:
     label = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value).strip())
     label = "_".join(part for part in label.split("_") if part)
     return label or "recording"
+
+
+def _poll_origin(acquisition: Any | None) -> float | None:
+    """The moment the poll thread's elapsed_s counts from, under whichever name it offers it."""
+    for name in ("start_time_monotonic", "start_time", "started_monotonic"):
+        value = getattr(acquisition, name, None) if acquisition is not None else None
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
 
 
 def _writer_frame_count(camera: RecordingCamera) -> int | None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 from collections.abc import Callable
 from dataclasses import asdict
 from threading import Lock
@@ -12,7 +11,7 @@ import numpy as np
 
 from .acquisition import CameraAcquisitionThread
 from .camera import Camera
-from .qc import BurstQC, QCSummary, QCWorker, qc_as_dict, qc_log_path
+from .qc import BurstQC, QCSummary, QCWorker, qc_as_dict
 
 
 log = logging.getLogger(__name__)
@@ -41,6 +40,9 @@ class CameraController:
         self.microns_per_pixel = 0.0
         self._qc: QCWorker | None = None
         self._qc_summary: QCSummary | None = None
+        # Where a QC row goes while a run's timeline is open: (time taken, the recording's record, the summary).
+        self.qc_row_sink: Callable[[float, dict[str, Any], QCSummary], None] | None = None
+        self._qc_record: dict[str, Any] = {}
 
     @property
     def live(self) -> bool:
@@ -180,24 +182,27 @@ class CameraController:
     def _on_qc(self, summary: QCSummary) -> None:
         with self._lock:
             self._qc_summary = summary
+            sink, record = self.qc_row_sink, dict(self._qc_record)
+        if sink is not None:
+            try:
+                sink(summary.at, record, summary)       # a row of the run's timeline
+            except Exception:
+                log.exception("a QC row could not be written")
 
     def _recording_started(self, writer: Any) -> None:
-        """The QC measures this recording from its first frame; its rows join the run's QC file."""
-        video = getattr(writer, "video_path", None) or getattr(writer, "path", None)
+        """The QC measures this recording from its first frame, its rows named after it."""
         with self._lock:
             self._qc_summary = None
-        if self._qc is not None and video:
-            record = dict(getattr(writer, "record", None) or {})
-            try:
-                self._qc.start_log(qc_log_path(Path(video), record), record)
-            except OSError:
-                log.exception("could not open the QC log")
+            self._qc_record = dict(getattr(writer, "record", None) or {})
+        if self._qc is not None:
+            self._qc.start_recording()
 
     def _recording_stopped(self) -> None:
         if self._qc is not None:
-            self._qc.stop_log()
+            self._qc.stop_recording()
         with self._lock:
             self._qc_summary = None                        # nothing is measured between recordings
+            self._qc_record = {}
 
     def apply_configuration(self, settings: dict[str, Any]) -> None:
         self.qc_enabled = bool(settings.get("camera_live_qc", True))
