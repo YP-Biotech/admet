@@ -888,6 +888,7 @@ class AcquisitionEngine:
             self.stop_polling,
             self.stop_pipeline,
             self.stop_camera_live,
+            _wait_for_writers,
             self._camera.disconnect,
             self.hardware.disconnect,
         ):
@@ -1270,6 +1271,13 @@ def create_engine(
         pipeline_engine_factory=pipeline_engine_factory,
         **kwargs,
     )
+
+
+def _wait_for_writers() -> None:
+    """A video still going to disk finishes before the instrument shuts down."""
+    from .camera.video import wait_for_writers
+
+    wait_for_writers()
 
 
 def _volume_trigger(step: Any) -> VolumeTrigger | None:

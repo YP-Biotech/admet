@@ -60,7 +60,8 @@ Each video carries its own record inside the file (the AVI's `INFO` comment): th
 project and run it belongs to, the step and part, when it started and stopped, the
 camera as it was set (model, exposure, gain, binning, pixel size, a frame-rate limit
 if one was on), the frame rate measured as the frames arrived, each channel's set
-point, and how many frames were captured, written and dropped. It also keeps the
+point, and how many frames were captured, written and dropped. A step's end never waits for the disk: the frames still queued are written behind it while the
+protocol goes on, and the instrument's shutdown waits for them. It also keeps the
 camera's own time: the first frame's timestamp and number on the camera's clock,
 the clock's rate, and the frames the camera numbered that never reached the PC
 (`frames_skipped`), so frame *k* of the video is placed exactly even when some were

@@ -208,6 +208,7 @@ def main() -> int:
     for probe in probes:
         print(probe.report())
 
+    writer.wait()
     captured, written, arrived_fps = writer.frame_count, writer.written, writer.measured_fps
     print(f"pylon buffers {buffers}"
           + (f", the interpreter hogged {args.hog_ms:.0f} ms every {args.every_ms:.0f} ms" if args.contend else ""))

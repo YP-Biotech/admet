@@ -351,6 +351,7 @@ class VideoWorkerTests(unittest.TestCase):
             self.assertTrue(worker.start())
             self.assertTrue(worker.write(np.full((2, 2), 7, dtype=np.uint8)))
             path = Path(worker.stop())
+            self.assertTrue(worker.wait(5))
 
             raw, info = Path(tmpdir) / "later.raw", Path(tmpdir) / "later.video.json"
             self.assertTrue(raw.exists())
@@ -364,6 +365,46 @@ class VideoWorkerTests(unittest.TestCase):
             self.assertTrue(path.exists() and finished.is_set())
             self.assertFalse(raw.exists() or info.exists())
             self.assertEqual(worker.encode(), (False, "nothing recorded"))     # done once
+
+    def test_stop_returns_at_once_and_the_frames_reach_the_disk_behind_it(self):
+        """A step's end must not wait for a slow disk: stop() returns, the writer thread finishes."""
+        import threading
+
+        from admet.engines.acquisition.camera.video import wait_for_writers
+
+        encoded = threading.Event()
+
+        def fake_encoder(raw, video, width, height, fps):
+            video.write_bytes(b"AVI")
+            encoded.set()
+            return True, ""
+
+        class SlowFile:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def write(self, data):
+                time.sleep(0.02)                                 # a disk that takes 20 ms a batch
+                return self.handle.write(data)
+
+            def close(self):
+                self.handle.close()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worker = VideoWorker(tmpdir, "slow", 2, 2, 30.0, encoder=fake_encoder)
+            self.assertTrue(worker.start())
+            worker._file = SlowFile(worker._file)
+            for value in range(40):
+                self.assertTrue(worker.write(np.full((2, 2), value, dtype=np.uint8)))
+            started = time.perf_counter()
+            path = worker.stop()
+            self.assertLess(time.perf_counter() - started, 0.05)        # back before the disk is done
+            self.assertEqual(Path(path).name, "slow.avi")
+            self.assertTrue(worker.thread.is_alive() or worker.written == 40)
+            self.assertGreaterEqual(wait_for_writers(5), 0)
+            self.assertTrue(worker.wait(5))
+            self.assertEqual(worker.written, 40)
+            self.assertTrue(encoded.wait(5))
 
     def test_a_recording_left_unencoded_is_finished_later_with_its_whole_frames(self):
         import json

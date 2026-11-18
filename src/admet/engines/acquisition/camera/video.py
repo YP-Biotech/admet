@@ -118,11 +118,23 @@ class VideoWorker:
             return False
 
     def stop(self) -> str:
-        """Write every queued frame, then start the encoding; the video's path, or "" if nothing was written."""
+        """Stop taking frames and return at once; the writer thread drains what is queued, closes the
+        file and starts the encoding on its own. The video's path, or "" if no frame was ever taken.
+
+        The caller is the protocol's thread at a step's end: it must not wait for a disk."""
         self._stop_event.set()
         self.stopped_at = datetime.now().isoformat(timespec="seconds")
-        if self.thread:
-            self.thread.join()        # no time limit: a frame left unwritten would be lost
+        return str(self.video_path) if self.frame_count else ""
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait until every queued frame is on disk and the file is closed; False on timeout."""
+        if self.thread is not None:
+            self.thread.join(timeout)
+            return not self.thread.is_alive()
+        return True
+
+    def _finish_file(self) -> None:
+        """The writer thread's last act: the file closed, the record written, the encode started."""
         if self._file:
             self._file.close()
             self._file = None
@@ -133,15 +145,22 @@ class VideoWorker:
         if not self.written:
             self.raw_path.unlink(missing_ok=True)
             self.info_path.unlink(missing_ok=True)
-            return ""
+            return
         if not self.encode_at_stop:
             _write_info(self.info_path, self._info("recorded"))   # the raw file waits; encode() comes later
-            return str(self.video_path)
+            return
         _write_info(self.info_path, self._info("encoding"))
         Thread(target=self._encode, daemon=True).start()
-        return str(self.video_path)
 
     def _writer_thread(self) -> None:
+        _DRAINING.add(self)
+        try:
+            self._drain()
+            self._finish_file()
+        finally:
+            _DRAINING.discard(self)
+
+    def _drain(self) -> None:
         while not self._stop_event.is_set() or not self.queue.empty():
             try:
                 frames = [self.queue.get(timeout=QUEUE_GET_TIMEOUT)]
@@ -160,6 +179,7 @@ class VideoWorker:
 
     def encode(self) -> tuple[bool, str]:
         """Encode the raw file now, in this thread, and tell on_finished; nothing to do if no frames were kept."""
+        self.wait()                                   # every frame on disk first
         if not self.info_path.is_file():
             return False, "nothing recorded"
         encoded, reason = encode_recording(self.info_path, self.encoder)
@@ -192,6 +212,19 @@ class VideoWorker:
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "record": dict(self.record),
         }
+
+
+_DRAINING: set[VideoWorker] = set()        # writers still putting frames on disk after their stop()
+
+
+def wait_for_writers(timeout: float = 60.0) -> int:
+    """Wait for every writer still draining, so a shutdown never leaves frames in a queue; how many waited for."""
+    deadline = time.monotonic() + timeout
+    waited = 0
+    for writer in list(_DRAINING):
+        if writer.wait(max(0.0, deadline - time.monotonic())):
+            waited += 1
+    return waited
 
 
 def encode_recording(info_path: Path, encoder: Encoder | None = None) -> tuple[bool, str]:
