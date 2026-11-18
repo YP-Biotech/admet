@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from admet.core.home import RIG_KEYS, AdmetHome
 from admet.core.service import Admet
+from tests.sdk import needs_fluigent_sdk
 
 
 class ResolveTests(unittest.TestCase):
@@ -78,6 +79,7 @@ class ServiceTests(unittest.TestCase):
 
             self.assertEqual(admet.engine("acquisition").recording_context, {})
 
+    @needs_fluigent_sdk
     def test_a_recording_lands_under_the_home(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)
