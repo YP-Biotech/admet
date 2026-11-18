@@ -50,7 +50,8 @@ def recorded_runs(project):
             summary = json.loads(path.read_text(encoding="utf-8"))
             if summary.get("state") not in {"completed", "failed", "cancelled"}:
                 continue
-            name = summary.get("normalized_settings", {}).get("protocol", {}).get("name", path.parent.name)
+            name = (summary.get("tag")
+                    or summary.get("normalized_settings", {}).get("protocol", {}).get("name", path.parent.name))
             runs.append({"directory": str(path.parent), "name": name,
                          "at": summary.get("completed_at") or summary.get("executed_at") or "",
                          "state": summary["state"]})
