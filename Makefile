@@ -24,16 +24,16 @@ test: test-core test-control
 test-all: test test-integration test-analyze
 
 test-core:
-	uv run -m unittest $(call modules,$(CORE_TESTS))
+	uv run python tests/run.py $(call modules,$(CORE_TESTS))
 
 test-control:
-	uv run -m unittest $(call modules,$(CONTROL_TESTS))
+	uv run python tests/run.py $(call modules,$(CONTROL_TESTS))
 
 test-integration:
-	uv run -m unittest $(call modules,$(INTEGRATION_TESTS))
+	uv run python tests/run.py $(call modules,$(INTEGRATION_TESTS))
 
 test-analyze:
-	uv run -m unittest $(call modules,$(ANALYZE_TESTS))
+	uv run python tests/run.py $(call modules,$(ANALYZE_TESTS))
 
 lint:
 	uv run ruff check .
