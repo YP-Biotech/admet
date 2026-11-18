@@ -26,6 +26,7 @@ BURST_FRAMES = 8            # consecutive frames a burst holds
 BURST_INTERVAL_S = 1.0      # one burst this often
 WINDOW_S = 10.0             # the summary looks back this far
 BACKGROUND_FRAMES = 64      # frames the background is taken over
+BACKGROUND_EVERY = 4        # bursts between two takes of the background; it drifts slowly
 CV_LIMIT_PERCENT = 5.0      # the CV the state is judged against
 MIN_DROPLETS = 30           # measured droplets before a CV is judged
 MIN_BURSTS = 3              # bursts with a rate before a rate is judged
@@ -133,6 +134,7 @@ class BurstQC:
         self.cv_limit = cv_limit
         self._frames: deque[np.ndarray] = deque(maxlen=BACKGROUND_FRAMES)
         self._background: np.ndarray | None = None
+        self._bursts_since_background = 0
         self.samples: deque[BurstSample] = deque()
         self.count = 0.0
         self._last_counted: float | None = None
@@ -145,6 +147,7 @@ class BurstQC:
         """A new recording starts from nothing: no background, no samples, no count."""
         self._frames.clear()
         self._background = None
+        self._bursts_since_background = 0
         self.samples.clear()
         self.reset_count()
 
@@ -156,7 +159,10 @@ class BurstQC:
 
         at = time.monotonic() if at is None else at
         self._frames.extend(frames)
-        self._background = percentile_background(list(self._frames))
+        if self._background is None or self._bursts_since_background >= BACKGROUND_EVERY:
+            self._background = percentile_background(list(self._frames))
+            self._bursts_since_background = 0
+        self._bursts_since_background += 1
         found = [detect(frame, self._background, self.detection)["properties"] for frame in frames]
         shifts = []
         for previous, current in zip(found, found[1:]):
@@ -241,6 +247,17 @@ def qc_log_path(video: Path, record: dict[str, Any] | None) -> Path:
     return Path(video).parent / (f"{run_id}.qc.csv" if run_id else f"{Path(video).stem}.qc.csv")
 
 
+def _below_normal_priority() -> None:
+    """On Windows, let this thread yield to the others when the machine is busy; elsewhere nothing."""
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32                      # type: ignore[attr-defined]
+        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), -1)      # THREAD_PRIORITY_BELOW_NORMAL
+    except (AttributeError, OSError):
+        pass
+
+
 def _num(value: float) -> str:
     return f"{value:.4f}" if math.isfinite(value) else ""
 
@@ -304,6 +321,7 @@ class QCWorker:
         self.stop_log()
 
     def _run(self) -> None:
+        _below_normal_priority()                 # the camera, the writer and the window come first
         while not self._stop.is_set():
             self._wake.wait(0.5)
             self._wake.clear()
@@ -327,11 +345,14 @@ class QCWorker:
             if summary is None:
                 continue
             with self._lock:
-                if self._log is not None:
-                    try:
-                        self._log.write(summary)
-                    except OSError:
-                        self._close_log()
+                log_file = self._log
+            if log_file is not None:
+                try:
+                    log_file.write(summary)             # outside the lock: a slow disk must not hold up offer()
+                except (OSError, ValueError):
+                    with self._lock:
+                        if self._log is log_file:
+                            self._close_log()
             if self.on_summary is not None:
                 try:
                     self.on_summary(summary)
