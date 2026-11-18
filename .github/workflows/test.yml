@@ -6,41 +6,38 @@ on:
   pull_request:
     branches: [master]
 
+# A newer push to the same branch supersedes the runs still queued for it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    # The suites run on macOS during development; Qt and the Fluigent simulator
-    # are not yet exercised on Linux.
-    runs-on: macos-latest
+    # One Linux job: plentiful runners, no queue. The Fluigent SDK comes from Fluigent's
+    # GitHub the way `admet install-sdk` fetches it on a rig, so the simulated fluidics
+    # tests run here too.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+          enable-cache: true
 
-      - name: Run tests
+      - name: Qt's system libraries, for the offscreen window
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
+
+      - name: Install
         run: |
           uv sync --locked --extra control
-          make test
+          uv run admet install-sdk
 
-  fresh-install:
-    # The newest dependencies the project allows, without the lock file.
-    runs-on: macos-latest
-    env:
-      QT_QPA_PLATFORM: offscreen
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.12"
-
-      - name: Run tests with unpinned deps
-        run: |
-          rm -f uv.lock
-          uv sync --extra control
-          make test
+      - name: Test
+        run: make test
