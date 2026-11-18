@@ -215,7 +215,7 @@ def pipeline_config(settings: dict[str, Any], *, cache_dir: Path | None = None) 
             "gate_pct": float(settings.get("gate_pct") if settings.get("gate_pct") is not None else 50.0),
         },
         "tracking": {"min_count": 3, "max_miss": 2},
-        "analysis": {"microns_per_pixel": settings["microns_per_pixel"]},
+        "analysis": {"microns_per_pixel": settings.get("microns_per_pixel")},
     }
     if cache_dir is not None:
         config["processing"] = {"cache_dir": str(cache_dir)}
