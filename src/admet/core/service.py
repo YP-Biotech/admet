@@ -4,13 +4,11 @@ Everything that drives this system talks to core, and core talks to the engines.
 The desktop and Python callers share this service; neither needs to know
 which files a recording creates or where those files belong.
 
-Core owns the session. An engine is handed the paths it writes to and never
-chooses them: only core knows which project is open, and an engine picking its
-own would write somewhere the project never hears about -- data on disk that no
-manifest mentions and nothing can find again.
+Core owns the home. An engine is handed the paths it writes to and never
+chooses them: only core knows the home's data folder, and an engine picking its
+own would write somewhere nothing lists -- data on disk nothing can find again.
 
-    admet = Admet()
-    admet.open_project("runs/today.admetp")
+    admet = Admet()                       # ~/.admet, or ADMET_HOME
     admet.run("acquisition", "connect_fluidics", {"simulated": True})
     admet.run("acquisition", "start_recording", {"recording_label": "set01"})
 """
@@ -31,9 +29,9 @@ from typing import Any
 
 from admet.core.engine import ActionSpec, action_spec
 from admet.core.clock import now_iso as _now_iso
+from admet.core.home import AdmetHome
 from admet.core.project import ProjectStore
 from admet.core.run import RunJob, RunResult
-from admet.core.session import PROJECT_EXTENSION, session_path
 from admet.workflows.operations import operation as find_operation
 
 log = logging.getLogger(__name__)
@@ -159,17 +157,15 @@ def _sum_expected_duration(steps: list[dict[str, Any]]) -> float | None:
     return sum(float(value) for value in values) if all(value is not None for value in values) else None
 
 
-class NoProject(Exception):
-    """An action needed somewhere to write, and no project was open."""
-
-
 class Admet:
-    """Sessions, and the engines that fill them."""
+    """The rig's home and the engines that fill it."""
 
-    def __init__(self, *, project: str | Path | None = None):
+    def __init__(self, *, home: AdmetHome | str | Path | None = None):
         self._engines: dict[str, Any] = {}
         self._marks: dict[str, Any] = {}
-        self.project: ProjectStore | None = None
+        self.home = (home if isinstance(home, AdmetHome) else AdmetHome.resolve(home)).ensure()
+        # Until runs are folders of their own, the data room keeps the index runs are written into.
+        self.project: ProjectStore = ProjectStore.create(self.home.data_dir, "data")
         self._protocol_plans: dict[str, dict[str, Any]] = {}
         self._executing_plan_id: str | None = None
         # Each plan remembers which project it belongs to, never a copy of it:
@@ -180,57 +176,29 @@ class Admet:
         # Observation and commands may arrive from different desktop threads.
         self._engine_lock = threading.Lock()
 
-        if project is not None:
-            self.open_project(project)
-
-    # -- sessions -----------------------------------------------------------
-    def create_project(self, path: str | Path, project_id: str = "") -> ProjectStore:
-        """Start a new project, and make it the one runs write into."""
-        self._require_project_idle()
-        path = session_path(path)
-        self.project = ProjectStore.create(path, project_id or path.stem)
-        self._tell_engine_project()
-        return self.project
-
-    def clone_project(self, source: str | Path, path: str | Path, project_id: str = "") -> ProjectStore:
-        """A new project carrying the source's settings and calibration, opened as the current one."""
-        self._require_project_idle()
-        source_path = session_path(source)
-        if not (source_path / "manifest.json").is_file():
-            raise NoProject(f"{source_path} is not a project: no manifest.json in it")
-        origin = self.project if self.project is not None and self.project.path == source_path \
-            else ProjectStore(source_path)
-        self.project = ProjectStore.clone_settings(origin, session_path(path), project_id)
-        self._tell_engine_project()
-        return self.project
-
-    def open_project(self, path: str | Path) -> ProjectStore:
-        """Open an existing project, or say plainly that it is not one."""
-        self._require_project_idle()
-        path = session_path(path)
-        if not (path / "manifest.json").is_file():
-            raise NoProject(f"{path} is not a project: no manifest.json in it")
-        self.project = ProjectStore(path)
-        self._tell_engine_project()
+        self._tell_engine_home()
         self._encode_leftovers()
         self._list_tagged_recordings()
-        return self.project
 
-    def close_project(self) -> None:
-        self._require_project_idle()
-        self.project = None
-        self._tell_engine_project()
+    # -- the rig's settings ----------------------------------------------------
+    def rig(self) -> dict[str, Any]:
+        """The rig's settings, from the home's rig.json."""
+        return self.home.rig()
 
-    def _tell_engine_project(self) -> None:
-        """The acquisition engine stamps recordings with the project they belong to."""
+    def update_rig(self, **changes: Any) -> dict[str, Any]:
+        """Keep rig settings; recordings from now on carry what matters to them."""
+        settings = self.home.update_rig(**changes)
+        self._tell_engine_home()
+        return settings
+
+    def _tell_engine_home(self) -> None:
+        """The acquisition engine stamps recordings with what the rig knows about itself."""
         engine = self._engines.get("acquisition")
         if engine is not None and hasattr(engine, "recording_context"):
             context: dict[str, Any] = {}
-            if self.project is not None:
-                context["project_id"] = self.project.session.project_id
-                optics = self.project.session.metadata.get("optics")
-                if isinstance(optics, dict) and optics.get("microns_per_pixel"):
-                    context["optics"] = dict(optics)       # µm per px as measured on the preview
+            optics = self.rig().get("optics")
+            if isinstance(optics, dict) and optics.get("microns_per_pixel"):
+                context["optics"] = dict(optics)           # µm per px as measured on the preview
             engine.recording_context = context
 
     def _list_tagged_recordings(self) -> None:
@@ -243,18 +211,16 @@ class Admet:
         if listed:
             log.info("listed %d recording(s) found in records/camera: %s", len(listed), ", ".join(listed))
 
-    def _require_project_idle(self):
+    def _require_idle(self):
         engine = self._engines.get("acquisition")
         if self._executing_plan_id or (engine and (getattr(engine, "pipeline_state", "idle") in {
             "running", "paused", "stopping",
         } or getattr(engine, "recording_active", False))):
-            raise RuntimeError("finish the active protocol/recording before changing project")
+            raise RuntimeError("finish the active protocol/recording first")
 
     def protocol_store(self):
         from admet.core.protocol_store import ProtocolStore
 
-        if self.project is None:
-            raise NoProject("open a project first")
         return ProtocolStore(self.project)
 
     def plan_protocol_file(self, path: str):
@@ -262,34 +228,9 @@ class Admet:
 
         return self.plan_protocol("run_json_protocol", {"protocol": load(path)})
 
-    def describe_project(self) -> dict[str, Any]:
-        if self.project is None:
-            return {"open": False}
-        session = self.project.session
-        return {
-            "open": True,
-            "path": str(self.project.path),
-            "project_id": session.project_id,
-            "updated_at": session.updated_at,
-            "files": [
-                {"id": file.id, "role": file.role, "path": file.path} for file in session.files
-            ],
-            "items": [{"id": item.id, "type": item.project_type} for item in session.items],
-        }
-
-    @staticmethod
-    def discover_projects(root: str | Path) -> list[dict[str, Any]]:
-        from admet.core.discovery import discover_projects, project_ref_label
-
-        return [
-            {
-                "path": str(ref.path),
-                "project_id": ref.project_id,
-                "updated": ref.updated,
-                "label": project_ref_label(ref),
-            }
-            for ref in discover_projects(root)
-        ]
+    def describe_home(self) -> dict[str, Any]:
+        return {"home": str(self.home.root), "control": str(self.home.control_dir), "data": str(self.home.data_dir),
+                "analyze": str(self.home.analyze_dir), "rig": self.rig()}
 
     # -- engines ------------------------------------------------------------
     def engine_ids(self) -> list[str]:
@@ -313,7 +254,7 @@ class Admet:
             if hasattr(engine, "on_video_finished"):
                 engine.on_video_finished = self._video_finished
             self._engines[engine_id] = engine
-            self._tell_engine_project()
+            self._tell_engine_home()
         return self._engines[engine_id]
 
     def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
@@ -822,8 +763,6 @@ class Admet:
 
     def add_analysis_source(self, path: Path, *, engine: str, sample_id: str = "") -> dict[str, Any]:
         """Register something to analyse with the open project."""
-        if self.project is None:
-            raise NoProject("no project is open; create or open one first")
         file = self.project.register_analysis_file(
             path, engine=engine, sample_id=sample_id or Path(path).stem
         )
@@ -846,8 +785,6 @@ class Admet:
 
     def analyze(self, *, engine: str = "", cache: str = "use") -> dict[str, Any]:
         """Analyse everything the project holds, writing the results into it."""
-        if self.project is None:
-            raise NoProject("no project is open; create or open one first")
         from admet.engines import create_engine_registry
         from admet.workflows.analyze_runner import AnalyzeBatchRunner, AnalyzeTarget
 
@@ -886,7 +823,6 @@ class Admet:
         engine = self._engines.get("acquisition")
         if engine is None:
             return {
-                "project": self.project is not None,
                 "fluidics": False,
                 "camera": False,
                 "corrections": False,
@@ -894,7 +830,6 @@ class Admet:
                 "sources": len(self.analysis_sources()),
             }
         return {
-            "project": self.project is not None,
             "fluidics": bool(engine.hardware.state.connected),
             "camera": bool(getattr(engine.camera, "connected", False)),
             "corrections": self._marks.get("corrections", False),
@@ -1101,11 +1036,6 @@ class Admet:
         """Decide where this action's files go, before it is allowed to write."""
         if not spec.outputs:
             return job
-        if self.project is None:
-            raise NoProject(
-                f"{spec.id} writes {', '.join(spec.outputs)} and needs a project open; "
-                f"create or open one ending in {PROJECT_EXTENSION}"
-            )
         label = str(job.settings.get("recording_label") or job.id)
         target = self.project.control_recording_target(label)
         missing = set(spec.outputs) - set(target.outputs)

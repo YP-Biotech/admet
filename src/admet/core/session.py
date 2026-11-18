@@ -116,10 +116,11 @@ def write_atomic(path: str | Path, text: str) -> None:
 
 
 def session_path(path: str | Path) -> Path:
+    """The project folder a path means: a folder that exists is taken as it is, a name gets .admetp."""
     target = Path(path)
     if target.name == MANIFEST_FILENAME:
         target = target.parent
-    if target.suffix != PROJECT_EXTENSION:
+    if target.suffix != PROJECT_EXTENSION and not target.is_dir():
         # Appended, not swapped: "Assay 1.5uM" keeps its ".5uM".
         target = target.with_name(target.name + PROJECT_EXTENSION)
     return target

@@ -1,7 +1,12 @@
 # Projects
 
-A project is a folder ending in `.admetp`. It holds everything an experiment
-produced, so copying the folder preserves the whole experiment.
+A project is a folder ending in `.admetp`. It is what `admet analyze` reads: the
+videos registered for analysis, the analysis settings and results.
+
+`admet control` no longer writes projects. It records into the admet home's
+data folder and keeps the rig's settings in `control/rig.json` there; see
+[the home](../control/overview#the-home). The data folder is laid out like a
+project's `records/` and is what analyze is pointed at.
 
 ```text
 experiment.admetp/
@@ -23,15 +28,13 @@ experiment.admetp/
 
 | What | Saved when |
 |---|---|
-| Rig calibration and liquids | As you edit them on the Calibration page |
-| Preflight layout and setup | **Save Project** |
 | A protocol and its recording | **Execute** — previews and edits are never saved |
 | Measurements | As you type them into the run's table |
 | Calculation results | Each **Calculate**, as a new file; earlier results stay |
 | Analysis settings and results | When `admet analyze` runs or saves the matrix |
 
-Protocol edits and plan previews live in memory only. Closing the app or switching
-projects discards them; only an executed run is archived.
+Protocol edits and plan previews live in memory only. Closing the app discards
+them; only an executed run is archived.
 
 ## Results stay honest
 

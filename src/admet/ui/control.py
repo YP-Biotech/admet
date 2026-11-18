@@ -8,13 +8,13 @@ import time
 import uuid
 from collections import deque
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from queue import Empty
 from typing import Any, Callable
 
 import numpy as np
-from PySide6.QtCore import QEvent, QItemSelectionModel, QLocale, QObject, QRect, QSettings, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QItemSelectionModel, QLocale, QObject, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -27,9 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QFileDialog,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -48,11 +46,8 @@ from PySide6.QtWidgets import (
 
 from admet.ui.backend import DesktopBackend as AdmetAPI
 from admet.ui.tasks import Tasks
-from admet.core.discovery import discover_projects, project_ref_label, projects_root, prune_recent_projects
 from admet.core.run import RunJob, RunResult
-from admet.core.project import ProjectStore
 from admet.core.engine import Param, ParamKind, ParamOption
-from admet.core.session import session_path
 from admet.workflows import Stage, StageControl, StageStatus
 from admet.engines.acquisition.fluidics.config import (
     FLUIDIC_CHANNEL_LABELS,
@@ -420,7 +415,7 @@ class ControlWindow(QMainWindow):
         self.status_kind = "primary"
         self.log_entries: list[str] = ["Control UI ready."]
         self.toc_rows: list[dict[str, Any]] = []
-        self.project_path = Path(api.workdir) if api.workdir else None
+        self.project_path = Path(api.workdir)
         self._last_frame_id = 0
         self._last_status_poll = 0.0
         self._marker_sequence = 0
@@ -453,14 +448,6 @@ class ControlWindow(QMainWindow):
         self.setMinimumSize(1040, 720)
 
         self.status = QLabel("")
-        self.project_badge: QPushButton | None = None
-        self.discovery_root = projects_root()
-        self.project_settings = QSettings("ADMET", "Qt")
-        self.recent_projects = prune_recent_projects(self.project_settings.value("recent_projects", {}))
-        self._save_project_history()
-        if self.project_path and self.api.session:
-            self._remember_project()
-        self.project_refs = discover_projects(self.discovery_root, recent=self.recent_projects)
         self.preview: PreviewDisplay | None = None
         self.action_table: QTableWidget | None = None
         self.camera_selector: QComboBox | None = None
@@ -585,23 +572,11 @@ class ControlWindow(QMainWindow):
         layout.addWidget(subtitle)
         layout.addStretch()
 
-        # Same idea as the analyze project picker: the badge is the picker.
-        self.project_badge = QPushButton(self._project_text())
-        self.project_badge.setObjectName("ProjectBadge")
-        self.project_badge.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.project_badge.setToolTip("Select a project")
-        self.project_badge.clicked.connect(self._show_project_menu)
-        layout.addWidget(self.project_badge)
-        for label, callback in (
-            ("New Project", self._new_project),
-            ("Clone Project", self._clone_project),
-            ("Save Project", self._save_project),
-        ):
-            button = ui.button(label)
-            button.clicked.connect(callback)
-            button.setToolTip("A new project with this one's settings and calibration, none of its data"
-                              if label == "Clone Project" else "")
-            layout.addWidget(button)
+        # Where this rig keeps its things: the home, with the data folder on hover.
+        home = QLabel(self._project_text())
+        home.setObjectName("MutedText")
+        home.setToolTip(f"rig settings in {self.api.home.control_dir}\nruns in {self.api.home.data_dir}")
+        layout.addWidget(home)
         return bar
 
     def _build_toc_panel(self) -> QWidget:
@@ -796,82 +771,10 @@ class ControlWindow(QMainWindow):
         return handler
 
     def _project_text(self) -> str:
-        if self.api.session is None:
-            return "Project: none"
-        return f"Project: {self.api.session.project_id}.admetp"
+        return f"Home: {self.api.home.root}"
 
     def _project_ready(self) -> bool:
-        return self.api.session is not None
-
-    def _sync_project_badge(self) -> None:
-        if self.project_badge is not None:
-            self.project_badge.setText(self._project_text())
-
-    def _new_project(self) -> None:
-        if self.tasks.busy:
-            self._notify("Wait for the current command before changing project.", "warning")
-            return
-        path, _filter = QFileDialog.getSaveFileName(
-            self,
-            "New admet project",
-            str(session_path(Path.cwd() / f"admet_{time.strftime('%Y%m%d_%H%M%S')}")),
-            "admet projects (*.admetp)",
-        )
-        if not path:
-            return
-        target = session_path(Path(path))
-        try:
-            self._flush_measurements()
-            self.project_path = self.api.create_project(target).path
-        except Exception as exc:
-            self._set_status("Project create failed", "danger")
-            self._notify(f"Project create failed: {exc}", "danger", timeout_ms=0)
-            return
-        self._remember_project()
-        self._sync_project_badge()
-        self._set_status("Project created", "success")
-        self._notify("Project created", "success")
-        self._append_log(f"project: created {self.project_path}")
-        self._reset_project_workflow()
-        self._load_rig_calibration()
-        self._load_optics()
-        self._render_current_stage()
-
-    def _clone_project(self) -> None:
-        """Start the next project where this one leaves off: same rig set-up, no data."""
-        if self.tasks.busy:
-            self._notify("Wait for the current command before changing project.", "warning")
-            return
-        if self.api.session is None:
-            self._notify("Open a project to clone its settings.", "warning")
-            return
-        source = self.api.session.project_id
-        path, _filter = QFileDialog.getSaveFileName(
-            self,
-            f"Clone {source} into a new admet project",
-            str(session_path(Path.cwd() / f"{source}_{time.strftime('%Y%m%d_%H%M%S')}")),
-            "admet projects (*.admetp)",
-        )
-        if not path:
-            return
-        target = session_path(Path(path))
-        try:
-            self._flush_measurements()
-            self.api.save_project(checkup=self._preflight.workspace_state() if self._preflight else None)
-            self.project_path = self.api.clone_project(target).path
-        except Exception as exc:
-            self._set_status("Project clone failed", "danger")
-            self._notify(f"Project clone failed: {exc}", "danger", timeout_ms=0)
-            return
-        self._remember_project()
-        self._sync_project_badge()
-        self._set_status("Project cloned", "success")
-        self._notify(f"Project cloned from {source}: settings and calibration kept, no data.", "success")
-        self._append_log(f"project: cloned {source} into {self.project_path}")
-        self._reset_project_workflow()
-        self._load_rig_calibration()
-        self._load_optics()
-        self._render_current_stage()
+        return True                                   # the home is always there
 
     def _ensure_preflight(self) -> PreflightPanel:
         if self._preflight is None:
@@ -898,112 +801,6 @@ class ControlWindow(QMainWindow):
             if liquid is not None:
                 liquids[label] = (liquid.density, liquid.viscosity)
         return liquids
-
-    def _save_project_history(self):
-        self.project_settings.setValue("recent_projects", self.recent_projects)
-        self.project_settings.sync()
-        if self.project_settings.status() != QSettings.Status.NoError:
-            self._append_log("project history: could not save recent paths and last-opened times")
-
-    def _remember_project(self):
-        self.recent_projects[str(self.project_path.resolve())] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        self._save_project_history()
-
-    def _build_project_menu(self) -> QMenu:
-        """Discovered projects, listed the way the analyze picker lists them."""
-        self.project_refs = discover_projects(self.discovery_root, recent=self.recent_projects)
-        menu = QMenu(self)
-        menu.setToolTipsVisible(True)
-        current = str(self.project_path.resolve()) if self.project_path else ""
-        for ref in self.project_refs:
-            action = menu.addAction(project_ref_label(ref))
-            action.setToolTip(str(ref.path))
-            action.setCheckable(True)
-            action.setChecked(str(ref.path) == current)
-            action.triggered.connect(lambda _checked=False, path=ref.path: self._load_project_path(path))
-        if not self.project_refs:
-            empty = menu.addAction(f"No projects in {self.discovery_root}")
-            empty.setEnabled(False)
-        menu.addSeparator()
-        menu.addAction("Browse...").triggered.connect(self._select_project)
-        return menu
-
-    def _show_project_menu(self) -> None:
-        if self.project_badge is None:
-            return
-        menu = self._build_project_menu()
-        menu.exec(self.project_badge.mapToGlobal(self.project_badge.rect().bottomLeft()))
-
-    def _select_project(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self,
-            "Select admet project",
-            str(self.discovery_root),
-        )
-        if path:
-            self._load_project_path(Path(path))
-
-    def _load_project_path(self, path: Path) -> None:
-        if self.tasks.busy:
-            self._notify("Wait for the current command before changing project.", "warning")
-            return
-        try:
-            self._flush_measurements()
-            self.project_path = self.api.open_project(path).path
-        except Exception as exc:
-            self._set_status("Project load failed", "danger")
-            self._notify(f"Project load failed: {exc}", "danger", timeout_ms=0)
-            return
-        self._remember_project()
-        self._sync_project_badge()
-        self._set_status("Project selected", "success")
-        self._notify("Project selected", "success")
-        self._append_log(f"project: selected {path}")
-        self._reset_project_workflow()
-        self._load_rig_calibration()
-        self._load_optics()
-        self._render_current_stage()
-
-    def _save_project(self) -> None:
-        if self.tasks.busy:
-            self._notify("Wait for the current command before saving.", "warning")
-            return
-        if self.api.session is None:
-            self._new_project()
-            return
-        self._flush_measurements()
-        target = self.project_path
-        if target is None:
-            path, _filter = QFileDialog.getSaveFileName(
-                self,
-                "Save admet project",
-                str(session_path(Path.cwd() / self.api.session.project_id)),
-                "admet projects (*.admetp)",
-            )
-            if not path:
-                return
-            target = Path(path)
-        try:
-            self.api.save_project(checkup=self._preflight.workspace_state() if self._preflight else None)
-        except Exception as exc:
-            self._set_status("Project save failed", "danger")
-            self._notify(f"Project save failed: {exc}", "danger", timeout_ms=0)
-            return
-        self._sync_project_badge()
-        self._set_status("Project saved", "success")
-        self._notify("Project saved", "success")
-        self._append_log(f"project: saved {self.project_path}")
-
-    def _ensure_recording_project(self) -> bool:
-        if self.api.session is None:
-            self._notify("Create or select a project before recording.", "warning", timeout_ms=0)
-            return False
-        if self.project_path is None:
-            self._notify("Save the project before recording.", "warning", timeout_ms=0)
-            self._save_project()
-        if self.project_path is None:
-            return False
-        return True
 
     def _select_stage(self, index: int) -> None:
         index = max(0, min(index, len(self.workflow.stages) - 1))
@@ -1920,7 +1717,6 @@ class ControlWindow(QMainWindow):
             self._set_status("Project required", "warning")
             self._notify("Create or select a project before camera setup.", "warning", timeout_ms=0)
             return None
-        if action == "start_recording" and not self._ensure_recording_project():
             return None
         if self._action_requires_camera_live(action) and not self._camera_scene_ready():
             self._set_status("Camera live preview required", "warning")
@@ -1945,10 +1741,9 @@ class ControlWindow(QMainWindow):
             "stage": self.workflow.current_stage(self.workflow_state).id,
         }
         outputs: dict[str, Path] = {}
-        if action == "start_recording" and self.project_path is not None and self.api.session is not None:
+        if action == "start_recording":
             label = str(payload.get("recording_label") or "recording")
-            store = ProjectStore(self.project_path, self.api.session)
-            target = store.control_recording_target(label)
+            target = self.api.service.project.control_recording_target(label)
             outputs = target.outputs
             metadata["recording_label"] = label
             metadata["recording_id"] = target.recording_id
@@ -2694,9 +2489,7 @@ class ControlWindow(QMainWindow):
         self._remount_current_stage()
 
     def _save_optics(self, optics: dict[str, Any]) -> bool:
-        """The scale into the project, so recordings from now on carry it."""
-        if self.api.session is None:
-            return True                                   # no project yet: the table keeps the value
+        """The scale into the rig's settings, so recordings from now on carry it."""
         try:
             self.api.save_optics(optics)
         except Exception as exc:
@@ -2719,9 +2512,7 @@ class ControlWindow(QMainWindow):
         return float(value) if accepted else 0.0
 
     def _save_channel_profile(self, prefix: str) -> None:
-        """Keep the channel's profile in the project."""
-        if self.api.session is None:
-            return
+        """Keep the channel's profile with the rig's settings."""
         try:
             self.api.save_calibration(remember_profile(
                 self.api.calibration, prefix, str(self.values.get(f"{prefix}_profile", ""))))

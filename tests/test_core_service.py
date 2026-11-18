@@ -1,8 +1,8 @@
-"""Core owns the session, and engines are told where to write.
+"""Core owns the home, and engines are told where to write.
 
-The property being pinned down is that data cannot land outside a project by
-accident: an action that writes needs a session, gets its paths from core, and
-what it produced is in the manifest afterwards.
+The property being pinned down is that data cannot land outside the home's data
+folder by accident: an action that writes gets its paths from core, and what it
+produced is listed afterwards.
 """
 
 import json
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from admet.core.engine import ActionSpec
 from admet.core.run import RunJob, RunResult
-from admet.core.service import Admet, NoProject
+from admet.core.service import Admet
 from admet.core.session import load_session
 
 
@@ -71,19 +71,18 @@ class _EmptySchema:
 
 
 def _admet(tmp: str) -> tuple[Admet, RecordingEngine]:
-    admet = Admet()
+    admet = Admet(home=tmp)
     engine = RecordingEngine()
     admet._engines["acquisition"] = engine
-    admet.create_project(Path(tmp) / "rig.admetp")
     return admet, engine
 
 
-class SessionTests(unittest.TestCase):
-    def test_a_failed_save_leaves_the_project_readable(self):
+class HomeTests(unittest.TestCase):
+    def test_a_failed_save_leaves_the_index_readable(self):
         from admet.core.project import ProjectStore
 
         with tempfile.TemporaryDirectory() as tmp:
-            store = Admet().create_project(Path(tmp) / "safe.admetp")
+            store = Admet(home=tmp).project
             before = (store.path / "manifest.json").read_text()
 
             with self.assertRaises(TypeError):
@@ -95,9 +94,7 @@ class SessionTests(unittest.TestCase):
 
     def test_a_recording_closed_by_emergency_stop_is_listed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "estop.admetp"
-            admet = Admet()
-            admet.create_project(path)
+            admet = Admet(home=tmp)
             admet.do("connect_fluidics", {"simulated": True})
             self.addCleanup(admet.do, "disconnect_fluidics")
             admet.do("start_recording", {"recording_label": "estop"})
@@ -105,63 +102,42 @@ class SessionTests(unittest.TestCase):
 
             admet.do("emergency_stop")
 
-            listed = json.loads((path / "manifest.json").read_text())["files"]
-            on_disk = list(path.rglob("*.csv"))
+            data = admet.home.data_dir
+            listed = json.loads((data / "manifest.json").read_text())["files"]
+            on_disk = list(data.rglob("*.csv"))
             self.assertEqual(len(on_disk), 1)
             self.assertEqual([f["role"] for f in listed], ["control_fluidics_csv"])
 
-    def test_creating_an_existing_project_opens_it_unchanged(self):
+    def test_a_second_service_on_the_same_home_finds_the_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "exp.admetp"
-            admet = Admet()
-            admet.create_project(path)
+            admet = Admet(home=tmp)
             admet.do("connect_fluidics", {"simulated": True})
             self.addCleanup(admet.do, "disconnect_fluidics")
             admet.do("start_recording", {"recording_label": "kept"})
             time.sleep(0.3)
             admet.do("stop_recording")
-            before = json.loads((path / "manifest.json").read_text())
+            manifest = admet.home.data_dir / "manifest.json"
+            before = json.loads(manifest.read_text())
 
-            reopened = Admet().create_project(path, "other")
+            reopened = Admet(home=tmp)
 
-            after = json.loads((path / "manifest.json").read_text())
-            self.assertEqual(after, before)
-            self.assertEqual(reopened.session.project_id, before["project_id"])
-            self.assertEqual(len(after["files"]), 1)
+            self.assertEqual(json.loads(manifest.read_text()), before)
+            self.assertEqual(len(reopened.project.session.files), 1)
 
-    def test_a_project_is_created_and_becomes_the_one_in_use(self):
+    def test_the_home_is_made_with_its_rooms_and_described(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
+            admet = Admet(home=Path(tmp) / "h")
 
-            store = admet.create_project(Path(tmp) / "rig.admetp")
+            described = admet.describe_home()
 
-            self.assertTrue((store.path / "manifest.json").is_file())
-            self.assertTrue(admet.describe_project()["open"])
-            self.assertEqual(admet.describe_project()["project_id"], "rig")
-
-    def test_opening_something_that_is_not_a_project_says_so(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(NoProject) as caught:
-                Admet().open_project(tmp)
-
-            self.assertIn("not a project", str(caught.exception))
-
-    def test_with_no_project_open_nothing_claims_to_be_open(self):
-        self.assertEqual(Admet().describe_project(), {"open": False})
+            self.assertEqual(described["home"], str(Path(tmp) / "h"))
+            for room in ("control", "data", "analyze"):
+                self.assertTrue((Path(tmp) / "h" / room).is_dir())
+            self.assertEqual(described["rig"], {})
+            self.assertTrue((admet.home.data_dir / "manifest.json").is_file())
 
 
 class PathOwnershipTests(unittest.TestCase):
-    def test_an_action_that_writes_is_refused_without_a_session(self):
-        # Otherwise the files land somewhere no manifest mentions, which is the
-        # same as losing them.
-        admet = Admet()
-        admet._engines["acquisition"] = RecordingEngine()
-
-        with self.assertRaises(NoProject) as caught:
-            admet.run("acquisition", "start_recording", {"recording_label": "set01"})
-
-        self.assertIn("needs a project open", str(caught.exception))
-
     def test_core_hands_the_engine_its_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet, engine = _admet(tmp)
@@ -188,7 +164,7 @@ class PathOwnershipTests(unittest.TestCase):
 
             admet.run("acquisition", "noop")
 
-            self.assertEqual(engine.jobs[-1].metadata["session_id"], "rig")
+            self.assertEqual(engine.jobs[-1].metadata["session_id"], "data")
             self.assertEqual(engine.jobs[-1].metadata["workdir"], str(admet.project.path))
 
 
@@ -304,8 +280,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
     """System validation must not need a camera pointed at the chip."""
 
     def _recorded(self, tmp):
-        admet = Admet()
-        admet.create_project(Path(tmp) / "rig.admetp")
+        admet = Admet(home=tmp)
         admet.do("connect_fluidics", {"simulated": True})
         admet.do("apply_corrections", {"oil_l_scale": 1.07})
         started = admet.do("start_recording", {"recording_label": "oilcap"})
@@ -316,8 +291,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
 
     def test_observation_names_the_csv_being_written(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
             admet.do("connect_fluidics", {"simulated": True})
             self.addCleanup(admet.do, "disconnect_fluidics")
             started = admet.do("start_recording", {"recording_label": "observed"})
@@ -331,8 +305,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
         import threading
 
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
             admet.do("connect_fluidics", {"simulated": True})
             self.addCleanup(admet.do, "disconnect_fluidics")
             admet.do("start_recording", {"recording_label": "twice"})
@@ -418,10 +391,9 @@ class RegistrationTests(unittest.TestCase):
             admet.run("acquisition", "start_recording", {"recording_label": "set01"})
             admet.run("acquisition", "stop_recording")
 
-            reopened = Admet()
-            reopened.open_project(admet.project.path)
+            reopened = Admet(home=tmp)
 
-            self.assertEqual(len(reopened.describe_project()["files"]), 2)
+            self.assertEqual(len(reopened.project.session.files), 2)
 
     def test_an_action_with_nothing_to_leave_behind_registers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -438,8 +410,8 @@ class PhantomFileTests(unittest.TestCase):
         # that lists a file which was never written is worse than one that omits
         # it, because everything downstream believes it.
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            store = admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
+            store = admet.project
             admet.run("acquisition", "connect_fluidics", {"simulated": True, "start_polling": True})
             admet.run("acquisition", "start_recording", {"recording_label": "csvonly"})
             time.sleep(0.6)
@@ -478,10 +450,10 @@ class RoutingTests(unittest.TestCase):
 class RealEngineTests(unittest.TestCase):
     """The same contract, against the acquisition engine itself, simulated."""
 
-    def test_a_simulated_recording_lands_in_the_project_and_is_registered(self):
+    def test_a_simulated_recording_lands_in_the_data_folder_and_is_registered(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            store = admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
+            store = admet.project
             admet.run("acquisition", "connect_fluidics", {"simulated": True, "start_polling": True})
 
             admet.run("acquisition", "start_recording", {"recording_label": "set01"})
@@ -490,7 +462,7 @@ class RealEngineTests(unittest.TestCase):
             time.sleep(0.3)
 
             written = [path for path in store.path.rglob("*.csv") if path.is_file()]
-            self.assertTrue(written, "the fluidics log should be inside the project")
+            self.assertTrue(written, "the fluidics log should be inside the data folder")
             self.assertTrue(str(written[0]).startswith(str(store.path)))
             session = load_session(store.path)
             self.assertTrue(session.files)
@@ -510,10 +482,10 @@ class AnalysisTests(unittest.TestCase):
         path.write_bytes(b"not really a video")
         return path
 
-    def test_something_to_analyse_is_registered_with_the_project(self):
+    def test_something_to_analyse_is_registered(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            store = admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
+            store = admet.project
 
             added = admet.do("add_source", {"path": str(self._video(Path(tmp)))})
 
@@ -524,8 +496,7 @@ class AnalysisTests(unittest.TestCase):
 
     def test_the_engine_is_inferred_from_what_was_added(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
             images = Path(tmp) / "frames"
             images.mkdir()
 
@@ -537,8 +508,7 @@ class AnalysisTests(unittest.TestCase):
 
     def test_adding_something_that_is_not_there_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
 
             with self.assertRaises(Exception) as caught:
                 admet.do("add_source", {"path": f"{tmp}/nothing.avi"})
@@ -547,24 +517,16 @@ class AnalysisTests(unittest.TestCase):
 
     def test_analysing_with_nothing_to_analyse_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
 
             with self.assertRaises(Exception) as caught:
                 admet.do("run_analysis", {})
 
             self.assertIn("nothing to analyse", str(caught.exception))
 
-    def test_analysing_without_a_project_is_refused(self):
-        with self.assertRaises(Exception) as caught:
-            Admet().do("run_analysis", {})
-
-        self.assertIn("no project is open", str(caught.exception))
-
     def test_sources_lists_what_was_added(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
             admet.do("add_source", {"path": str(self._video(Path(tmp))), "sample_id": "run01"})
 
             listed = admet.do("list_sources", {})["sources"]

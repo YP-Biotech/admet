@@ -1,10 +1,9 @@
-"""µm per pixel measured on the preview: two clicks, a width, kept with the project and stamped into recordings."""
+"""µm per pixel measured on the preview: two clicks, a width, kept with the rig and stamped into recordings."""
 
 import os
 import tempfile
 import time
 import unittest
-from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -27,9 +26,8 @@ class ScaleOnThePreviewTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.api = DesktopBackend(simulated=True)
+        self.api = DesktopBackend(simulated=True, home=tmp.name)
         self.addCleanup(self.api.shutdown)
-        self.api.create_project(Path(tmp.name) / "p.admetp")
         self.window = ControlWindow(self.api)
         self.addCleanup(self.window.close)
         self.window.show()
@@ -41,7 +39,7 @@ class ScaleOnThePreviewTests(unittest.TestCase):
             self.app.processEvents()
             time.sleep(0.01)
 
-    def test_two_clicks_and_a_width_give_the_scale_to_the_project_and_the_recordings(self):
+    def test_two_clicks_and_a_width_give_the_scale_to_the_rig_and_the_recordings(self):
         window = self.window
         preview = window.preview
         self.assertIsNotNone(preview)

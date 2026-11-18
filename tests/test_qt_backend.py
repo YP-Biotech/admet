@@ -28,37 +28,34 @@ class DesktopBackendTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.backend = DesktopBackend(simulated=True)
+        self.backend = DesktopBackend(simulated=True, home=self.tmp.name)
         self.addCleanup(self.backend.shutdown)
-        self.backend.create_project(Path(self.tmp.name) / "desktop.admetp")
 
     def connect(self):
         self.backend.call("connect_fluidics")
         self.backend.call("apply_corrections")
 
-    def test_calibration_is_kept_in_the_project(self):
+    def test_calibration_is_kept_with_the_rig(self):
         saved = {"cells_m": {"profile": "water_m", "dead_volume_ul": 85.0}}
         self.backend.save_calibration(saved)
 
-        reopened = DesktopBackend(simulated=True)
+        reopened = DesktopBackend(simulated=True, home=self.tmp.name)
         self.addCleanup(reopened.shutdown)
-        reopened.open_project(Path(self.tmp.name) / "desktop.admetp")
         self.assertEqual(reopened.calibration, saved)
 
-    def test_liquids_and_profiles_are_kept_in_the_project(self):
+    def test_liquids_and_profiles_are_kept_with_the_rig(self):
         liquid = self.backend.add_liquid("dSurf", 1.61, 1.24)
         profile = self.backend.add_profile(name="L dSurf", liquid=liquid["id"], unit="L", calibration="IPA",
                                            scale=0.739, square=0.0127)
 
-        reopened = DesktopBackend(simulated=True)
+        reopened = DesktopBackend(simulated=True, home=self.tmp.name)
         self.addCleanup(reopened.shutdown)
-        reopened.open_project(Path(self.tmp.name) / "desktop.admetp")
         self.assertEqual((reopened.liquids, reopened.profiles), ([liquid], [profile]))
         self.assertEqual(profile["cube"], 0.0)
         self.assertEqual(self.backend.add_liquid("dSurf", 1.6)["id"], "dsurf_2")
         self.assertEqual(self.backend.add_liquid("Water", 0.993)["id"], "water_2")   # a default is called water
 
-    def test_project_entries_are_edited_and_removed_but_not_while_in_use(self):
+    def test_rig_entries_are_edited_and_removed_but_not_while_in_use(self):
         liquid = self.backend.add_liquid("New liquid", 1.0, 1.0)
         edited = self.backend.update_liquid(liquid["id"], name="Buffer", density=1.02)
         self.assertEqual((edited["id"], edited["name"], edited["density"]), (liquid["id"], "Buffer", 1.02))
@@ -81,18 +78,17 @@ class DesktopBackendTests(unittest.TestCase):
         self.backend.remove_liquid(liquid["id"])
         self.assertEqual((self.backend.liquids, self.backend.profiles), ([], []))
         with self.assertRaises(ValueError):
-            self.backend.remove_profile("water_m")                 # defaults are not the project's
+            self.backend.remove_profile("water_m")                 # defaults are not the rig's own
 
-    def test_preflight_save_replaces_the_checkup_and_keeps_other_metadata(self):
-        from dataclasses import replace
+    def test_preflight_save_replaces_the_checkup_and_keeps_the_other_settings(self):
+        from admet.core.home import AdmetHome
 
-        project = self.backend.service.project
-        project.session = replace(project.session, metadata={"qt_checkup": {"flow_checks": []}, "note": "retain"})
+        self.backend.save_calibration({"cells_m": {"profile": "water_m", "dead_volume_ul": 85.0}})
+        self.backend.save_checkup({"flow_checks": []})
         checkup = {"conditions": {"flows_ul_min": {"oil": 20}}}
-        self.backend.save_project(checkup=checkup)
-        self.backend.open_project(project.path)
-        saved = self.backend.session.metadata
-        self.assertEqual(saved["note"], "retain")
+        self.backend.save_checkup(checkup)
+        saved = AdmetHome(self.tmp.name).rig()
+        self.assertEqual(saved["calibration"], {"cells_m": {"profile": "water_m", "dead_volume_ul": 85.0}})
         self.assertEqual(saved["qt_checkup"], checkup)
 
     def test_corrected_range_is_refreshed_before_planning_scout_base_15(self):
@@ -164,9 +160,8 @@ class DesktopBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "completed"):
             self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.backend.shutdown()
-        reopened = DesktopBackend(simulated=True)
+        reopened = DesktopBackend(simulated=True, home=self.tmp.name)
         self.addCleanup(reopened.shutdown)
-        reopened.open_project(self.backend.workdir)
         self.assertEqual(reopened.call("list_protocols")["protocols"][0]["name"], "desktop_test")
         self.assertEqual(reopened.call("planned_protocols")["plans"], [])
         self.assertTrue(reopened.service.project.session.files)
@@ -249,8 +244,9 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(plan["recording"]["video_steps"], [1])
         self.assertEqual(plan["steps"][0]["record_s"], 100)
         self.assertIn("camera_live", plan["unmet_guards"])
-        self.backend.open_project(self.backend.workdir)
-        self.assertEqual(self.backend.acquisition_mode, "camera_fluidics")
+        reopened = DesktopBackend(simulated=True, home=self.tmp.name)
+        self.addCleanup(reopened.shutdown)
+        self.assertEqual(reopened.acquisition_mode, "camera_fluidics")
 
     def camera_fake(self):
         import numpy as np
@@ -448,12 +444,12 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertIsNone(observed["camera"]["model"])
         self.assertIsNone(observed["camera"]["measured_frame_rate_hz"])
 
-    def test_project_switch_and_config_refused_while_active(self):
+    def test_mode_and_config_changes_are_refused_while_active(self):
         self.connect()
         plan = self.plan()
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
-        with self.assertRaisesRegex(RuntimeError, "changing project"):
-            self.backend.create_project(Path(self.tmp.name) / "other.admetp")
+        with self.assertRaisesRegex(RuntimeError, "finish the active"):
+            self.backend.set_acquisition_mode("camera_fluidics")
         with self.assertRaisesRegex(RuntimeError, "Finish or abort"):
             self.backend.call("apply_corrections")
         self.backend.call("control_protocol", {"action": "abort", "timeout_s": 1})

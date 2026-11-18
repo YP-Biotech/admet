@@ -14,7 +14,7 @@ plan and execute it.
    Lines inside one row run at the same time. The action bar sums the step count,
    nominal duration and liquid use.
 3. **Execute** runs exactly that reviewed plan. A changed connection, correction,
-   project or parameter needs a new plan first.
+   acquisition mode or parameter needs a new plan first.
 
 Edits and previews stay in memory. Only Execute archives the protocol, its
 parameter values and the run.
@@ -53,11 +53,11 @@ Every run records fluidics (pressure and flow of each channel) to
 step (see [Video](../protocols/format#video)). The run's
 `summary.json` points at both and holds the rig mapping and corrections in force.
 The step videos are encoded once the run is over, one after another, so no encode
-competes with the next step's recording for the disk; they appear in the project
-as each one finishes. A recording made outside a protocol is encoded at once.
+competes with the next step's recording for the disk; they appear in the data
+folder as each one finishes. A recording made outside a protocol is encoded at once.
 
 Each video carries its own record inside the file (the AVI's `INFO` comment): the
-project and run it belongs to, the step and part, when it started and stopped, the
+run it belongs to, the step and part, when it started and stopped, the
 camera as it was set (model, exposure, gain, binning, pixel size, a frame-rate limit
 if one was on), the frame rate measured as the frames arrived, each channel's set
 point, and how many frames were captured, written and dropped. A step's end never waits for the disk: the frames still queued are written behind it while the
@@ -66,10 +66,10 @@ camera's own time: the first frame's timestamp and number on the camera's clock,
 the clock's rate, and the frames the camera numbered that never reached the PC
 (`frames_skipped`), so frame *k* of the video is placed exactly even when some were
 lost. Frames the disk cannot keep up with are counted, never a reason to stop: a
-recording with gaps is still listed, marked incomplete. The project manifest is only an index of these
+recording with gaps is still listed, marked incomplete. The data folder's index is only an index of these
 records — a video it has forgotten (a run that ended badly, a file copied in from
-another machine) is listed again from the file when the project is opened, and
-`admet check <project>` reports such videos (`--fix` lists them). No side file is
+another machine) is listed again from the file when control starts, and
+`admet check <data folder>` reports such videos (`--fix` lists them). No side file is
 left once the video is whole.
 
 ## Live QC

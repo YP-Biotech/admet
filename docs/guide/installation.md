@@ -68,9 +68,12 @@ controller (Fluigent page → *Simulated Hardware*). The camera is not simulated
 
 ## Where projects live
 
-Both apps look for projects in this order:
+`admet control` keeps its things in the admet home, `~/.admet` unless
+`ADMET_HOME` or `--home` says otherwise; see [the home](../control/overview#the-home).
 
-1. the folder given with `--projects` (analyze) or `--project` (control),
+`admet analyze` looks for projects in this order:
+
+1. the folder given with `--projects`,
 2. the `ADMET_PROJECTS_ROOT` environment variable,
 3. a `projects/` folder in the current directory,
 4. the current directory.

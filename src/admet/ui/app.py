@@ -18,7 +18,7 @@ def desktop_lock(directory):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="ADMET Qt desktop")
-    parser.add_argument("--project", help="Existing .admetp project")
+    parser.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
     args = parser.parse_args(argv)
     from PySide6.QtCore import QStandardPaths
     from admet.ui.backend import DesktopBackend
@@ -30,9 +30,7 @@ def main(argv=None):
     except RuntimeError as exc:
         parser.error(str(exc))
     try:
-        backend = DesktopBackend()
-        if args.project:
-            backend.open_project(args.project)
+        backend = DesktopBackend(home=args.home)
         return run_control_app(backend)
     finally:
         lock.unlock()

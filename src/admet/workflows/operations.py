@@ -57,13 +57,7 @@ class Runner(Protocol):
 
     def protocol_events(self, *, after_sequence: int, limit: int) -> list[dict[str, Any]]: ...
 
-    def create_project(self, path: str, project_id: str) -> Any: ...
-
-    def open_project(self, path: str) -> Any: ...
-
-    def describe_project(self) -> dict[str, Any]: ...
-
-    def discover_projects(self, root: str) -> list[dict[str, Any]]: ...
+    def describe_home(self) -> dict[str, Any]: ...
 
     def add_analysis_source(self, path: Path, *, engine: str, sample_id: str) -> dict[str, Any]: ...
 
@@ -81,10 +75,6 @@ class Runner(Protocol):
 # Each one answers: is this true, and if not, what should the operator do?
 
 REQUIREMENTS: dict[str, tuple[Callable[[dict[str, Any]], bool], str]] = {
-    "project": (
-        lambda state: state["project"],
-        "no project is open; run create_project or open_project first",
-    ),
     "fluidics": (
         lambda state: state["fluidics"],
         "the fluidics are not connected; run connect_fluidics first",
@@ -108,7 +98,7 @@ REQUIREMENTS: dict[str, tuple[Callable[[dict[str, Any]], bool], str]] = {
     ),
     "sources": (
         lambda state: state["sources"] > 0,
-        "the project holds nothing to analyse; add a video or an image directory first",
+        "nothing to analyse yet; add a video or an image directory first",
     ),
 }
 
@@ -224,7 +214,7 @@ def _observe(runner: Runner, _settings: dict[str, Any]) -> dict[str, Any]:
     state = runner.state()
     return {
         "observed_at": now_iso(),
-        "project": runner.describe_project(),
+        "home": runner.describe_home(),
         **observation,
         "fluidics_configuration": _fluidics_configuration(runner),
         # Every condition an operation can be refused on, read from the same
@@ -315,27 +305,6 @@ def _start_recording(runner: Runner, settings: dict[str, Any]) -> dict[str, Any]
 
 def _stop_recording(runner: Runner, _settings: dict[str, Any]) -> dict[str, Any]:
     return runner.engine_action("acquisition", "stop_recording", {}).metadata
-
-
-# ---- the session -----------------------------------------------------------
-
-
-def _project_create(runner: Runner, settings: dict[str, Any]) -> dict[str, Any]:
-    runner.create_project(str(settings["path"]), str(settings.get("project_id") or ""))
-    return runner.describe_project()
-
-
-def _project_open(runner: Runner, settings: dict[str, Any]) -> dict[str, Any]:
-    runner.open_project(str(settings["path"]))
-    return runner.describe_project()
-
-
-def _project_status(runner: Runner, _settings: dict[str, Any]) -> dict[str, Any]:
-    return runner.describe_project()
-
-
-def _project_list(runner: Runner, settings: dict[str, Any]) -> dict[str, Any]:
-    return {"projects": runner.discover_projects(str(settings["root"]))}
 
 
 # ---- analysis --------------------------------------------------------------
@@ -524,8 +493,8 @@ def _run_json_protocol(runner, settings):
 
 OPERATIONS: tuple[Operation, ...] = (
     Operation(
-        "save_protocol", "Save protocol", "Save a JSON definition in the current project.",
-        target=GENERAL, requires=("project",),
+        "save_protocol", "Save protocol", "Save a JSON definition with the home's protocols.",
+        target=GENERAL,
         params=(Param("replace", "Replace existing", ParamKind.BOOLEAN, default=False),),
         raw={"protocol": {"type": "object"}},
         run=lambda runner, settings: runner.protocol_store().save(
@@ -534,7 +503,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         "list_protocols", "Stored protocols", "List saved definitions or open one by name.",
-        kind=READ, target=GENERAL, requires=("project",),
+        kind=READ, target=GENERAL,
         params=(Param("name", "Name", ParamKind.TEXT, default=""),),
         run=lambda runner, settings: (
             runner.protocol_store().read(settings["name"]) if settings["name"]
@@ -543,7 +512,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         "plan_protocol_file", "Plan JSON file", "Load and plan a JSON file without actuation.",
-        target=GENERAL, requires=("project",),
+        target=GENERAL,
         params=(Param("path", "JSON path", ParamKind.PATH, default="", required=True),),
         run=lambda runner, settings: runner.plan_protocol_file(settings["path"]),
     ),
@@ -551,46 +520,8 @@ OPERATIONS: tuple[Operation, ...] = (
         "run_json_protocol", "Run a JSON protocol", "Plan a reusable JSON protocol.",
         kind=START, params=(TICK,),
         raw={"protocol": {"type": "object"}},
-        requires=("project", "fluidics", "corrections", "idle"),
+        requires=("fluidics", "corrections", "idle"),
         starts_protocol=True, run=_run_json_protocol,
-    ),
-    Operation(
-        "create_project",
-        "Create a project",
-        "Start a project and make it the one this session writes into.",
-        target=GENERAL,
-        params=(
-            Param("path", "Path", ParamKind.PATH, default="", required=True,
-                  description="Where to create it; .admetp is added if missing"),
-            Param("project_id", "Name", ParamKind.TEXT, default="",
-                  description="Defaults to the directory name"),
-        ),
-        run=_project_create,
-    ),
-    Operation(
-        "open_project",
-        "Open a project",
-        "Work in an existing project.",
-        target=GENERAL,
-        params=(Param("path", "Path", ParamKind.PATH, default="", required=True),),
-        run=_project_open,
-    ),
-    Operation(
-        "read_project",
-        "Which project is open",
-        "The open project and what it holds.",
-        kind=READ,
-        target=GENERAL,
-        run=_project_status,
-    ),
-    Operation(
-        "list_projects",
-        "Projects on disk",
-        "Projects found under a directory.",
-        kind=READ,
-        target=GENERAL,
-        params=(Param("root", "Directory", ParamKind.PATH, default="", required=True),),
-        run=_project_list,
     ),
     Operation(
         "connect_fluidics",
@@ -745,7 +676,7 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         "start_recording",
         "Start recording",
-        "Record fluidics into the open project, and video only if asked for.",
+        "Record fluidics into the data folder, and video only if asked for.",
         params=(
             Param("recording_label", "Label", ParamKind.TEXT, default="recording"),
             Param(
@@ -762,16 +693,16 @@ OPERATIONS: tuple[Operation, ...] = (
         # with no camera on it must still be able to record what it measured.
         # A video that was never written is not registered, so nothing claims
         # a file that is not there.
-        requires=("project", "fluidics"),
+        requires=("fluidics",),
         uses=("start_recording",),
         run=_start_recording,
     ),
-    Operation("stop_recording", "Stop recording", "End the recording and file it in the project.",
-              requires=("project",), uses=("stop_recording",), run=_stop_recording),
+    Operation("stop_recording", "Stop recording", "End the recording and file it with the data.",
+              uses=("stop_recording",), run=_stop_recording),
     Operation(
         "add_source",
         "Add something to analyse",
-        "Register a video or an image directory with the project so it can be analysed.",
+        "Register a video or an image directory so it can be analysed.",
         params=(
             Param("path", "Path", ParamKind.PATH, default="", required=True,
                   description="A video file, or a directory of images"),
@@ -784,22 +715,20 @@ OPERATIONS: tuple[Operation, ...] = (
                   description="Names this source in the results; defaults to the file name"),
         ),
         target=ANALYZE,
-        requires=("project",),
         run=_add_source,
     ),
     Operation(
         "list_sources",
         "What is there to analyse",
-        "Everything the project holds that analysis can be run over.",
+        "Everything registered that analysis can be run over.",
         kind=READ,
         target=ANALYZE,
-        requires=("project",),
         run=_sources,
     ),
     Operation(
         "run_analysis",
-        "Analyse the project",
-        "Run analysis over everything registered, writing results into the project.",
+        "Analyse what is registered",
+        "Run analysis over everything registered, writing the results next to it.",
         params=(
             Param("engine", "Engine", ParamKind.CHOICE, default="",
                   options=(ParamOption("", "as each source was registered"),
@@ -813,7 +742,7 @@ OPERATIONS: tuple[Operation, ...] = (
                   description="What to do about work already done"),
         ),
         target=ANALYZE,
-        requires=("project", "sources"),
+        requires=("sources",),
         run=_analyze,
     ),
 )

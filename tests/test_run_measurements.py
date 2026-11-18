@@ -1,5 +1,4 @@
 from copy import deepcopy
-from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -24,9 +23,8 @@ class RunMeasurementsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.backend = DesktopBackend(simulated=True)
+        self.backend = DesktopBackend(simulated=True, home=self.tmp.name)
         self.addCleanup(self.backend.shutdown)
-        self.backend.create_project(Path(self.tmp.name) / "measurements.admetp")
 
     def test_schema_rejects_values_defaults_and_invalid_step_bindings(self):
         for bad in ([], {"bad.key": {"label": "Mass"}}, {"mass": {"label": "Mass", "default": 0}},
@@ -81,7 +79,8 @@ class RunMeasurementsTests(unittest.TestCase):
         self.assertEqual(self.backend.measurements(ids[0])["values"]["before_mg"], 150.25)
         self.assertEqual(len(self.backend.measurement_runs()), 2)
         self.backend.shutdown()
-        self.backend.open_project(self.backend.workdir)
+        self.backend = DesktopBackend(simulated=True, home=self.tmp.name)       # the same home, a new session
+        self.addCleanup(self.backend.shutdown)
         self.assertEqual(self.backend.measurements(ids[0])["values"]["before_mg"], 150.25)
         for changes in ({"unknown": 1}, {"density": True}, {"density": float("nan")}, {"density": "1.6"}):
             with self.assertRaises(ValueError):

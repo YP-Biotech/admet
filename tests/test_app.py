@@ -21,17 +21,17 @@ def _commands() -> dict:
 
 
 class SurfaceTests(unittest.TestCase):
-    def test_the_command_line_is_control_analyze_describe_clone_check_and_install_sdk(self):
-        self.assertEqual(set(_commands()), {"control", "analyze", "describe", "clone", "check", "install-sdk"})
+    def test_the_command_line_is_control_analyze_describe_check_and_install_sdk(self):
+        self.assertEqual(set(_commands()), {"control", "analyze", "describe", "check", "install-sdk"})
 
     def test_analyze_serves_on_every_interface_by_default(self):
         args = build_parser().parse_args(["analyze"])
         self.assertEqual((args.host, args.port, args.projects), ("0.0.0.0", 8080, None))
 
-    def test_control_launches_desktop_and_forwards_only_project(self):
+    def test_control_launches_desktop_and_forwards_only_the_home(self):
         for args, forwarded in (
             (["control"], []),
-            (["control", "--project", "test.admetp"], ["--project", "test.admetp"]),
+            (["control", "--home", "D:/admet"], ["--home", "D:/admet"]),
         ):
             with self.subTest(args=args), patch("admet.ui.app.main", return_value=0) as desktop:
                 self.assertEqual(main(args), 0)
