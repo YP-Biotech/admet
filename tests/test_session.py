@@ -171,41 +171,6 @@ class SessionProjectTests(unittest.TestCase):
         self.assertEqual(key_a, key_b)
         self.assertNotEqual(key_a, key_c)
 
-    def test_project_store_registers_control_recordings_under_records(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = ProjectStore.create(Path(tmpdir) / "study", "study")
-            target = store.control_recording_target("set01_rep02")
-            target.video_path.parent.mkdir(parents=True)
-            target.fluidics_csv_path.parent.mkdir(parents=True)
-            target.video_path.write_bytes(b"avi")
-            target.fluidics_csv_path.write_text("time,pressure\n0,1\n", encoding="utf-8")
-
-            store.append_control_recording(
-                {
-                    "recording_id": target.recording_id,
-                    "video_path": str(target.video_path),
-                    "fluidics_csv": str(target.fluidics_csv_path),
-                    "width": 640,
-                    "height": 480,
-                    "acquisition_fps": 29.8,
-                    "converted_fps": 30.0,
-                }
-            )
-
-            loaded = load_session(store.path)
-            records = json.loads(
-                (store.path / "records" / "metadata.json").read_text(encoding="utf-8")
-            )
-
-        self.assertEqual(records["recording_count"], 1)
-        self.assertEqual(records["recordings"][0]["video_path"], f"records/camera/{target.recording_id}.avi")
-        self.assertEqual(records["recordings"][0]["fluidics_csv"], f"records/fluidics/{target.recording_id}.csv")
-        self.assertEqual(len(loaded.files), 2)
-        self.assertEqual(loaded.files[0].path, f"records/camera/{target.recording_id}.avi")
-        self.assertEqual(loaded.files[1].path, f"records/fluidics/{target.recording_id}.csv")
-        self.assertEqual(loaded.items[0].id, "acq-records")
-        self.assertEqual(loaded.items[0].metadata["recording_count"], 1)
-
     def test_project_store_upserts_files_by_role_and_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -30,7 +30,6 @@ from typing import Any
 from admet.core.engine import ActionSpec, action_spec
 from admet.core.clock import now_iso as _now_iso
 from admet.core.home import AdmetHome
-from admet.core.project import ProjectStore
 from admet.core.runs import RECORD, TIMELINE, Run, RunStore
 from admet.core.run import RunJob, RunResult
 from admet.workflows.operations import operation as find_operation
@@ -166,8 +165,7 @@ class Admet:
         self._marks: dict[str, Any] = {}
         self.home = (home if isinstance(home, AdmetHome) else AdmetHome.resolve(home)).ensure()
         self.runs = RunStore(self.home.data_dir)
-        # The analysis operations keep their index of sources here until the registry replaces it.
-        self.project: ProjectStore = ProjectStore.create(self.home.data_dir, "data")
+        self._analysis_index = None       # the analysis operations' index of sources, until the registry
         self._protocol_plans: dict[str, dict[str, Any]] = {}
         self._executing_plan_id: str | None = None
         self._run_artifacts: dict[str, Any] = {}
@@ -210,6 +208,15 @@ class Admet:
         from admet.core.protocol_store import ProtocolStore
 
         return ProtocolStore(self.home.data_dir)
+
+    @property
+    def analysis_index(self):
+        """What the Python analysis operations work on: a project store under analyze/, until the registry."""
+        if self._analysis_index is None:
+            from admet.core.project import ProjectStore
+
+            self._analysis_index = ProjectStore.create(self.home.analyze_dir / "index", "analyze")
+        return self._analysis_index
 
     # -- runs ----------------------------------------------------------------
     def measurements(self, run_id: str, changes: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -660,7 +667,7 @@ class Admet:
             hardware = engine.hardware.state
             mapping = [channel.get("detected") for channel in self._cached_channel_mapping()]
         return {
-            "project": str(self.project.path) if self.project else None,
+            "home": str(self.home.root),
             "fluidics_connected": bool(hardware and hardware.connected),
             "simulated": bool(hardware and hardware.simulated),
             "channel_mapping": mapping,
@@ -742,25 +749,23 @@ class Admet:
     ANALYSIS_ROLES = ("analysis_video", "analysis_image_dir")
 
     def add_analysis_source(self, path: Path, *, engine: str, sample_id: str = "") -> dict[str, Any]:
-        """Register something to analyse with the open project."""
-        file = self.project.register_analysis_file(
+        """Register something to analyse with the analysis index."""
+        file = self.analysis_index.register_analysis_file(
             path, engine=engine, sample_id=sample_id or Path(path).stem
         )
-        self.project.save()
+        self.analysis_index.save()
         return {"id": file.id, "role": file.role, "path": file.path, "engine": engine}
 
     def analysis_sources(self) -> list[dict[str, Any]]:
-        if self.project is None:
-            return []
         return [
             {
                 "id": file.id,
                 "role": file.role,
-                "path": str(self.project.resolve_file_path(file)),
+                "path": str(self.analysis_index.resolve_file_path(file)),
                 "engine": file.metadata.get("engine", ""),
                 "sample_id": file.metadata.get("sample_id", ""),
             }
-            for file in self.project.files_by_role(self.ANALYSIS_ROLES)
+            for file in self.analysis_index.files_by_role(self.ANALYSIS_ROLES)
         ]
 
     def analyze(self, *, engine: str = "", cache: str = "use") -> dict[str, Any]:
@@ -770,7 +775,7 @@ class Admet:
 
         targets = [
             AnalyzeTarget(
-                project_path=self.project.path,
+                project_path=self.analysis_index.path,
                 source_path=Path(source["path"]),
                 engine=engine or source["engine"],
                 sample_id=source["sample_id"],
@@ -779,7 +784,7 @@ class Admet:
             for source in self.analysis_sources()
         ]
         report = AnalyzeBatchRunner(create_engine_registry("analyze")).run(targets)
-        self.project = ProjectStore(self.project.path)
+        self._analysis_index = None                    # read afresh next time
         return {
             "projects": len(report.projects),
             "jobs": [
@@ -1005,12 +1010,7 @@ class Admet:
         }
 
     def _job_metadata(self) -> dict[str, Any]:
-        if self.project is None:
-            return {}
-        return {
-            "session_id": self.project.session.project_id,
-            "workdir": str(self.project.path),
-        }
+        return {"home": str(self.home.root), "workdir": str(self.home.data_dir)}
 
     def _allocate_outputs(self, job: RunJob, spec: ActionSpec) -> RunJob:
         """Decide where this action's files go, before it is allowed to write."""

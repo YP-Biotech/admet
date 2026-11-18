@@ -24,14 +24,16 @@ Each channel is flow-regulated through its flow unit, or set to a fixed pressure
 
 ## How work is organised
 
-Everything belongs to a **project**: a folder ending in `.admetp` that holds the
-protocols that ran, their recordings, the measurements you typed in and the
-results calculated from them. Copy the folder and you have the whole experiment.
-See [Projects](./projects).
+Everything control makes is a **run**: one folder under the admet home's
+`data/runs/`, holding the protocol as it ran, the timeline of pressures, flows
+and droplet QC, the videos, the measurements you typed in and the results
+calculated from them. Copy the folder and you have the whole run. The rig's own
+settings live beside the runs in `control/rig.json`. See
+[the home](../control/overview#the-home) and [Recording](../control/running#recording).
 
 A typical session in `admet control`:
 
-1. Open or create a project.
+1. Start control; it opens on the home.
 2. Connect the camera (optional) and the Fluigent controller.
 3. On **Calibration**, set each channel's liquid profile and **Apply All Corrections**.
 4. **Prime** the lines.
@@ -40,8 +42,8 @@ A typical session in `admet control`:
 7. On **Calculations**, calculate results from the finished runs.
 8. **Wash**, then **Cleanup** to release the devices.
 
-`admet analyze` then reads the same project from another machine to analyse the
-recorded videos and images.
+`admet analyze` then reads the recorded videos and images, today from an
+`.admetp` [project](./projects), soon from the data folder itself.
 
 ## What ADMET does not do
 

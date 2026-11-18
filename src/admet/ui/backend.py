@@ -16,6 +16,7 @@ class DesktopBackend:
         self.simulated = simulated
         self.engine = self.service.engine("acquisition")
         self.lock = threading.RLock()
+        self._rig_lock = threading.RLock()                 # one change to the rig's lists at a time
         self._previews = {}
 
     def preview(self, scope, document, tag=""):
@@ -79,9 +80,6 @@ class DesktopBackend:
         entries = self.service.rig().get("profiles")
         return list(entries) if isinstance(entries, list) else []
 
-    def _project(self, doing):
-        return self.service.project
-
     def _all_liquid_ids(self):
         from admet.engines.acquisition.fluidics.liquids import default_liquids
 
@@ -95,8 +93,7 @@ class DesktopBackend:
     def add_liquid(self, name, density, viscosity=0.0):
         from admet.engines.acquisition.fluidics.liquids import check_liquid, unique_id
 
-        project = self._project("adding a liquid")
-        with project.lock:
+        with self._rig_lock:
             entry = check_liquid({"name": name, "density": density, "viscosity": viscosity})
             entry.update(id=unique_id(entry["name"], self._all_liquid_ids()), updated_at=_now())
             self.service.update_rig(liquids=[*self.liquids, entry])
@@ -105,8 +102,7 @@ class DesktopBackend:
     def update_liquid(self, liquid_id, **changes):
         from admet.engines.acquisition.fluidics.liquids import check_liquid
 
-        project = self._project("editing a liquid")
-        with project.lock:
+        with self._rig_lock:
             liquids = self.liquids
             index = next((i for i, entry in enumerate(liquids) if entry.get("id") == liquid_id), None)
             if index is None:
@@ -116,8 +112,7 @@ class DesktopBackend:
             return liquids[index]
 
     def remove_liquid(self, liquid_id):
-        project = self._project("removing a liquid")
-        with project.lock:
+        with self._rig_lock:
             liquids = [entry for entry in self.liquids if entry.get("id") != liquid_id]
             if len(liquids) == len(self.liquids):
                 raise ValueError(f"{liquid_id} is not a liquid of this rig")
@@ -129,8 +124,7 @@ class DesktopBackend:
     def add_profile(self, **fields):
         from admet.engines.acquisition.fluidics.liquids import check_profile, unique_id
 
-        project = self._project("adding a profile")
-        with project.lock:
+        with self._rig_lock:
             entry = check_profile(fields, self._all_liquid_ids())
             entry.update(id=unique_id(entry["name"], self._all_profile_ids()), updated_at=_now())
             self.service.update_rig(profiles=[*self.profiles, entry])
@@ -140,8 +134,7 @@ class DesktopBackend:
         from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_UNITS
         from admet.engines.acquisition.fluidics.liquids import channel_profile, check_profile
 
-        project = self._project("editing a profile")
-        with project.lock:
+        with self._rig_lock:
             profiles = self.profiles
             index = next((i for i, entry in enumerate(profiles) if entry.get("id") == profile_id), None)
             if index is None:
@@ -159,8 +152,7 @@ class DesktopBackend:
         from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_UNITS
         from admet.engines.acquisition.fluidics.liquids import channel_profile
 
-        project = self._project("removing a profile")
-        with project.lock:
+        with self._rig_lock:
             profiles = [entry for entry in self.profiles if entry.get("id") != profile_id]
             if len(profiles) == len(self.profiles):
                 raise ValueError(f"{profile_id} is not a profile of this rig")
@@ -179,10 +171,6 @@ class DesktopBackend:
                 return
             self.service.update_rig(acquisition_mode=mode)
             self._discard_previews()
-
-    @property
-    def session(self):
-        return self.service.project.session
 
     @property
     def workdir(self):

@@ -7,8 +7,6 @@ from pathlib import Path
 
 import numpy as np
 
-from admet.core.check import check_project, mend_project
-from admet.core.project import ProjectStore
 from admet.engines.acquisition.camera.tags import ffmpeg_metadata_args, pixel_size_um, read_recording_tag
 from admet.engines.acquisition.camera.video import VideoWorker, tag_record
 
@@ -92,36 +90,6 @@ class WriterRecordTests(unittest.TestCase):
             self.assertTrue(tag["stopped_at"] >= tag["started_at"])
             self.assertFalse((Path(tmp) / "clip.video.json").exists())
             self.assertFalse((Path(tmp) / "clip.raw").exists())
-
-
-@unittest.skipUnless(FFMPEG, "ffmpeg is not installed")
-class ForgottenRecordingTests(unittest.TestCase):
-    def test_a_video_the_manifest_forgot_is_listed_from_its_own_record(self):
-        record = {"recording_id": "run_a_step01_20261115_101500", "project_id": "study", "run_id": "run_a",
-                  "step": 1, "step_name": "collect", "part": 1, "started_at": "2026-11-15T10:15:00",
-                  "encoded_at": "2026-11-15T10:15:02", "frames_captured": 2, "frames_written": 2,
-                  "frames_dropped": 0, "complete": True, "width": 8, "height": 4, "file_fps": 24.0,
-                  "acquisition_fps": 1000.0, "camera": {"model": "acA640-750um", "exposure_us": 150.0}}
-        with tempfile.TemporaryDirectory() as tmp:
-            store = ProjectStore.create(Path(tmp) / "study", "study")
-            camera = store.path / "records" / "camera"
-            camera.mkdir(parents=True)
-            tagged_avi(camera / "run_a_step01_20261115_101500.avi", record)
-
-            report = check_project(store.path)
-            self.assertEqual(report.unlisted, ("run_a_step01_20261115_101500.avi",))
-            self.assertIn("not listed", "\n".join(report.lines()))
-
-            mend_project(store.path)
-
-            self.assertTrue(check_project(store.path).clean)
-            listed = ProjectStore(store.path)
-            video = next(file for file in listed.session.files if file.role == "control_video")
-            self.assertEqual(video.path, "records/camera/run_a_step01_20261115_101500.avi")
-            self.assertEqual((video.metadata["acquisition_fps"], video.metadata["step"], video.metadata["complete"]),
-                             (1000.0, 1, True))
-            self.assertEqual(video.metadata["camera"]["exposure_us"], 150.0)
-            self.assertEqual(listed.register_tagged_recordings(), [])        # nothing left to list
 
 
 if __name__ == "__main__":
