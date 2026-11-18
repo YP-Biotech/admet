@@ -62,8 +62,9 @@ which one is in use. There is nothing to create or open before a session.
   control/rig.json   the rig's settings: acquisition mode, each channel's calibration,
                      the profiles and liquids you added, the camera's µm per pixel,
                      the preflight set-up
-  data/              what the rig records: runs, their fluidics CSVs and videos, and
-                     the saved protocols; the folder analyze is pointed at
+  data/protocols/    the saved protocol definitions
+  data/runs/         one folder per run, named by date, time and the run's name; the
+                     folder analyze is pointed at
   analyze/           what analyze makes
 ```
 

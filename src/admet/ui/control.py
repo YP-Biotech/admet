@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 from admet.ui.backend import DesktopBackend as AdmetAPI
 from admet.ui.tasks import Tasks
 from admet.core.run import RunJob, RunResult
+from admet.core.runs import Run
 from admet.core.engine import Param, ParamKind, ParamOption
 from admet.workflows import Stage, StageControl, StageStatus
 from admet.engines.acquisition.fluidics.config import (
@@ -859,7 +860,7 @@ class ControlWindow(QMainWindow):
                 liquids=self._channel_liquids,
                 parent=self,
             )
-            saved = self.api.session.metadata.get("qt_checkup") if self.api.session else None
+            saved = self.api.service.rig().get("qt_checkup")
             if saved:
                 self._preflight.load_snapshot(saved)
         return self._preflight
@@ -1813,12 +1814,8 @@ class ControlWindow(QMainWindow):
             "stage": self.workflow.current_stage(self.workflow_state).id,
         }
         outputs: dict[str, Path] = {}
-        if action == "start_recording":
-            label = str(payload.get("recording_label") or "recording")
-            target = self.api.service.project.control_recording_target(label)
-            outputs = target.outputs
-            metadata["recording_label"] = label
-            metadata["recording_id"] = target.recording_id
+        if action == "start_recording":                   # the service places it in a run of its own
+            metadata["recording_label"] = str(payload.get("recording_label") or "recording")
         return RunJob(
             id=f"{action}_{int(time.time() * 1000)}",
             engine=self.api.engine.id,
@@ -2828,13 +2825,15 @@ class ControlWindow(QMainWindow):
 
     def _video_rows(self) -> list[dict[str, str]]:
         rows: dict[str, dict[str, str]] = {}
-        session = self.api.session
-        if session is not None:
-            for file in session.files:
-                if file.role != "control_video" and file.media_type != "video/avi":
+        for entry in self.api.service.runs.list():                 # every video of every run, by its record
+            record = Run(entry["directory"]).read()
+            videos = [*record.get("artifacts", {}).get("videos", [])]
+            if isinstance(record.get("recording"), dict) and record["recording"].get("video_path"):
+                videos.append(record["recording"])
+            for video in videos:
+                if not video.get("video_path"):
                     continue
-                data = dict(file.metadata)
-                data.setdefault("video_path", file.path)
+                data = {**video, "video_path": str(Path(entry["directory"]) / Path(video["video_path"]).name)}
                 row = video_row(data)
                 rows[recording_video_key(data, row)] = row
 

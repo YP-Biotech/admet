@@ -65,15 +65,15 @@ class JsonProtocolTests(unittest.TestCase):
                               else 1.6 if key == "density_g_ml" else None
                               for key in data["values"]}
                     backend.measurements(current["run_id"], {k: v for k, v in values.items() if v is not None})
-                    directory = Path(backend.workdir) / "records" / "protocols" / current["run_id"]
+                    directory = Path(backend.workdir) / "runs" / current["run_id"]
                     self.assertIn("mass_after_ch2_9", data["values"])      # M1 and M2 ran together
                     with patch.object(backend.engine, "run", side_effect=AssertionError("calculation actuated")):
                         result = calculate_run(directory, "gravimetry")
-                    self.assertTrue(Path(result["path"]).is_file())
+                    self.assertEqual(Path(result["directory"]).resolve(), directory.resolve())
                     self.assertEqual(result["measurement_revision"], 1)
                     self.assertEqual(list(result["result"]["units"]), ["1", "2"])
                     self.assertIn(result["result"]["status"], {"usable", "inconclusive"})
-                    self.assertTrue((directory / "events.jsonl").read_text())
+                    self.assertTrue(json.loads((directory / "run.json").read_text())["events"])
                 finally:
                     backend.shutdown()
 
@@ -308,13 +308,13 @@ class JsonProtocolTests(unittest.TestCase):
                 self.assertTrue(all(c["requested_flow_ul_min"] in (None, 0)
                                     for c in observation["channels"]))
                 completed = admet.planned_protocols()["plans"][0]
-                run_dir = Path(tmp) / "data" / "records" / "protocols" / completed["run_id"]
-                summary = json.loads((run_dir / "summary.json").read_text())
+                run_dir = Path(tmp) / "data" / "runs" / completed["run_id"]
+                summary = json.loads((run_dir / "run.json").read_text())
                 self.assertEqual(summary["state"], "completed")
-                self.assertTrue((Path(tmp) / "data" / summary["artifacts"]["fluidics_csv"]).is_file())
-                self.assertTrue((run_dir / "events.jsonl").read_text())
-                self.assertEqual(json.loads((run_dir / "protocol.json").read_text()),
-                                 normalize(DOCUMENT))
+                self.assertTrue((run_dir / summary["artifacts"]["fluidics_csv"]).is_file())
+                self.assertTrue(summary["events"])
+                self.assertEqual(summary["normalized_settings"]["protocol"], normalize(DOCUMENT))
+                self.assertEqual(sorted(p.name for p in run_dir.iterdir()), ["run.csv", "run.json"])
             finally:
                 admet.do("disconnect_fluidics", {})
 
@@ -337,8 +337,7 @@ class JsonProtocolTests(unittest.TestCase):
                         self.fail("plan did not complete")
                     time.sleep(0.01)
                 run_id = admet.planned_protocols()["plans"][0]["run_id"]
-                listed = [f["path"] for f in json.loads((path / "manifest.json").read_text())["files"]]
-                self.assertTrue(any(run_id in p and p.endswith("summary.json") for p in listed), listed)
+                self.assertEqual(json.loads((path / "runs" / run_id / "run.json").read_text())["state"], "completed")
             finally:
                 admet.do("disconnect_fluidics", {})
 

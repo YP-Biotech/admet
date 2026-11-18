@@ -371,8 +371,10 @@ PARAMETERS = (
 )
 
 
-def analyze_density_run(document, csv_path, events_path, polling_origin, *, completed, parameters=None):
-    """Read closed artifacts only. Sensor samples are not independent replicates."""
+def analyze_density_run(document, csv_path, events, polling_origin, *, completed, parameters=None):
+    """Read closed artifacts only. Sensor samples are not independent replicates.
+
+    EVENTS is the run's event list, or the path of a file holding one event a line."""
     from admet.workflows.json_protocol import resolve
     from admet.workflows.calculation_schema import declarations
 
@@ -395,7 +397,8 @@ def analyze_density_run(document, csv_path, events_path, polling_origin, *, comp
             rows = [tuple(_finite(row.get(key)) for key in
                           ("elapsed_s", f"pressure_{channel}_mbar", f"flow_{channel}_ul_min"))
                     for row in csv.DictReader(handle)]
-        events = [json.loads(line) for line in Path(events_path).read_text().splitlines() if line.strip()]
+        if not isinstance(events, list):
+            events = [json.loads(line) for line in Path(events).read_text().splitlines() if line.strip()]
     except (OSError, ValueError, TypeError) as exc:
         result["issues"].append(f"cannot read recording: {exc}")
         return result

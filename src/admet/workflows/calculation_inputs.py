@@ -1,12 +1,17 @@
-"""Read-only run inputs, event windows and trace integration."""
+"""Read-only run inputs, event windows and trace integration.
+
+A calculation reads one run folder: run.json for the protocol, the execution, the events
+and the measurements, run.csv for the timeline. A result records a digest of each input,
+so a later change to either marks it outdated.
+"""
 
 import csv
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 
+from admet.core.runs import FINISHED, RECORD, TIMELINE, Run
 from admet.workflows.calculation_schema import declarations
 from admet.workflows.json_protocol import resolve, validate_measurement
 
@@ -15,61 +20,83 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def fingerprint(paths, directory):
-    return [{"path": os.path.relpath(path, directory), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-            for path in dict.fromkeys(paths)]
-
-
-def input_path(directory, value):
-    return directory / value
-
-
-def recording_path(directory, summary):
-    """The run's fluidics CSV, stored relative to the project root."""
-    value = summary.get("artifacts", {}).get("fluidics_csv")
-    if not isinstance(value, str) or not value:
-        raise ValueError("This run has no fluidics recording")
-    path = directory.parents[2] / value
+def recording_path(directory, summary=None):
+    """The run's timeline file."""
+    path = Path(directory) / TIMELINE
     if not path.is_file():
-        raise ValueError(f"Recording not found: {value}")
+        raise ValueError("This run has no fluidics recording")
     return path
 
 
+def result_ref(directory, result_id):
+    """How a saved result is named: the run's record and the result's id in it."""
+    return f"{Path(directory) / RECORD}#{result_id}"
+
+
+def load_result(ref):
+    """A saved result from its name, with where it lives."""
+    record, _, result_id = str(ref).partition("#")
+    path = Path(record)
+    if path.name != RECORD or not result_id:
+        raise ValueError(f"not a saved result: {ref}")
+    payload = Run(path.parent).result(result_id)
+    if payload is None:
+        raise ValueError(f"result not found: {ref}")
+    return {**payload, "path": str(ref), "directory": str(path.parent)}
+
+
+def _result_digest(payload):
+    kept = {key: value for key, value in payload.items() if key not in ("path", "directory", "outdated")}
+    return hashlib.sha256(json.dumps(kept, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _input_digest(directory, name):
+    if "#" in str(name):
+        return _result_digest(load_result(name))
+    if name == RECORD:
+        return Run(directory).inputs_digest()
+    return hashlib.sha256((Path(directory) / name).read_bytes()).hexdigest()
+
+
+def fingerprint(context):
+    """A digest of each input the calculation read: the record (results aside), the timeline, the references."""
+    directory = context["directory"]
+    inputs = [{"path": RECORD, "sha256": _input_digest(directory, RECORD)},
+              {"path": TIMELINE, "sha256": _input_digest(directory, TIMELINE)}]
+    for reference in context.get("references", {}).values():
+        inputs.append({"path": reference["path"], "sha256": _result_digest(reference)})
+    return inputs
+
+
 def result_current(payload):
-    directory = Path(payload["path"]).parent.parent
     try:
-        return bool(payload["inputs"]) and all(hashlib.sha256(input_path(directory, item["path"]).read_bytes()).hexdigest() == item["sha256"]
-                   for item in payload["inputs"])
-    except (OSError, KeyError, TypeError):
+        directory = Path(payload["directory"]) if payload.get("directory") else Path(str(payload["path"]).partition("#")[0]).parent
+        return bool(payload["inputs"]) and all(_input_digest(directory, item["path"]) == item["sha256"]
+                                               for item in payload["inputs"])
+    except (OSError, KeyError, TypeError, ValueError):
         return False
 
 
 def load_context(directory, calculation_id, entry, references=None):
     directory = Path(directory).resolve()
-    summary_path = directory / "summary.json"
-    summary = read_json(summary_path)
-    if summary.get("state") not in {"completed", "failed", "cancelled"}:
+    summary = Run(directory).read()
+    if not summary:
+        raise ValueError("Choose a recorded run")
+    if summary.get("state") not in FINISHED:
         raise ValueError("Wait until the recording has finished before calculating")
     if summary.get("artifacts", {}).get("recording_closed") is False:
         raise ValueError("This recording was not successfully closed; do not analyze an active file")
-    csv_path = recording_path(directory, summary)
-    paths = [summary_path, csv_path]
-    document = None
-    if "protocol.json" in entry["files"] or (directory / "protocol.json").is_file():
-        document = read_json(directory / "protocol.json")
-        paths.append(directory / "protocol.json")
-    paths.extend(directory / name for name in entry["files"])
+    csv_path = recording_path(directory)
+    document = (summary.get("normalized_settings") or {}).get("protocol")
     resolved = resolve(document) if document and "parameters" in document else document
     config = next((item for item in declarations(resolved or {}) if item.get("type") == calculation_id), {})
     if calculation_id in {"gravimetry", "dead_volume", "viscosity"}:
         verify_execution(document, summary)
     measurements = {"values": {}, "fields": {}, "revision": None}
-    measurement_path = directory / "measurements.json"
     if document and document.get("measurements"):
-        measurements = read_json(measurement_path)
-        if measurements["fields"] != resolved.get("measurements"):
+        measurements = summary.get("measurements") or {}
+        if measurements.get("fields") != resolved.get("measurements"):
             raise ValueError("Saved measurement declarations disagree with executed protocol")
-        paths.append(measurement_path)
         for key, field in measurements["fields"].items():
             value = measurements["values"].get(key)
             validate_measurement(value, field)
@@ -80,18 +107,15 @@ def load_context(directory, calculation_id, entry, references=None):
         expected = entry.get("references", {}).get(role)
         if expected is None:
             raise ValueError(f"Unsupported reference: {role}")
-        path = Path(value).resolve()
-        payload = {**read_json(path), "path": str(path)}
+        payload = load_result(value)
         if payload.get("calculation_id") != expected or not result_current(payload):
             raise ValueError(f"{role}: incompatible or outdated reference result")
         if payload["result"].get("status") not in {"complete", "consistent", "usable"}:
             raise ValueError(f"{role}: reference result is inconclusive")
-        paths.append(path)
-        paths.extend(input_path(path.parent.parent, item["path"]) for item in payload["inputs"])
         loaded_references[role] = payload
     return {"directory": directory, "summary": summary, "document": document, "csv": csv_path,
             "config": config, "measurements": measurements, "references": loaded_references,
-            "paths": paths}
+            "events": [event for event in summary.get("events", []) if isinstance(event, dict)]}
 
 
 def verify_execution(document, summary):
@@ -125,13 +149,12 @@ def _origin(context):
 
 def skipped_steps(context):
     """The one-based steps the operator skipped during the run."""
-    events = [json.loads(line) for line in (context["directory"] / "events.jsonl").read_text().splitlines() if line]
-    return {e["step_index"] + 1 for e in events if e.get("outcome") == "skipped" and type(e.get("step_index")) is int}
+    return {e["step_index"] + 1 for e in context["events"]
+            if e.get("outcome") == "skipped" and type(e.get("step_index")) is int}
 
 
 def _step_events(context, step):
-    events = [json.loads(line) for line in (context["directory"] / "events.jsonl").read_text().splitlines() if line]
-    return [e for e in events if e.get("step_name") and e.get("step_index") == step - 1]
+    return [e for e in context["events"] if e.get("step_name") and e.get("step_index") == step - 1]
 
 
 def _flow_starts(events):

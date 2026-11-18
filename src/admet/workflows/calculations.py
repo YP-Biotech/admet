@@ -3,26 +3,25 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 import csv
-import json
 from pathlib import Path
 import re
 from statistics import mean, stdev
-import uuid
 
-from admet.core.protocol_store import write_json
+from admet.core.runs import FINISHED, Run, RunStore
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.workflows.fluid_density import _finite, analyze_density_run
 from admet.workflows.flow_scout import analyze_scout
 from admet.workflows.calculation_schema import declarations
-from admet.workflows.calculation_inputs import load_context, fingerprint, result_current, read_json
+from admet.workflows.calculation_inputs import fingerprint, load_context, result_current, result_ref
 from admet.workflows import gravimetry, dead_volume, fluid_density, viscosity
 
 
 def available_calculations(directory):
     result = []
     try:
-        document = read_json(Path(directory) / "protocol.json")
-        result.extend(item["type"] for item in declarations(document) if item["type"] in CALCULATIONS)
+        document = (Run(directory).read().get("normalized_settings") or {}).get("protocol")
+        if document:
+            result.extend(item["type"] for item in declarations(document) if item["type"] in CALCULATIONS)
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return list(dict.fromkeys([*result, "recording_summary"]))
@@ -41,23 +40,13 @@ def calculation_readiness(directory, key, references=None):
     return ""
 
 
-def recorded_runs(project):
-    if not project:
+def recorded_runs(data_dir):
+    """The finished runs of a data folder, newest first."""
+    if not data_dir:
         return []
-    runs = []
-    for path in (Path(project) / "records" / "protocols").glob("*/summary.json"):
-        try:
-            summary = json.loads(path.read_text(encoding="utf-8"))
-            if summary.get("state") not in {"completed", "failed", "cancelled"}:
-                continue
-            name = (summary.get("tag")
-                    or summary.get("normalized_settings", {}).get("protocol", {}).get("name", path.parent.name))
-            runs.append({"directory": str(path.parent), "name": name,
-                         "at": summary.get("completed_at") or summary.get("executed_at") or "",
-                         "state": summary["state"]})
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
-    return sorted(runs, key=lambda run: run["at"], reverse=True)
+    return [{"directory": run["directory"], "name": run["name"], "at": run["completed_at"] or run["at"],
+             "state": run["state"]}
+            for run in RunStore(data_dir).list() if run["state"] in FINISHED]
 
 
 def _density(context):
@@ -87,7 +76,7 @@ def _density(context):
                 raise ValueError("Recorded height confirmation and calculation height disagree")
         previous = group
     result = analyze_density_run(
-        document, context["csv"], context["directory"] / "events.jsonl",
+        document, context["csv"], context["events"],
         context["summary"].get("artifacts", {}).get("polling_origin_monotonic"),
         completed=context["summary"].get("state") == "completed", parameters=context.get("parameters"),
     )
@@ -119,29 +108,26 @@ def _recording_summary(context):
 
 CALCULATIONS = {
     "viscosity": {"label": "Viscosity", "version": 2, "calculate": viscosity.calculate,
-                  "check": viscosity.check, "files": ("protocol.json", "events.jsonl"),
+                  "check": viscosity.check,
                   "references": {"reference": "viscosity"}, "parameters": viscosity.PARAMETERS,
                   "description": "Pressure/flow resistance; same-path reference comparison for viscosity."},
     "dead_volume": {"label": "Dead volume", "version": 3, "calculate": dead_volume.calculate,
-                    "check": dead_volume.check, "files": ("protocol.json",),
+                    "check": dead_volume.check,
                     "description": "Mean and spread of the dead volumes measured by hand."},
     "gravimetry": {"label": "Gravimetry", "version": 3, "calculate": gravimetry.calculate,
-                   "check": gravimetry.check, "files": ("protocol.json", "events.jsonl"),
+                   "check": gravimetry.check,
                    "references": {"density": "fluid_density"},
                    "parameters": gravimetry.PARAMETERS,
                    "description": "Before/after weights: calibration curve, per-rate repeatability and direction differences."},
     "fluid_density": {"label": "Fluid density", "version": 2, "calculate": _density,
                       "parameters": fluid_density.PARAMETERS,
-                    "files": ("protocol.json", "events.jsonl"),
                     "description": "Two height passes from a density protocol; excludes scout and settling."},
     "recording_summary": {"label": "Recording summary", "version": 1, "calculate": _recording_summary,
-                          "files": (),
                           "description": "Measured pressure/flow statistics and missing-sample counts."},
 }
 
 CALCULATIONS["flow_scout"] = {
     "label": "Flow stability scout", "version": 3, "calculate": analyze_scout,
-    "files": ("protocol.json", "events.jsonl"),
     "description": "Single-height flow sweep: settling, averaging windows and pressure/flow fit precision.",
 }
 
@@ -162,14 +148,14 @@ def calculate_run(directory, calculation_id, *, references=None, parameters=None
     parameters = calculation_parameters(calculation_id, parameters)
     context = load_context(directory, calculation_id, calculation, references)
     directory = context["directory"]
-    inputs = fingerprint(context["paths"], directory)
+    inputs = fingerprint(context)
     context = load_context(directory, calculation_id, calculation, references)
-    if fingerprint(context["paths"], directory) != inputs:
+    if fingerprint(context) != inputs:
         raise ValueError("Recording changed during calculation; refresh and try again")
     summary = context["summary"]
     context["parameters"] = parameters
     result = calculation["calculate"](context)
-    if fingerprint(context["paths"], directory) != inputs:
+    if fingerprint(context) != inputs:
         raise ValueError("Recording changed during calculation; refresh and try again")
     payload = {"calculation_id": calculation_id, "calculation_version": calculation["version"],
                "created_at": datetime.now(timezone.utc).isoformat(), "plan_id": summary.get("plan_id"),
@@ -177,26 +163,22 @@ def calculate_run(directory, calculation_id, *, references=None, parameters=None
                "inputs": inputs, "measurement_revision": context["measurements"]["revision"],
                "references": {key: value["path"] for key, value in context["references"].items()},
                "parameters": parameters, "result": result}
-    path = directory / "calculations" / f"{calculation_id}_{uuid.uuid4().hex}.json"
-    write_json(path, payload)
-    return {"path": str(path), **payload}
+    kept = Run(directory).add_result(payload)                  # into the run's record, after the inputs
+    return {"path": result_ref(directory, kept["id"]), "directory": str(directory), **kept}
 
 
 def saved_results(directory):
+    """The results kept in a run's record, newest first, each saying whether its inputs still hold."""
     if not directory:
         return []
     entries = []
-    for path in (Path(directory) / "calculations").glob("*.json"):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if (not isinstance(payload.get("result"), dict)
-                    or not isinstance(payload.get("calculation_id"), str)
-                    or not isinstance(payload.get("created_at"), str)):
-                continue
-            payload = {**payload, "path": str(path)}
-            entries.append({**payload, "outdated": not result_current(payload)})
-        except (OSError, ValueError, TypeError, AttributeError):
+    for payload in Run(directory).results():
+        if (not isinstance(payload.get("result"), dict)
+                or not isinstance(payload.get("calculation_id"), str)
+                or not isinstance(payload.get("created_at"), str)):
             continue
+        payload = {**payload, "path": result_ref(directory, payload.get("id", "")), "directory": str(Path(directory))}
+        entries.append({**payload, "outdated": not result_current(payload)})
     return sorted(entries, key=lambda result: result.get("created_at", ""), reverse=True)
 
 

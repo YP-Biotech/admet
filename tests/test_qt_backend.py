@@ -153,10 +153,10 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertTrue(all(c["requested_flow_ul_min"] in (None, 0) for c in observed["channels"]))
         events = self.backend.call("protocol_events")["events"]
         self.assertEqual([e["sequence"] for e in events], sorted({e["sequence"] for e in events}))
-        path = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
-        summary = json.loads((path / "summary.json").read_text())
+        path = Path(self.backend.workdir) / "runs" / completed["run_id"]
+        summary = json.loads((path / "run.json").read_text())
         self.assertEqual(summary["state"], "completed")
-        self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
+        self.assertTrue((path / summary["artifacts"]["fluidics_csv"]).is_file())
         with self.assertRaisesRegex(RuntimeError, "completed"):
             self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.backend.shutdown()
@@ -164,7 +164,7 @@ class DesktopBackendTests(unittest.TestCase):
         self.addCleanup(reopened.shutdown)
         self.assertEqual(reopened.call("list_protocols")["protocols"][0]["name"], "desktop_test")
         self.assertEqual(reopened.call("planned_protocols")["plans"], [])
-        self.assertTrue(reopened.service.project.session.files)
+        self.assertEqual(len(reopened.service.runs.list()), 1)
 
     def test_typed_parameters_are_frozen_in_executed_run(self):
         from tests.test_protocol_parameters import typed_parameter_protocol
@@ -179,8 +179,8 @@ class DesktopBackendTests(unittest.TestCase):
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
         completed = self.wait_completed(plan["plan_id"])
-        directory = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
-        archived = json.loads((directory / "protocol.json").read_text())
+        record = json.loads((Path(self.backend.workdir) / "runs" / completed["run_id"] / "run.json").read_text())
+        archived = record["normalized_settings"]["protocol"]
         self.assertEqual(archived["parameter_values"]["oil"], "EvaGreen mix")
         self.assertIs(archived["parameter_values"]["filtered"], False)
         self.assertEqual(archived["parameter_values"]["finish"], "zero")
@@ -216,10 +216,10 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(gates, 4)                                              # three replicates, then finish
         completed = self.wait_completed(plan["plan_id"])
         self.assertFalse(self.backend.call("observe")["recording"]["active"])
-        directory = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
-        summary = json.loads((directory / "summary.json").read_text())
-        self.assertEqual(json.loads((directory / "protocol.json").read_text()), document)
-        self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
+        directory = Path(self.backend.workdir) / "runs" / completed["run_id"]
+        summary = json.loads((directory / "run.json").read_text())
+        self.assertEqual(summary["normalized_settings"]["protocol"], document)
+        self.assertTrue((directory / summary["artifacts"]["fluidics_csv"]).is_file())
         events = self.backend.call("protocol_events", {"limit": 1000})["events"]
         for name in ("set01_rep01", "set01_rep02", "set01_rep03"):
             done = next(e for e in events if e["step_name"] == name and e["outcome"] == "completed")
@@ -289,18 +289,16 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertTrue(camera.recording)                                   # the record step is running
         completed = self.wait_completed(plan["plan_id"])
         self.assertFalse(camera.recording)
-        summary = json.loads((Path(self.backend.workdir) / "records/protocols" / completed["run_id"] / "summary.json").read_text())
+        run = Path(self.backend.workdir) / "runs" / completed["run_id"]
+        summary = json.loads((run / "run.json").read_text())
         videos = summary["artifacts"]["videos"]
         self.assertEqual([(v["step"], v["part"], v["stopped_by"]) for v in videos], [(1, 1, "completed")])
-        self.assertTrue((Path(self.backend.workdir) / videos[0]["video_path"]).is_file())
-        self.assertTrue((Path(self.backend.workdir) / summary["artifacts"]["fluidics_csv"]).is_file())
-        indexed = json.loads((Path(self.backend.workdir) / "records/metadata.json").read_text())["recordings"]
-        self.assertIn(Path(videos[0]["video_path"]).stem, [r.get("recording_id") for r in indexed])
-        # The run's fluidics and QC files are named in the run's summary and in the recording's own record.
-        run_id = completed["run_id"]
+        self.assertTrue((run / videos[0]["video_path"]).is_file())           # the video sits in the run's folder
+        self.assertTrue((run / summary["artifacts"]["fluidics_csv"]).is_file())
+        self.assertEqual([p for p in Path(self.backend.workdir).rglob("*.avi") if "runs" not in p.parts], [])
+        # The run's timeline is named in the run's record and in the recording's own record.
         record = writers[-1].record
-        self.assertEqual(record["fluidics_csv"], Path(summary["artifacts"]["fluidics_csv"]).as_posix())
-        self.assertTrue(record["fluidics_csv"].startswith("records/fluidics/"))
+        self.assertEqual((record["fluidics_csv"], record["run_id"]), ("run.csv", completed["run_id"]))
 
     def test_a_camera_that_cannot_start_pauses_the_protocol_with_channels_at_zero(self):
         camera = self.camera_fake()
@@ -322,7 +320,7 @@ class DesktopBackendTests(unittest.TestCase):
             if aborted["state"] == "failed":
                 break
             time.sleep(0.01)
-        summary = json.loads((Path(self.backend.workdir) / "records/protocols" / aborted["run_id"] / "summary.json").read_text())
+        summary = json.loads((Path(self.backend.workdir) / "runs" / aborted["run_id"] / "run.json").read_text())
         self.assertEqual(summary["artifacts"]["videos"][0]["stopped_by"], "camera failed to start")
 
     def test_one_transient_preview_per_scope_and_run_id_only_on_execution(self):
@@ -333,17 +331,17 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(len(self.backend.call("planned_protocols")["plans"]), 1)
         self.assertNotIn("run_id", current)
         self.assertFalse((Path(self.backend.workdir) / "plans").exists())
-        self.assertFalse((Path(self.backend.workdir) / "records" / "protocols").exists())
+        self.assertFalse((Path(self.backend.workdir) / "runs").exists())
         with self.assertRaises(LookupError):
             self.backend.call("control_protocol", {"action": "execute", "plan_id": first["plan_id"]})
         result = self.backend.call("control_protocol", {
             "action": "execute", "plan_id": current["plan_id"], "timeout_s": 1})
-        self.assertTrue(result["run_id"].startswith("run_"))
+        self.assertRegex(result["run_id"], r"\d{8}_\d{6}_desktop_test")
         self.assertNotEqual(result["run_id"], current["plan_id"])
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
         completed = self.wait_completed(current["plan_id"])
         self.assertEqual(completed["run_id"], result["run_id"])
-        self.assertTrue((Path(self.backend.workdir) / "records" / "protocols" / result["run_id"] / "summary.json").exists())
+        self.assertTrue((Path(self.backend.workdir) / "runs" / result["run_id"] / "run.json").exists())
 
     def test_a_named_plan_tags_its_run_and_the_run_lists_carry_the_name(self):
         from admet.workflows.calculations import recorded_runs
@@ -355,11 +353,12 @@ class DesktopBackendTests(unittest.TestCase):
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
         completed = self.wait_completed(plan["plan_id"])
 
-        run = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
-        self.assertEqual(json.loads((run / "summary.json").read_text())["tag"], "oil 3")
+        run = Path(self.backend.workdir) / "runs" / completed["run_id"]
+        self.assertEqual(json.loads((run / "run.json").read_text())["tag"], "oil 3")
+        self.assertTrue(run.name.endswith("_oil_3"))                      # the folder carries the name
         self.assertEqual(recorded_runs(self.backend.workdir)[0]["name"], "oil 3")
         self.assertEqual(self.backend.preview("experiment_1", definition())["tag"], "")   # unnamed: the protocol's name
-        self.assertEqual(json.loads((run / "plan.json").read_text())["tag"], "oil 3")
+        self.assertEqual(self.backend.measurement_runs(), [])             # nothing to type in this one
 
     def test_density_completion_closes_recording_without_running_calculations(self):
         from tests.test_fluid_density import recorded_density
@@ -368,13 +367,12 @@ class DesktopBackendTests(unittest.TestCase):
         plan = self.plan(document)
         service = self.backend.service
         stored = service._protocol_plans[plan["plan_id"]]
-        stored["run_id"] = "run_" + "1" * 32
-        store = service._plan_store(plan["plan_id"])
-        directory = store.begin(stored)
-        (directory / "events.jsonl").write_text(events_path.read_text())
+        run = service.runs.begin(stored)
+        stored["run_id"] = run.run_id
+        run.update(events=[json.loads(line) for line in events_path.read_text().splitlines() if line.strip()])
         service._run_artifacts[plan["plan_id"]] = {
-            "directory": directory, "recording": True,
-            "artifacts": {"fluidics_csv": str(csv_path), "polling_origin_monotonic": origin},
+            "run": run, "recording": True,
+            "artifacts": {"fluidics_csv": "run.csv", "polling_origin_monotonic": origin},
         }
         stored["state"] = "completed"
         with patch.object(service, "do") as stop, patch(
@@ -384,7 +382,7 @@ class DesktopBackendTests(unittest.TestCase):
         stop.assert_called_once_with("stop_recording")
         published = self.backend.call("planned_protocols", {"plan_id": plan["plan_id"]})["plans"][0]
         self.assertNotIn("analysis_result", published)
-        summary = json.loads((directory / "summary.json").read_text())
+        summary = run.read()
         self.assertTrue(summary["artifacts"]["recording_closed"])
         self.assertEqual(summary["artifacts"]["polling_origin_monotonic"], origin)
         self.assertNotIn(plan["plan_id"], service._run_artifacts)
@@ -427,7 +425,7 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertNotIn("analysis_result", completed)
         from admet.workflows.calculations import calculate_run
 
-        directory = Path(self.backend.workdir) / "records" / "protocols" / completed["run_id"]
+        directory = Path(self.backend.workdir) / "runs" / completed["run_id"]
         calculation = calculate_run(directory, "fluid_density")
         self.assertEqual(calculation["result"]["status"], "inconclusive")
         self.assertIsNone(calculation["result"]["density_g_ml"])

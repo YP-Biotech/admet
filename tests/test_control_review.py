@@ -30,7 +30,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_a_recorded_run_reads_its_channels_and_step_marks(self):
         run = project_run(self.run, "gravimetry")
-        t, pressures, flows = read_fluidics_csv(self.run / "fluidics.csv")
+        t, pressures, flows = read_fluidics_csv(self.run / "run.csv")
 
         # The archive recorded channel 1 only: it stays channel 1, the others are empty.
         self.assertEqual(len(run.flows), 3)
@@ -56,7 +56,7 @@ class ReviewTests(unittest.TestCase):
         self.addCleanup(panel.close)
         panel.set_project(str(self.root))
         loaded = self.root / "droplegen_20261022_101500.csv"
-        shutil.copy(self.run / "fluidics.csv", loaded)
+        shutil.copy(self.run / "run.csv", loaded)
         panel.add_files([str(loaded)])
         self.assertEqual(panel.table.rowCount(), 2)                         # the project run, then the file
         panel.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
@@ -143,11 +143,9 @@ def qc_run(root: Path, run_id: str = "run_q") -> Path:
     import csv
     import json
 
-    project = Path(root)
-    directory = project / "records" / "protocols" / run_id
+    directory = Path(root) / "runs" / run_id
     directory.mkdir(parents=True)
-    fluidics = project / "records" / "fluidics" / f"{run_id}.csv"
-    fluidics.parent.mkdir(parents=True, exist_ok=True)
+    fluidics = directory / "run.csv"
     qc_columns = ["recording_id", "step", "part", "rate_hz", "rate_half", "count", "diameter", "diameter_unit",
                   "diameter_half", "cv_percent", "cv_half", "n", "bursts", "speed_px_frame", "spacing_px", "state"]
     fluidics_columns = ["pressure_0_mbar", "pressure_1_mbar", "pressure_2_mbar", "flow_0_ul_min", "flow_1_ul_min",
@@ -171,11 +169,10 @@ def qc_run(root: Path, run_id: str = "run_q") -> Path:
             writer.writerow(row)
     events = [{"step_index": 0, "step_name": "collect", "state": "running", "outcome": "running", "monotonic": 110},
               {"step_index": 0, "step_name": "collect", "state": "running", "outcome": "completed", "monotonic": 130}]
-    (directory / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    (directory / "summary.json").write_text(json.dumps({
+    (directory / "run.json").write_text(json.dumps({
         "run_id": run_id, "state": "completed", "executed_at": "2026-11-17T10:00:00", "completed_at": "2026-11-17T10:00:40",
-        "artifacts": {"fluidics_csv": f"records/fluidics/{run_id}.csv", "polling_origin_monotonic": 100,
-                      "recording_closed": True}}))
+        "events": events,
+        "artifacts": {"fluidics_csv": "run.csv", "polling_origin_monotonic": 100, "recording_closed": True}}))
     return directory
 
 

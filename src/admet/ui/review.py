@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from admet.core.droplets import dispersed_channels, expected_rate_hz
+from admet.core.runs import Run
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme as ui
 from admet.ui.tables import GridTable, fit_table_height
@@ -219,14 +219,12 @@ def step_markers(events: list[dict], origin: float) -> list[tuple[float, str, st
 
 def project_run(directory: Path, name: str) -> ReviewRun:
     directory = Path(directory)
-    summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
-    fluidics = recording_path(directory, summary)
+    summary = Run(directory).read()
+    fluidics = recording_path(directory)
     t, pressures, flows = read_fluidics_csv(fluidics)
     origin = summary.get("artifacts", {}).get("polling_origin_monotonic")
-    events = []
-    if type(origin) in (int, float) and (directory / "events.jsonl").is_file():
-        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()
-                  if line.strip()]
+    events = [event for event in summary.get("events", []) if isinstance(event, dict)] \
+        if type(origin) in (int, float) else []
     return ReviewRun(name, t, pressures, flows, step_markers(events, origin) if events else [],
                      qc=run_qc(directory, summary, fluidics, t, flows))
 
@@ -618,9 +616,9 @@ def qc_cells(qc: QCSeries | None) -> tuple[str, str, str]:
 
 def _duration(directory: Path) -> str:
     try:
-        summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
-        start = datetime.fromisoformat(summary.get("executed_at"))
-        end = datetime.fromisoformat(summary.get("completed_at"))
+        summary = Run(directory).read()
+        start = datetime.fromisoformat(summary.get("executed_at") or summary.get("started_at"))
+        end = datetime.fromisoformat(summary.get("completed_at") or summary.get("stopped_at"))
         return f"{(end - start).total_seconds():.0f} s"
     except (OSError, ValueError, TypeError):
         return ""
