@@ -517,6 +517,7 @@ class ProtocolEditor(QWidget):
             tag = self.ask_run_name()
             if tag is None:
                 return
+            self.window._rename_protocol_stage(self.stage.id, tag)      # the step is the run from now on
         generation = self._edit_generation
 
         def received(plan):
@@ -526,7 +527,7 @@ class ProtocolEditor(QWidget):
         self.submit(lambda: self.backend.preview(self.stage.id, document, tag), received)
 
     def ask_run_name(self):
-        """The run's name, asked before every Plan; None when the operator backs out."""
+        """The run's name, asked before every Plan; the step takes it. None when the operator backs out."""
         import re
 
         default = self.run_name or re.sub(r"^\d+\.\s*", "", self.stage.label)

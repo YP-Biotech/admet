@@ -9,9 +9,9 @@ plan; the runs it executed stay. Steps are not kept between sessions.
 
 1. **Select** a protocol from the selector. Its parameters appear in the
    *Parameter / Value* table; the JSON can be edited too.
-2. **Plan** first asks for the run's name, proposing the step's. The name tags
-   the run: its record, the record of each recording and the lists in Review
-   and Calculations carry it. Then it resolves the parameters and freezes the
+2. **Plan** first asks for the run's name, proposing the step's, and the step
+   takes that name. The name tags the run: its record, the record of each
+   recording and the lists in Review and Calculations carry it. Then it resolves the parameters and freezes the
    steps. Nothing moves and nothing is recorded. The plan table shows, per step:
    **STEP · UNIT ID · TYPE · TARGET · TRIGGER & ETA · END · CONFIRM**.
    Lines inside one row run at the same time. The action bar sums the step count,

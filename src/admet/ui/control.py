@@ -710,6 +710,23 @@ class ControlWindow(QMainWindow):
         self._append_log(f"Removed step {label}")
         return True
 
+    def _rename_protocol_stage(self, stage_id: str, name: str) -> None:
+        """The step takes the run's name the operator typed at Plan: in the workflow, the list and its editor."""
+        name = name.strip()
+        stages = list(self.workflow.stages)
+        index = next((i for i, stage in enumerate(stages) if stage.id == stage_id), None)
+        if index is None or not name or stages[index].label == name:
+            return
+        stages[index] = replace(stages[index], label=name)
+        self.workflow.stages = tuple(stages)
+        editor = self.protocol_editors.get(stage_id)
+        if editor is not None:
+            editor.stage = stages[index]
+        if index < len(self.toc_rows):
+            self.toc_rows[index]["label"].setText(f"{index + 1}. {name}")
+        if self.workflow_state.index == index:
+            self._sync_action_box(stages[index])
+
     def _confirm_step_removal(self, label: str) -> bool:
         answer = QMessageBox.question(
             self, "Remove step", f"Remove {label}? Its plan is discarded; the runs it executed stay in the data folder.",

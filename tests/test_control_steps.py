@@ -73,6 +73,9 @@ class ExperimentStepTests(unittest.TestCase):
         self.assertEqual(plan["tag"], "Oil 3")
         self.assertEqual(asked[0][2], "Experiment 1")                        # the step's own name is proposed
         self.assertIn("tags the run", asked[0][1])
+        self.assertEqual(window.workflow.stages[index].label, "Oil 3")       # and the step takes the name typed
+        self.assertEqual(window.toc_rows[index]["label"].text(), f"{index + 1}. Oil 3")
+        self.assertIs(editor.stage, window.workflow.stages[index])
         with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", False)):
             editor.build_plan()
             self.pump(0.3)
@@ -81,6 +84,7 @@ class ExperimentStepTests(unittest.TestCase):
             editor.build_plan()
             again = self.wait_plan(editor, previous_id=plan["plan_id"])
         self.assertEqual(again["tag"], "Oil 3")                               # an empty name keeps the last one
+        self.assertEqual(window.workflow.stages[index].label, "Oil 3")
 
     def test_an_added_step_can_be_removed_and_its_plan_goes_with_it(self):
         window = self.window
