@@ -15,7 +15,6 @@ import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from statistics import mean, median, pstdev
 from typing import Any, Callable
 
@@ -212,12 +211,6 @@ class BurstQC:
 QC_COLUMNS = ("timestamp", "elapsed_s", "recording_id", "step", "part", "rate_hz", "rate_half", "count", "diameter",
               "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n", "bursts", "speed_px_frame", "spacing_px",
               "state")
-
-
-def qc_log_path(video: Path, record: dict[str, Any] | None) -> Path:
-    """Where a run's QC rows went before they joined the run's fluidics CSV: kept for reading old runs."""
-    run_id = str((record or {}).get("run_id") or "")
-    return Path(video).parent / (f"{run_id}.qc.csv" if run_id else f"{Path(video).stem}.qc.csv")
 
 
 def _below_normal_priority() -> None:

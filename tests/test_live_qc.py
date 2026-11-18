@@ -6,7 +6,6 @@ import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path
 
 import numpy as np
 
@@ -15,7 +14,6 @@ from admet.engines.acquisition.camera.qc import (
     QCSummary,
     QCWorker,
     cv_interval,
-    qc_log_path,
     interval,
     qc_as_dict,
     qc_line,
@@ -155,10 +153,6 @@ class WorkerTests(unittest.TestCase):
             self.assertIsNone(worker.summary)                               # nothing shown between recordings
         finally:
             worker.stop()
-
-    def test_the_old_qc_file_name_is_still_known_for_reading_old_runs(self):
-        video = Path("/p/records/camera/run_a_step01_20261117_101500.avi")
-        self.assertEqual(qc_log_path(video, {"run_id": "run_a"}), Path("/p/records/camera/run_a.qc.csv"))
 
 
 class TimelineRowTests(unittest.TestCase):

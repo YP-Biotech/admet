@@ -608,19 +608,17 @@ class Admet:
                     "recording_max_frames": 0, "recording_max_seconds": 0,
                 })
                 fluidics_csv = self._project_relative(recording.get("csv_path"))
-                qc_csv = fluidics_csv                                          # the QC rows are in the same file
                 if plan["recording"]["video_steps"]:
                     # Video is per step, opened and closed by the steps themselves. Every recording's
-                    # record names the run's fluidics and QC files, so its slice of both is one cut by time.
+                    # record names the run's timeline file, so its slice of it is one cut by time.
                     engine.arm_step_video(self.project.records_dir / "camera", plan["run_id"], {
                         "project_id": self.project.session.project_id, "run_id": plan["run_id"],
                         "protocol": str(plan.get("name") or plan.get("protocol_name") or plan.get("operation_id") or ""),
-                        "fluidics_csv": fluidics_csv, "qc_csv": qc_csv,
+                        "fluidics_csv": fluidics_csv,
                     })
                 artifact = self._run_artifacts[plan_id]
                 artifact["recording"] = True
                 artifact["artifacts"]["fluidics_csv"] = recording.get("csv_path")
-                artifact["artifacts"]["qc_csv"] = qc_csv
                 artifact["artifacts"]["polling_origin_monotonic"] = self.polling_started_monotonic()
                 artifact["artifacts"]["recording_closed"] = False
             result = op.run(self, deepcopy(plan["normalized_settings"]))

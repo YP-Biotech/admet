@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from admet.core.droplets import dispersed_channels, expected_rate_hz, time_of_day
+from admet.core.droplets import dispersed_channels, expected_rate_hz
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme as ui
 from admet.ui.tables import GridTable, fit_table_height
@@ -159,44 +159,17 @@ def _number(text) -> float:
         return math.nan
 
 
-def fluidics_anchor(path: Path) -> tuple[float, float] | None:
-    """The first row's time of day and elapsed_s, which put a wall-clock stamp on the CSV's clock."""
-    try:
-        with Path(path).open(newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                stamp, elapsed = time_of_day(row.get("timestamp")), _number(row.get("elapsed_s"))
-                if stamp is not None and math.isfinite(elapsed):
-                    return stamp, elapsed
-                return None
-    except OSError:
-        return None
-    return None
-
-
-def read_qc_csv(path: Path, anchor: tuple[float, float] | None = None) -> QCSeries | None:
-    """The QC rows of a run on the fluidics clock. In the run's timeline file they carry elapsed_s on
-    that clock already; in the separate QC file of older runs each row's wall-clock stamp is placed
-    against the fluidics CSV's first row, a row past midnight on the next day."""
+def read_qc_csv(path: Path) -> QCSeries | None:
+    """The QC rows of a run's timeline file, on its clock: the rows that carry a state."""
     columns: dict[str, list] = {key: [] for key in ("t", "rate", "rate_half", "cv", "cv_half", "diameter", "count")}
     states, recordings, units = [], [], []
     with Path(path).open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        same_clock = anchor is None or "flow_0_ul_min" in (reader.fieldnames or [])
-        for row in reader:
+        for row in csv.DictReader(handle):
             if not str(row.get("state") or ""):
-                continue                                   # a fluidics row, or a QC row without a state
-            if same_clock:
-                t = _number(row.get("elapsed_s"))
-                if not math.isfinite(t):
-                    continue
-            else:
-                stamp = time_of_day(row.get("timestamp"))
-                if stamp is None:
-                    continue
-                anchor_stamp, anchor_elapsed = anchor
-                if stamp < anchor_stamp - 43200:
-                    stamp += 86400.0
-                t = anchor_elapsed + stamp - anchor_stamp
+                continue                                   # a reading
+            t = _number(row.get("elapsed_s"))
+            if not math.isfinite(t):
+                continue
             columns["t"].append(t)
             for key, column in (("rate", "rate_hz"), ("rate_half", "rate_half"), ("cv", "cv_percent"),
                                 ("cv_half", "cv_half"), ("diameter", "diameter"), ("count", "count")):
@@ -259,18 +232,9 @@ def project_run(directory: Path, name: str) -> ReviewRun:
 
 
 def run_qc(directory: Path, summary: dict, fluidics: Path, t: np.ndarray, flows: list[np.ndarray]) -> QCSeries | None:
-    """The run's droplet QC, when it wrote one and the fluidics CSV carries the clock to place it."""
-    stored = summary.get("artifacts", {}).get("qc_csv")
-    if not isinstance(stored, str) or not stored:
-        return None
-    path = Path(stored) if Path(stored).is_absolute() else directory.parents[2] / stored
-    if not path.is_file():
-        return None
-    anchor = None if path.resolve() == Path(fluidics).resolve() else fluidics_anchor(fluidics)
-    if anchor is None and path.resolve() != Path(fluidics).resolve():
-        return None
+    """The run's droplet QC: the QC rows of its timeline file, with the expected rate from the flows."""
     try:
-        qc = read_qc_csv(path, anchor)
+        qc = read_qc_csv(fluidics)
     except (OSError, ValueError):
         return None
     if qc is not None:
