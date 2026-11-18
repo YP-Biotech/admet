@@ -4,7 +4,6 @@ import os
 import tempfile
 import time
 import unittest
-from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -26,9 +25,8 @@ class CalibrationPageTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.api = DesktopBackend(simulated=True)
+        self.api = DesktopBackend(simulated=True, home=tmp.name)
         self.addCleanup(self.api.shutdown)
-        self.api.create_project(Path(tmp.name) / "p.admetp")
         self.api.add_profile(name="M1 water", liquid="water", unit="M", calibration="H2O", scale=0.975)
         self.window = ControlWindow(self.api)
         self.addCleanup(self.window.close)

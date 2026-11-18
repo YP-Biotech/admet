@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     control = sub.add_parser("control", help="open the control desktop, which drives the rig")
-    control.add_argument("--project", help="existing .admetp project")
+    control.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
 
     analyze = sub.add_parser(
         "analyze", help="serve project analysis over the network; it reads project data and never drives the rig"
@@ -32,10 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="an operation or engine id; omit for everything",
     )
-
-    clone = sub.add_parser("clone", help="a new project with another's settings and calibration, none of its data")
-    clone.add_argument("source", help="the .admetp project to take the settings from")
-    clone.add_argument("target", help="the new .admetp project folder")
 
     check = sub.add_parser("check", help="say what would stop a project from saving; --fix mends it")
     check.add_argument("project", help="the .admetp project folder")
@@ -57,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "control":
         from admet.ui.app import main as desktop_main
 
-        return desktop_main(["--project", args.project] if args.project else [])
+        return desktop_main(["--home", args.home] if args.home else [])
 
     if args.command == "analyze":
         return run_analyze_server(args.host, args.port, projects=args.projects)
@@ -66,22 +62,6 @@ def main(argv: list[str] | None = None) -> int:
         from admet.core.service import Admet
 
         return _attempt(lambda: Admet().describe(args.target))
-
-    if args.command == "clone":
-        from admet.core.project import ProjectStore
-        from admet.core.session import session_path
-
-        source = session_path(args.source)
-        if not (source / "manifest.json").is_file():
-            print(f"{source} is not a project: no manifest.json in it", file=sys.stderr)
-            return 1
-        try:
-            clone = ProjectStore.clone_settings(ProjectStore(source), args.target)
-        except FileExistsError as exc:
-            print(exc, file=sys.stderr)
-            return 1
-        print(f"{clone.path}: settings and calibration of {source.name} kept, no data")
-        return 0
 
     if args.command == "check":
         from admet.core.check import check_project, mend_project

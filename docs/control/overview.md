@@ -7,7 +7,7 @@ directly — there is no background server — and only one instance runs per us
 
 ```bash
 uv run --extra control admet control
-uv run --extra control admet control --project "D:\Experiments\today.admetp"
+uv run --extra control admet control --home "D:\admet"
 ```
 
 Startup never connects a device. Nothing moves until you click **Connect**.
@@ -48,17 +48,25 @@ On **1. Setup**, choose:
 - **Camera + fluidics** — shows the camera; protocol steps marked `"record": true`
   record video. Requires a live camera.
 
-The mode is saved in the project and frozen into each plan, so changing it
-discards unexecuted previews.
+The mode is saved with the rig's settings and frozen into each plan, so changing
+it discards unexecuted previews.
 
-## Projects
+## The home
 
-Create or open a project from the project menu. It lists recent projects with
-their run counts and when you last opened them on this computer. See
-[Projects](../guide/projects) for what is stored.
+Control keeps everything in one folder, the admet home: `~/.admet`, or the
+folder `ADMET_HOME` names, or the one given with `--home`. The top bar shows
+which one is in use. There is nothing to create or open before a session.
 
-**Clone Project** starts the next project where this one leaves off: a new project
-with the same acquisition mode, each channel's calibration (profile and dead
-volume), the profiles and liquids you added, the preflight set-up and the saved
-protocols — and none of the recordings, runs, analyses or media. The same from
-the command line: `admet clone <source>.admetp <new>.admetp`.
+```text
+~/.admet/
+  control/rig.json   the rig's settings: acquisition mode, each channel's calibration,
+                     the profiles and liquids you added, the camera's µm per pixel,
+                     the preflight set-up
+  data/              what the rig records: runs, their fluidics CSVs and videos, and
+                     the saved protocols; the folder analyze is pointed at
+  analyze/           what analyze makes
+```
+
+The rig's settings are saved as you change them and are there again at the next
+start. A second rig has its own home; the data folder is what moves between
+machines.

@@ -124,8 +124,7 @@ class ParameterProtocolTests(unittest.TestCase):
 
     def test_save_reopen_plan_is_immutable_and_planning_has_no_engine_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(f"{tmp}/p.admetp")
+            admet = Admet(home=tmp)
             document = typed_parameter_protocol()
             document["parameter_values"] = normalize(document)["parameter_values"]
             document["parameter_values"]["oil_base_flow"] = 10

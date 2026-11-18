@@ -30,8 +30,7 @@ class JsonProtocolTests(unittest.TestCase):
         from admet.workflows.calculations import calculate_run
 
         with tempfile.TemporaryDirectory() as tmp:
-            backend = DesktopBackend(simulated=True)
-            backend.create_project(Path(tmp) / "fake.admetp")
+            backend = DesktopBackend(simulated=True, home=tmp)
             with patch.object(backend.engine.sdk, "detect_instruments", side_effect=AssertionError("live discovery")):
                 try:
                     backend.call("connect_fluidics")
@@ -238,8 +237,7 @@ class JsonProtocolTests(unittest.TestCase):
 
     def test_invalid_saved_file_does_not_hide_other_protocols(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(f"{tmp}/p.admetp")
+            admet = Admet(home=tmp)
             saved = admet.do("save_protocol", {"protocol": DOCUMENT})
             bad = deepcopy(DOCUMENT)
             bad["steps"][0]["trigger_type"] = "typo"
@@ -250,8 +248,7 @@ class JsonProtocolTests(unittest.TestCase):
 
     def test_timeout_fails_run_and_finalizes_recording(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(f"{tmp}/p.admetp")
+            admet = Admet(home=tmp)
             try:
                 admet.do("connect_fluidics", {"simulated": True})
                 admet.do("apply_corrections", {})
@@ -285,8 +282,7 @@ class JsonProtocolTests(unittest.TestCase):
 
     def test_simulated_plan_executes_and_zeros(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(f"{tmp}/test.admetp")
+            admet = Admet(home=tmp)
             try:
                 admet.do("connect_fluidics", {"simulated": True})
                 admet.do("apply_corrections", {})
@@ -312,28 +308,26 @@ class JsonProtocolTests(unittest.TestCase):
                 self.assertTrue(all(c["requested_flow_ul_min"] in (None, 0)
                                     for c in observation["channels"]))
                 completed = admet.planned_protocols()["plans"][0]
-                run_dir = Path(tmp) / "test.admetp" / "records" / "protocols" / completed["run_id"]
+                run_dir = Path(tmp) / "data" / "records" / "protocols" / completed["run_id"]
                 summary = json.loads((run_dir / "summary.json").read_text())
                 self.assertEqual(summary["state"], "completed")
-                self.assertTrue((Path(tmp) / "test.admetp" / summary["artifacts"]["fluidics_csv"]).is_file())
+                self.assertTrue((Path(tmp) / "data" / summary["artifacts"]["fluidics_csv"]).is_file())
                 self.assertTrue((run_dir / "events.jsonl").read_text())
                 self.assertEqual(json.loads((run_dir / "protocol.json").read_text()),
                                  normalize(DOCUMENT))
             finally:
                 admet.do("disconnect_fluidics", {})
 
-    def test_reopening_the_project_after_planning_keeps_the_run_listed(self):
-        # The plan used to hold a copy of the project made at plan time, which
+    def test_a_run_planned_before_other_files_were_added_is_still_listed(self):
+        # The plan used to hold a copy of the index made at plan time, which
         # wrote its outdated file list back over the newer one.
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "test.admetp"
-            admet = Admet()
-            admet.create_project(path)
+            admet = Admet(home=tmp)
+            path = admet.home.data_dir
             try:
                 admet.do("connect_fluidics", {"simulated": True})
                 admet.do("apply_corrections", {})
                 plan = admet.plan_protocol(operation_id="run_json_protocol", settings={"protocol": DOCUMENT})
-                admet.open_project(path)
                 admet.protocol_store().save(DOCUMENT)
                 admet.control_protocol(action="execute", plan_id=plan["plan_id"], timeout_s=1)
                 admet.control_protocol(action="confirm", timeout_s=1)
@@ -350,20 +344,18 @@ class JsonProtocolTests(unittest.TestCase):
 
     def test_save_open_plan_file_survives_new_session(self):
         with tempfile.TemporaryDirectory() as tmp:
-            project = f"{tmp}/test.admetp"
-            first = Admet()
-            first.create_project(project)
+            first = Admet(home=tmp)
             saved = first.do("save_protocol", {"protocol": DOCUMENT})
             with self.assertRaises(FileExistsError):
                 first.do("save_protocol", {"protocol": DOCUMENT})
-            second = Admet(project=project)
+            second = Admet(home=tmp)
             self.assertEqual(second.do("list_protocols", {})["protocols"][0]["name"],
                              DOCUMENT["name"])
             reopened = second.do("list_protocols", {"name": DOCUMENT["name"]})
             self.assertEqual(reopened, saved)
             with patch.object(second, "engine_action", side_effect=AssertionError("setter")):
                 plan = second.plan_protocol_file(path=saved["path"])
-            path = Path(project) / "plans" / f"{plan['plan_id']}.json"
+            path = second.home.data_dir / "plans" / f"{plan['plan_id']}.json"
             self.assertFalse(path.exists())
             second.cancel_protocol_plan(plan_id=plan["plan_id"])
             self.assertFalse(path.exists())

@@ -7,7 +7,6 @@ why, and that a pipeline cannot slip past one by going through the back.
 
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from admet.core.service import Admet
@@ -59,16 +58,11 @@ class DeclarationTests(unittest.TestCase):
                 self.assertIn("corrections", requires)
                 self.assertIn("idle", requires)
 
-    def test_anything_that_writes_needs_a_project(self):
-        for name in ("run_json_protocol", "start_recording", "stop_recording"):
-            with self.subTest(operation=name):
-                self.assertIn("project", operation(name).requires)
-
     def test_recording_does_not_need_a_camera(self):
         # A fluidics-only run measures fluidics. Requiring a camera would make a
         # rig without one unable to record what it measured -- and a video that
         # was never written is not registered, so nothing claims a missing file.
-        self.assertEqual(set(operation("start_recording").requires), {"project", "fluidics"})
+        self.assertEqual(set(operation("start_recording").requires), {"fluidics"})
 
     def test_an_unknown_operation_names_the_ones_there_are(self):
         with self.assertRaises(LookupError) as caught:
@@ -90,13 +84,6 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(operation("start_recording").target, CONTROL)
         self.assertEqual(operation("run_analysis").target, ANALYZE)
         self.assertEqual(operation("add_source").target, ANALYZE)
-
-    def test_the_session_belongs_to_neither(self):
-        # A project is where the instrument writes and where the analysis reads,
-        # so opening one is not an instrument operation.
-        for name in ("create_project", "open_project", "read_project", "list_projects"):
-            with self.subTest(operation=name):
-                self.assertEqual(operation(name).target, GENERAL)
 
     def test_nothing_general_needs_the_instrument(self):
         # If a general operation required fluidics it would not be general.
@@ -231,7 +218,6 @@ class StepTests(unittest.TestCase):
 
 class GuardTests(unittest.TestCase):
     COLD = {
-        "project": False,
         "fluidics": False,
         "camera": False,
         "corrections": False,
@@ -246,9 +232,9 @@ class GuardTests(unittest.TestCase):
 
     def test_the_first_unmet_requirement_is_the_one_reported(self):
         with self.assertRaises(Refused) as caught:
-            operation("run_json_protocol").check(self.COLD)
+            operation("run_json_protocol").check({**self.COLD, "fluidics": True})
 
-        self.assertIn("no project is open", str(caught.exception))
+        self.assertIn("run apply_corrections first", str(caught.exception))
 
     def test_a_met_requirement_passes(self):
         ready = {**self.COLD, "fluidics": True, "corrections": True}
@@ -270,22 +256,10 @@ class GuardTests(unittest.TestCase):
 
 
 
-class ProjectAwareTests(unittest.TestCase):
-    def test_a_run_that_records_is_refused_without_a_session(self):
-        admet = Admet()
-        admet.do("connect_fluidics", {"simulated": True})
-        admet.do("apply_corrections")
-        try:
-            with self.assertRaises(Refused) as caught:
-                admet.do("run_json_protocol", {"tick_s": 0.1})
-            self.assertIn("no project is open", str(caught.exception))
-        finally:
-            admet.do("disconnect_fluidics")
-
-    def test_with_a_project_open_the_same_run_is_allowed(self):
+class HomeTests(unittest.TestCase):
+    def test_a_run_that_records_needs_nothing_opened_first(self):
         with tempfile.TemporaryDirectory() as tmp:
-            admet = Admet()
-            admet.create_project(Path(tmp) / "rig.admetp")
+            admet = Admet(home=tmp)
             admet.do("connect_fluidics", {"simulated": True})
             admet.do("apply_corrections")
             try:

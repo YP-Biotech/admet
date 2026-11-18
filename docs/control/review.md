@@ -3,7 +3,7 @@
 The **Review runs** stage plots the pressure and flow of finished runs. It reads the
 saved files only; it needs no device and changes nothing on the rig.
 
-- The **runs table** lists the project's recorded runs, newest first, with when they
+- The **runs table** lists the recorded runs in the data folder, newest first, with when they
   were recorded, how they ended and how long they ran. Tick a run to plot it; its
   line style appears in the *Line* column.
 - **Load file…** adds any fluidics CSV with the same columns, for example an older
@@ -33,7 +33,7 @@ run's recordings, the median rate, and the median CV with the state at the end. 
 loaded file has no QC and leaves those plots empty.
 
 Pressure and flow share the time axis with the droplet plots. Step starts (▶) and ends (■) are marked as on
-the live plots, for runs recorded in the project. A crosshair follows the cursor with
+the live plots, for runs recorded on this rig. A crosshair follows the cursor with
 the time and value under it; a click pins a reference (+), after which the readout
 also shows the difference from it, and a double-click clears it.
 

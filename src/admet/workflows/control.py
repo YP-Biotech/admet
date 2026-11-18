@@ -162,15 +162,10 @@ def create_control_workflow() -> Workflow:
                 "1. Setup",
                 description="Camera discovery, connection, preview, and acquisition geometry.",
                 instructions=(
-                    "Create or load an ADMET project before connecting the camera.",
                     "Choose Fluidics only, or connect a camera and start Live for Camera + fluidics.",
                 ),
                 instruction_cards=(
                     StageInstruction("Fluidics-only acquisition: camera setup is optional.", "project_ready and camera_optional"),
-                    StageInstruction(
-                        "Create or select an admet project, then refresh and connect the camera.",
-                        "not project_ready",
-                    ),
                     StageInstruction(
                         "Refresh cameras, choose the camera in Settings, then connect it.",
                         "project_ready and not camera_connected",
@@ -230,7 +225,7 @@ def create_control_workflow() -> Workflow:
                 action="connect_fluidics",
                 description="SDK import, device enumeration, connection and polling.",
                 instructions=(
-                    "Connect Fluigent once for the project session.",
+                    "Connect Fluigent once for the session.",
                 ),
                 instruction_cards=(
                     StageInstruction(
@@ -262,7 +257,7 @@ def create_control_workflow() -> Workflow:
                 "3. Calibration",
                 description="The profile and dead volume of each channel, and the profiles and liquids they use.",
                 instructions=("Choose a profile per channel; edit profiles and liquids below. Defaults stay "
-                              "as they are: editing one adds a project copy. Apply sends the profiles to the flow units.",),
+                              "as they are: editing one adds a copy of your own. Apply sends the profiles to the flow units.",),
                 settings=CORRECTION_SETTINGS,
                 actions=(
                     StageAction(
@@ -291,7 +286,7 @@ def create_control_workflow() -> Workflow:
             protocol_stage("experiment_1", "6. Experiment 1"),
             Stage(
                 "calculations", "Calculations",
-                instructions=("Choose a saved run and a calculation. Results stay with the recording in the project.",),
+                instructions=("Choose a saved run and a calculation. Results stay with the recording in the data folder.",),
                 features=("calculations",),
                 actions=(StageAction("Continue", completes=True),),
                 show_settings=False,

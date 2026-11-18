@@ -1,4 +1,4 @@
-"""Standalone Qt access to the same project and protocol service."""
+"""Standalone Qt access to the same home and protocol service."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from admet.engines.acquisition.settings import CORRECTION_PARAM_NAMES
 
 
 class DesktopBackend:
-    def __init__(self, *, simulated=False, service=None):
-        self.service = service or Admet()
+    def __init__(self, *, simulated=False, service=None, home=None):
+        self.service = service or Admet(home=home)
         self.simulated = simulated
         self.engine = self.service.engine("acquisition")
         self.lock = threading.RLock()
@@ -32,48 +32,49 @@ class DesktopBackend:
         return self.engine.settings
 
     @property
+    def home(self):
+        return self.service.home
+
+    @property
     def acquisition_mode(self):
-        return self.session.metadata.get("acquisition_mode", "fluidics_only") if self.session else "fluidics_only"
+        return self.service.rig().get("acquisition_mode", "fluidics_only")
 
     @property
     def calibration(self):
         """Each channel's corrections per liquid, as calibrated on this rig."""
-        return dict(self.session.metadata.get("calibration") or {}) if self.session else {}
+        return dict(self.service.rig().get("calibration") or {})
 
     def save_calibration(self, calibration):
-        # Only the project's own lock, not the command lock: a connect holds
-        # that for seconds, and the screen saves calibration while it waits.
-        if self.service.project is not None:
-            self.service.project.update_metadata(calibration=calibration)
+        # Not under the command lock: a connect holds that for seconds, and the screen saves
+        # calibration while it waits.
+        self.service.update_rig(calibration=calibration)
 
     @property
     def optics(self):
         """The µm per pixel measured on the preview, with how it was measured; empty until then."""
-        if self.service.project is None:
-            return {}
-        optics = self.service.project.session.metadata.get("optics")
+        optics = self.service.rig().get("optics")
         return dict(optics) if isinstance(optics, dict) else {}
 
     def save_optics(self, optics):
-        if self.service.project is not None:
-            self.service.project.update_metadata(optics=optics)
-            self.service._tell_engine_project()          # recordings from now on carry it
+        self.service.update_rig(optics=optics or None)       # recordings from now on carry it
+
+    def save_checkup(self, checkup):
+        """The preflight's state of the rig, kept with its settings."""
+        self.service.update_rig(qt_checkup=checkup)
 
     @property
     def liquids(self):
-        """Liquids added in this project; the defaults are not listed here."""
-        entries = self.session.metadata.get("liquids") if self.session else None
+        """Liquids added on this rig; the defaults are not listed here."""
+        entries = self.service.rig().get("liquids")
         return list(entries) if isinstance(entries, list) else []
 
     @property
     def profiles(self):
-        """Correction profiles added in this project; the defaults are not listed here."""
-        entries = self.session.metadata.get("profiles") if self.session else None
+        """Correction profiles added on this rig; the defaults are not listed here."""
+        entries = self.service.rig().get("profiles")
         return list(entries) if isinstance(entries, list) else []
 
     def _project(self, doing):
-        if self.service.project is None:
-            raise RuntimeError(f"Open a project before {doing}")
         return self.service.project
 
     def _all_liquid_ids(self):
@@ -93,7 +94,7 @@ class DesktopBackend:
         with project.lock:
             entry = check_liquid({"name": name, "density": density, "viscosity": viscosity})
             entry.update(id=unique_id(entry["name"], self._all_liquid_ids()), updated_at=_now())
-            project.update_metadata(liquids=[*self.liquids, entry])
+            self.service.update_rig(liquids=[*self.liquids, entry])
             return entry
 
     def update_liquid(self, liquid_id, **changes):
@@ -104,9 +105,9 @@ class DesktopBackend:
             liquids = self.liquids
             index = next((i for i, entry in enumerate(liquids) if entry.get("id") == liquid_id), None)
             if index is None:
-                raise ValueError(f"{liquid_id} is not a liquid of this project")
+                raise ValueError(f"{liquid_id} is not a liquid of this rig")
             liquids[index] = {**check_liquid({**liquids[index], **changes}), "updated_at": _now()}
-            project.update_metadata(liquids=liquids)
+            self.service.update_rig(liquids=liquids)
             return liquids[index]
 
     def remove_liquid(self, liquid_id):
@@ -114,11 +115,11 @@ class DesktopBackend:
         with project.lock:
             liquids = [entry for entry in self.liquids if entry.get("id") != liquid_id]
             if len(liquids) == len(self.liquids):
-                raise ValueError(f"{liquid_id} is not a liquid of this project")
+                raise ValueError(f"{liquid_id} is not a liquid of this rig")
             users = [entry.get("name") for entry in self.profiles if entry.get("liquid") == liquid_id]
             if users:
                 raise ValueError(f"Profile {users[0]} uses this liquid; remove or change it first")
-            project.update_metadata(liquids=liquids)
+            self.service.update_rig(liquids=liquids)
 
     def add_profile(self, **fields):
         from admet.engines.acquisition.fluidics.liquids import check_profile, unique_id
@@ -127,7 +128,7 @@ class DesktopBackend:
         with project.lock:
             entry = check_profile(fields, self._all_liquid_ids())
             entry.update(id=unique_id(entry["name"], self._all_profile_ids()), updated_at=_now())
-            project.update_metadata(profiles=[*self.profiles, entry])
+            self.service.update_rig(profiles=[*self.profiles, entry])
             return entry
 
     def update_profile(self, profile_id, **changes):
@@ -139,14 +140,14 @@ class DesktopBackend:
             profiles = self.profiles
             index = next((i for i, entry in enumerate(profiles) if entry.get("id") == profile_id), None)
             if index is None:
-                raise ValueError(f"{profile_id} is not a profile of this project")
+                raise ValueError(f"{profile_id} is not a profile of this rig")
             entry = {**check_profile({**profiles[index], **changes}, self._all_liquid_ids()), "updated_at": _now()}
             wrong_unit = [prefix for prefix, unit in FLUIDIC_CHANNEL_UNITS.items()
                           if channel_profile(self.calibration, prefix) == profile_id and unit != entry["unit"]]
             if wrong_unit:
                 raise ValueError(f"{entry['name']} is in use on a {FLUIDIC_CHANNEL_UNITS[wrong_unit[0]]} channel")
             profiles[index] = entry
-            project.update_metadata(profiles=profiles)
+            self.service.update_rig(profiles=profiles)
             return entry
 
     def remove_profile(self, profile_id):
@@ -157,67 +158,35 @@ class DesktopBackend:
         with project.lock:
             profiles = [entry for entry in self.profiles if entry.get("id") != profile_id]
             if len(profiles) == len(self.profiles):
-                raise ValueError(f"{profile_id} is not a profile of this project")
+                raise ValueError(f"{profile_id} is not a profile of this rig")
             if any(channel_profile(self.calibration, prefix) == profile_id for prefix in FLUIDIC_CHANNEL_UNITS):
                 raise ValueError("A channel uses this profile; choose another on the Rig first")
-            project.update_metadata(profiles=profiles)
+            self.service.update_rig(profiles=profiles)
 
     def set_acquisition_mode(self, mode):
         if mode not in {"fluidics_only", "camera_fluidics"}:
             raise ValueError("Unknown acquisition mode")
         with self.lock:
-            self.service._require_project_idle()
-            if not self.session:
-                raise RuntimeError("Open a project before choosing acquisition mode")
+            self.service._require_idle()
             if self.engine.recording_active:
                 raise RuntimeError("Stop recording before changing acquisition mode")
             if mode == self.acquisition_mode:
                 return
-            self.service.project.update_metadata(acquisition_mode=mode)
+            self.service.update_rig(acquisition_mode=mode)
             self._discard_previews()
 
     @property
     def session(self):
-        return self.service.project.session if self.service.project else None
+        return self.service.project.session
 
     @property
     def workdir(self):
-        return str(self.service.project.path) if self.service.project else None
-
-    def create_project(self, path):
-        with self.lock:
-            project = self.service.create_project(path)
-            self._discard_previews()
-            return project
-
-    def open_project(self, path):
-        with self.lock:
-            project = self.service.open_project(path)
-            self._discard_previews()
-            return project
-
-    def clone_project(self, path):
-        """The open project's settings and calibration in a new project at PATH, which becomes current."""
-        with self.lock:
-            if self.service.project is None:
-                raise RuntimeError("Open a project to clone its settings")
-            project = self.service.clone_project(self.service.project.path, path)
-            self._discard_previews()
-            return project
+        return str(self.service.home.data_dir)
 
     def _discard_previews(self):
         for plan_id in self._previews.values():
             self.service.discard_protocol_preview(plan_id)
         self._previews.clear()
-
-    def save_project(self, *, checkup=None):
-        with self.lock:
-            self.service._require_project_idle()
-            if self.service.project:
-                if checkup is not None:
-                    self.service.project.update_metadata(qt_checkup=checkup)
-                else:
-                    self.service.project.save()
 
     def measurements(self, run_id, changes=None):
         with self.lock:
@@ -225,7 +194,7 @@ class DesktopBackend:
 
     def measurement_runs(self):
         with self.lock:
-            return self.service.protocol_store().measurement_runs() if self.service.project else []
+            return self.service.protocol_store().measurement_runs()
 
     def call(self, operation, settings=None):
         with self.lock:
