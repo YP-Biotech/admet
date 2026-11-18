@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [master]
 
+# A newer push to the same branch supersedes the runs still queued for it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     # The suites run on macOS during development; Qt and the Fluigent simulator

@@ -795,14 +795,19 @@ class Admet:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             state = engine.pipeline_state
-            if state in {"completed", "idle"}:
-                return "completed"
-            if state == "error":
-                return "error"
+            if state in {"completed", "idle", "error"}:
+                self._wait_for_plan_to_close(deadline, poll_s)
+                return "error" if state == "error" else "completed"
             if self._waiting_for_operator(engine):
                 return "waiting"
             time.sleep(poll_s)
         return "timeout"
+
+    def _wait_for_plan_to_close(self, deadline: float, poll_s: float) -> None:
+        """The pipeline ends a moment before its last event closes the plan; a caller that asks
+        about the plan right after waiting must find it closed, not still executing."""
+        while self._executing_plan_id in self._run_artifacts and time.monotonic() < deadline:
+            time.sleep(poll_s)
 
     @staticmethod
     def _waiting_for_operator(engine: Any) -> bool:
