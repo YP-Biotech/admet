@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from admet.core.droplets import dispersed_channels, expected_rate_hz, time_of_day
+from admet.core.droplets import dispersed_channels, expected_rate_hz
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme as ui
 from admet.ui.tables import GridTable, fit_table_height
@@ -147,7 +147,7 @@ def read_fluidics_csv(path: Path) -> tuple[np.ndarray, list[np.ndarray], list[np
                         + [_number(row.get(f"pressure_{i}_mbar")) for i in channels]
                         + [_number(row.get(f"flow_{i}_ul_min")) for i in channels])
     data = np.array(rows, dtype=float).reshape(-1, 1 + 2 * len(channels))
-    data = data[np.isfinite(data[:, 0])]
+    data = data[np.isfinite(data[:, 0]) & np.isfinite(data[:, 1:]).any(axis=1)]   # a QC row is not a reading
     count = len(channels)
     return data[:, 0], [data[:, 1 + i] for i in range(count)], [data[:, 1 + count + i] for i in range(count)]
 
@@ -159,34 +159,18 @@ def _number(text) -> float:
         return math.nan
 
 
-def fluidics_anchor(path: Path) -> tuple[float, float] | None:
-    """The first row's time of day and elapsed_s, which put a wall-clock stamp on the CSV's clock."""
-    try:
-        with Path(path).open(newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                stamp, elapsed = time_of_day(row.get("timestamp")), _number(row.get("elapsed_s"))
-                if stamp is not None and math.isfinite(elapsed):
-                    return stamp, elapsed
-                return None
-    except OSError:
-        return None
-    return None
-
-
-def read_qc_csv(path: Path, anchor: tuple[float, float]) -> QCSeries | None:
-    """The QC rows of a run on the fluidics clock: each row's wall-clock stamp against the fluidics
-    CSV's first row. A row past midnight is placed on the next day."""
-    anchor_stamp, anchor_elapsed = anchor
+def read_qc_csv(path: Path) -> QCSeries | None:
+    """The QC rows of a run's timeline file, on its clock: the rows that carry a state."""
     columns: dict[str, list] = {key: [] for key in ("t", "rate", "rate_half", "cv", "cv_half", "diameter", "count")}
     states, recordings, units = [], [], []
     with Path(path).open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            stamp = time_of_day(row.get("timestamp"))
-            if stamp is None:
+            if not str(row.get("state") or ""):
+                continue                                   # a reading
+            t = _number(row.get("elapsed_s"))
+            if not math.isfinite(t):
                 continue
-            if stamp < anchor_stamp - 43200:
-                stamp += 86400.0
-            columns["t"].append(anchor_elapsed + stamp - anchor_stamp)
+            columns["t"].append(t)
             for key, column in (("rate", "rate_hz"), ("rate_half", "rate_half"), ("cv", "cv_percent"),
                                 ("cv_half", "cv_half"), ("diameter", "diameter"), ("count", "count")):
                 columns[key].append(_number(row.get(column)))
@@ -248,16 +232,9 @@ def project_run(directory: Path, name: str) -> ReviewRun:
 
 
 def run_qc(directory: Path, summary: dict, fluidics: Path, t: np.ndarray, flows: list[np.ndarray]) -> QCSeries | None:
-    """The run's droplet QC, when it wrote one and the fluidics CSV carries the clock to place it."""
-    stored = summary.get("artifacts", {}).get("qc_csv")
-    if not isinstance(stored, str) or not stored:
-        return None
-    path = Path(stored) if Path(stored).is_absolute() else directory.parents[2] / stored
-    anchor = fluidics_anchor(fluidics)
-    if not path.is_file() or anchor is None:
-        return None
+    """The run's droplet QC: the QC rows of its timeline file, with the expected rate from the flows."""
     try:
-        qc = read_qc_csv(path, anchor)
+        qc = read_qc_csv(fluidics)
     except (OSError, ValueError):
         return None
     if qc is not None:

@@ -637,13 +637,16 @@ class AcquisitionEngine:
         camera_recorder = self._camera.acquisition if (wants_video and self.camera_live) else None
         if wants_video and not self.camera_live:
             raise RuntimeError("include_video was asked for, but no camera is live")
-        return self._recordings.start_recording(
+        started = self._recordings.start_recording(
             settings,
             camera_recorder=camera_recorder,
             frame_size=self._camera.recording_frame_size(settings),
         )
+        self._camera.qc_row_sink = self._recordings.qc_sink     # QC rows join the run's timeline
+        return started
 
     def stop_recording(self) -> dict[str, Any]:
+        self._camera.qc_row_sink = None
         return self._recordings.stop_recording()
 
     def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:

@@ -304,6 +304,28 @@ class StatusReadTests(unittest.TestCase):
         self.assertEqual(metadata["camera_parameters"]["Gain"]["value"], 1.0)
         self.assertEqual(metadata["camera_fps"], 4032.0)
 
+    def test_a_qc_summary_is_shown_and_goes_to_the_runs_timeline_named_after_the_recording(self):
+        from types import SimpleNamespace
+
+        from admet.engines.acquisition.camera.controller import CameraController
+        from admet.engines.acquisition.camera.qc import QCSummary
+
+        controller = CameraController(CountingCamera())
+        rows = []
+        controller.qc_row_sink = lambda at, record, summary: rows.append((at, record.get("recording_id"), summary.state))
+        controller._recording_started(SimpleNamespace(record={"recording_id": "run_a_step01", "step": 1}))
+        summary = QCSummary(at=42.0, rate_hz=1170.0, rate_half=21.0, count=1.0, diameter=124.0, diameter_half=0.5,
+                            diameter_unit="um", cv_percent=2.7, cv_half=0.3, n=200, bursts=5,
+                            speed_px_frame=48.0, spacing_px=128.0, state="STABLE")
+        controller._on_qc(summary)
+
+        self.assertEqual(rows, [(42.0, "run_a_step01", "STABLE")])
+        self.assertEqual(controller.status_metadata()["camera_qc"]["state"], "STABLE")
+        controller._recording_stopped()
+        self.assertIsNone(controller.status_metadata()["camera_qc"])
+        controller._on_qc(summary)                                    # between recordings: no row written
+        self.assertEqual(len(rows), 1)
+
 
 class VideoWorkerTests(unittest.TestCase):
     def test_writes_one_raw_file_and_encodes_it_once_every_frame_is_written(self):
@@ -496,7 +518,7 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
         camera = FakeRecordingCamera()
         bursts = []
         acquisition = CameraAcquisitionThread(camera, preview_callback=lambda frame: None)
-        acquisition.qc_sink = lambda frames, fps: bursts.append((len(frames), fps))
+        acquisition.qc_sink = lambda frames, fps, at: bursts.append((len(frames), fps))
         acquisition.burst_frames, acquisition.burst_interval_s = 3, 0.05
         acquisition.frame_rate_hint = 4032.0
 

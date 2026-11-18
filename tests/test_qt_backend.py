@@ -302,9 +302,7 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertIn(Path(videos[0]["video_path"]).stem, [r.get("recording_id") for r in indexed])
         # The run's fluidics and QC files are named in the run's summary and in the recording's own record.
         run_id = completed["run_id"]
-        self.assertEqual(summary["artifacts"]["qc_csv"], f"records/camera/{run_id}.qc.csv")
         record = writers[-1].record
-        self.assertEqual(record["qc_csv"], f"records/camera/{run_id}.qc.csv")
         self.assertEqual(record["fluidics_csv"], Path(summary["artifacts"]["fluidics_csv"]).as_posix())
         self.assertTrue(record["fluidics_csv"].startswith("records/fluidics/"))
 
