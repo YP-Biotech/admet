@@ -102,11 +102,13 @@ class HomeTests(unittest.TestCase):
 
             admet.do("emergency_stop")
 
-            data = admet.home.data_dir
-            listed = json.loads((data / "manifest.json").read_text())["files"]
-            on_disk = list(data.rglob("*.csv"))
+            on_disk = list(admet.home.data_dir.rglob("*.csv"))
             self.assertEqual(len(on_disk), 1)
-            self.assertEqual([f["role"] for f in listed], ["control_fluidics_csv"])
+            [run] = admet.runs.list()
+            self.assertEqual((run["kind"], run["state"]), ("recording", "completed"))
+            record = json.loads((Path(run["directory"]) / "run.json").read_text())
+            self.assertEqual(record["recording"]["fluidics_csv"], "run.csv")
+            self.assertEqual(on_disk, [Path(run["directory"]) / "run.csv"])
 
     def test_a_second_service_on_the_same_home_finds_the_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -116,13 +118,14 @@ class HomeTests(unittest.TestCase):
             admet.do("start_recording", {"recording_label": "kept"})
             time.sleep(0.3)
             admet.do("stop_recording")
-            manifest = admet.home.data_dir / "manifest.json"
-            before = json.loads(manifest.read_text())
+            [run] = admet.runs.list()
+            record_path = Path(run["directory"]) / "run.json"
+            before = json.loads(record_path.read_text())
 
             reopened = Admet(home=tmp)
 
-            self.assertEqual(json.loads(manifest.read_text()), before)
-            self.assertEqual(len(reopened.project.session.files), 1)
+            self.assertEqual(json.loads(record_path.read_text()), before)
+            self.assertEqual(len(reopened.runs.list()), 1)
 
     def test_the_home_is_made_with_its_rooms_and_described(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,7 +150,7 @@ class PathOwnershipTests(unittest.TestCase):
             job = engine.jobs[-1]
             self.assertEqual(set(job.outputs), {"video", "fluidics_csv"})
             for path in job.outputs.values():
-                self.assertTrue(str(path).startswith(str(admet.project.path)))
+                self.assertTrue(str(path).startswith(str(admet.home.data_dir / "runs")))
             self.assertIn("set01", job.metadata["recording_id"])
 
     def test_an_action_that_writes_nothing_is_given_nothing(self):
@@ -345,15 +348,12 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             admet, _started = self._recorded(tmp)
 
-            session = load_session(admet.project.path)
-            recorded = json.loads(
-                (admet.project.path / "records" / "metadata.json").read_text()
-            )["recordings"][0]
+            [run] = admet.runs.list()
+            recorded = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]
 
-            self.assertEqual([p for p in admet.project.path.rglob("*.avi")], [])
-            self.assertEqual({f.role for f in session.files}, {"control_fluidics_csv"})
+            self.assertEqual([p for p in admet.home.data_dir.rglob("*.avi")], [])
             self.assertEqual(recorded["video_path"], "")
-            self.assertEqual(recorded["video_candidates"], [])
+            self.assertEqual(recorded["fluidics_csv"], "run.csv")
 
     def test_what_was_true_during_the_run_is_kept_with_it(self):
         # Flows measured under different correction factors are not comparable,
@@ -361,9 +361,8 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             admet, _started = self._recorded(tmp)
 
-            context = json.loads(
-                (admet.project.path / "records" / "metadata.json").read_text()
-            )["recordings"][0]["context"]
+            [run] = admet.runs.list()
+            context = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]["context"]
 
             self.assertEqual(context["corrections"]["oil_l_scale"], 1.07)
             self.assertEqual(context["channels"][0]["label"], "Oil L")
@@ -373,17 +372,19 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
 
 
 class RegistrationTests(unittest.TestCase):
-    def test_what_an_action_produced_ends_up_in_the_manifest(self):
+    def test_what_an_action_produced_ends_up_in_the_runs_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet, _engine = _admet(tmp)
 
             admet.run("acquisition", "start_recording", {"recording_label": "set01"})
             admet.run("acquisition", "stop_recording")
 
-            session = load_session(admet.project.path)
-            roles = {file.role for file in session.files}
-            self.assertEqual(roles, {"control_video", "control_fluidics_csv"})
-            self.assertTrue(any(item.id == "acq-records" for item in session.items))
+            [run] = admet.runs.list()
+            recording = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]
+            self.assertEqual(recording["fluidics_csv"], "run.csv")
+            self.assertEqual(recording["video_path"], f"{recording['recording_id']}.avi")
+            self.assertTrue(recording["recording_id"].startswith("set01_"))
+            self.assertTrue((Path(run["directory"]) / recording["video_path"]).is_file())
 
     def test_the_registration_survives_a_reload(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,7 +394,7 @@ class RegistrationTests(unittest.TestCase):
 
             reopened = Admet(home=tmp)
 
-            self.assertEqual(len(reopened.project.session.files), 2)
+            self.assertEqual(len(reopened.runs.list()), 1)
 
     def test_an_action_with_nothing_to_leave_behind_registers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,7 +402,7 @@ class RegistrationTests(unittest.TestCase):
 
             admet.run("acquisition", "noop")
 
-            self.assertEqual(load_session(admet.project.path).files, ())
+            self.assertEqual(admet.runs.list(), [])
 
 
 class PhantomFileTests(unittest.TestCase):
@@ -411,7 +412,6 @@ class PhantomFileTests(unittest.TestCase):
         # it, because everything downstream believes it.
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)
-            store = admet.project
             admet.run("acquisition", "connect_fluidics", {"simulated": True, "start_polling": True})
             admet.run("acquisition", "start_recording", {"recording_label": "csvonly"})
             time.sleep(0.6)
@@ -419,15 +419,10 @@ class PhantomFileTests(unittest.TestCase):
             time.sleep(0.3)
             admet.run("acquisition", "disconnect_fluidics")
 
-            session = load_session(store.path)
-
-            roles = {file.role for file in session.files}
-            self.assertIn("control_fluidics_csv", roles)
-            self.assertNotIn("control_video", roles)
-            for file in session.files:
-                self.assertTrue(
-                    (store.path / file.path).is_file(), f"{file.path} is in the manifest"
-                )
+            [run] = admet.runs.list()
+            recording = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]
+            self.assertEqual(recording["video_path"], "")
+            self.assertTrue((Path(run["directory"]) / recording["fluidics_csv"]).is_file())
 
 
 class RoutingTests(unittest.TestCase):
@@ -453,7 +448,6 @@ class RealEngineTests(unittest.TestCase):
     def test_a_simulated_recording_lands_in_the_data_folder_and_is_registered(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)
-            store = admet.project
             admet.run("acquisition", "connect_fluidics", {"simulated": True, "start_polling": True})
 
             admet.run("acquisition", "start_recording", {"recording_label": "set01"})
@@ -461,11 +455,10 @@ class RealEngineTests(unittest.TestCase):
             admet.run("acquisition", "stop_recording")
             time.sleep(0.3)
 
-            written = [path for path in store.path.rglob("*.csv") if path.is_file()]
+            written = [path for path in admet.home.data_dir.rglob("*.csv") if path.is_file()]
             self.assertTrue(written, "the fluidics log should be inside the data folder")
-            self.assertTrue(str(written[0]).startswith(str(store.path)))
-            session = load_session(store.path)
-            self.assertTrue(session.files)
+            self.assertTrue(str(written[0]).startswith(str(admet.home.data_dir / "runs")))
+            self.assertEqual(len(admet.runs.list()), 1)
             admet.run("acquisition", "disconnect_fluidics")
 
 

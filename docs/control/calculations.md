@@ -13,9 +13,8 @@ files only; it needs no device and changes no setting on the rig.
 3. If the calculation has **parameters**, set them in the parameter table:
    gravimetry's fit range, the limits of viscosity and fluid density. They start
    at their defaults and are kept per calculation until ADMET closes.
-4. Click **Calculate**. The result is saved as a new file under the run's
-   `calculations/` folder; earlier results stay and are listed under
-   *Saved results for this run*.
+4. Click **Calculate**. The result is added to the run's record (`run.json`);
+   earlier results stay and are listed under *Saved results for this run*.
 
 If inputs are missing — a measurement not entered, a recording still open — the
 page says what is missing instead of calculating.

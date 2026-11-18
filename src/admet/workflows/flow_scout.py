@@ -1,7 +1,6 @@
 """Single-height settling and averaging-window assessment from closed recordings."""
 
 import csv
-import json
 import math
 from pathlib import Path
 import random
@@ -151,7 +150,7 @@ def analyze_scout(context):
     with Path(context["csv"]).open(newline="", encoding="utf-8") as handle:
         rows = [tuple(_finite(row.get(k)) for k in ("elapsed_s", "pressure_1_mbar", "flow_1_ul_min"))
                 for row in csv.DictReader(handle)]
-    events = [json.loads(line) for line in (context["directory"] / "events.jsonl").read_text().splitlines() if line]
+    events = context["events"]
     if (any(r[0] is None for r in rows) or any(b[0] <= a[0] for a, b in zip(rows, rows[1:]))
             or any(e.get("state") == "paused" or e.get("outcome") in
                    {"skipped", "timed_out", "cancelled", "error"} for e in events)):

@@ -37,22 +37,19 @@ class RunMeasurementsTests(unittest.TestCase):
         self.assertEqual(normalize(measured_protocol())["measurements"], measured_protocol()["measurements"])
 
     def test_only_current_run_ids_are_accepted(self):
-        store = self.backend.service.protocol_store()
-        for run_id in ("plan_" + "a" * 32, "run_../../elsewhere"):
+        for run_id in ("plan_" + "a" * 32, "run_../../elsewhere", "run_" + "a" * 32, "20261118_183000_../x"):
             with self.subTest(run_id=run_id), self.assertRaisesRegex(ValueError, "invalid run ID"):
-                store.measurements(run_id)
+                self.backend.measurements(run_id)
 
     def test_measurement_bounds_are_atomic_and_required_allows_null_until_calculation(self):
-        store = self.backend.service.protocol_store()
         document = measured_protocol()
         document["measurements"]["before_mg"].update(unit="mg", min=0, required=True)
-        run_id = "run_" + "b" * 32
-        store.begin({"plan_id": "p", "run_id": run_id, "normalized_settings": {"protocol": document}})
-        self.assertIsNone(store.measurements(run_id)["values"]["before_mg"])
+        run_id = self.backend.service.runs.begin({"plan_id": "p", "normalized_settings": {"protocol": document}}).run_id
+        self.assertIsNone(self.backend.measurements(run_id)["values"]["before_mg"])
         with self.assertRaises(ValueError):
-            store.measurements(run_id, {"after_mg": 5, "before_mg": -1})
-        self.assertEqual(store.measurements(run_id)["revision"], 0)
-        self.assertIsNone(store.measurements(run_id)["values"]["after_mg"])
+            self.backend.measurements(run_id, {"after_mg": 5, "before_mg": -1})
+        self.assertEqual(self.backend.measurements(run_id)["revision"], 0)
+        self.assertIsNone(self.backend.measurements(run_id)["values"]["after_mg"])
 
     @needs_fluigent_sdk
     def test_execution_initializes_null_values_and_rerun_is_independent(self):

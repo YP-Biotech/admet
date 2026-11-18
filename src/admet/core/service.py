@@ -31,6 +31,7 @@ from admet.core.engine import ActionSpec, action_spec
 from admet.core.clock import now_iso as _now_iso
 from admet.core.home import AdmetHome
 from admet.core.project import ProjectStore
+from admet.core.runs import RECORD, TIMELINE, Run, RunStore
 from admet.core.run import RunJob, RunResult
 from admet.workflows.operations import operation as find_operation
 
@@ -164,13 +165,11 @@ class Admet:
         self._engines: dict[str, Any] = {}
         self._marks: dict[str, Any] = {}
         self.home = (home if isinstance(home, AdmetHome) else AdmetHome.resolve(home)).ensure()
-        # Until runs are folders of their own, the data room keeps the index runs are written into.
+        self.runs = RunStore(self.home.data_dir)
+        # The analysis operations keep their index of sources here until the registry replaces it.
         self.project: ProjectStore = ProjectStore.create(self.home.data_dir, "data")
         self._protocol_plans: dict[str, dict[str, Any]] = {}
         self._executing_plan_id: str | None = None
-        # Each plan remembers which project it belongs to, never a copy of it:
-        # a copy held across a reopen writes its outdated file list back.
-        self._plan_projects: dict[str, Path] = {}
         self._run_artifacts: dict[str, Any] = {}
         self._execution_lock = threading.Lock()
         # Observation and commands may arrive from different desktop threads.
@@ -178,7 +177,6 @@ class Admet:
 
         self._tell_engine_home()
         self._encode_leftovers()
-        self._list_tagged_recordings()
 
     # -- the rig's settings ----------------------------------------------------
     def rig(self) -> dict[str, Any]:
@@ -201,16 +199,6 @@ class Admet:
                 context["optics"] = dict(optics)           # µm per px as measured on the preview
             engine.recording_context = context
 
-    def _list_tagged_recordings(self) -> None:
-        """Any video in records/camera that carries its record but is not listed gets listed."""
-        try:
-            listed = self.project.register_tagged_recordings()
-        except Exception:
-            log.exception("could not list the recordings found in records/camera")
-            return
-        if listed:
-            log.info("listed %d recording(s) found in records/camera: %s", len(listed), ", ".join(listed))
-
     def _require_idle(self):
         engine = self._engines.get("acquisition")
         if self._executing_plan_id or (engine and (getattr(engine, "pipeline_state", "idle") in {
@@ -221,7 +209,17 @@ class Admet:
     def protocol_store(self):
         from admet.core.protocol_store import ProtocolStore
 
-        return ProtocolStore(self.project)
+        return ProtocolStore(self.home.data_dir)
+
+    # -- runs ----------------------------------------------------------------
+    def measurements(self, run_id: str, changes: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The values typed during a run; with changes, updated."""
+        return self.runs.open(run_id).measurements(changes)
+
+    def measurement_runs(self) -> list[dict[str, Any]]:
+        """The runs that declared measurements, newest first."""
+        return [{"run_id": run["run_id"], "name": run["name"], "at": run["at"]}
+                for run in self.runs.list() if run["measurements"]]
 
     def plan_protocol_file(self, path: str):
         from admet.workflows.json_protocol import load
@@ -258,27 +256,22 @@ class Admet:
         return self._engines[engine_id]
 
     def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
-        """A video finished encoding after its recording stopped: list it with its recording.
-
-        A video whose recording was never listed (its run ended badly) is listed from
-        the record the video carries, so no finished video goes unlisted.
-        """
-        project = self.project
-        if not encoded or project is None or Path(video_path).parent != project.records_dir / "camera":
+        """A video finished encoding after its recording stopped, or could not: its run's record says so."""
+        path = Path(video_path)
+        if not (path.parent / RECORD).is_file():
             return
         try:
-            if not project.attach_encoded_video(video_path):
-                project.register_tagged_recordings(only=Path(video_path))
+            Run(path.parent).video_finished(path.name, encoded, reason)
         except Exception:
-            log.exception("could not list the encoded video %s", video_path)
+            log.exception("could not note the encoded video %s", video_path)
 
     def _encode_leftovers(self) -> None:
-        """Finish, in the background, encodings a previous session left unfinished."""
+        """Finish, in the background, encodings a previous session left unfinished in any run."""
         from admet.engines.acquisition.camera.video import encode_leftovers
 
-        camera = self.project.records_dir / "camera"
-        if any(camera.glob("*.video.json")):
-            threading.Thread(target=encode_leftovers, args=(camera, self._video_finished),
+        folders = list(dict.fromkeys(path.parent for path in self.runs.runs_dir.glob("*/*.video.json")))
+        if folders:
+            threading.Thread(target=lambda: [encode_leftovers(folder, self._video_finished) for folder in folders],
                              name="EncodeLeftovers", daemon=True).start()
 
     def describe(self, target: str = "") -> dict[str, Any]:
@@ -488,8 +481,6 @@ class Admet:
             "error": "",
         }
         self._protocol_plans[plan_id] = deepcopy(plan)
-        if self.project is not None:
-            self._plan_projects[plan_id] = self.project.path
         return deepcopy(plan)
 
     def discard_protocol_preview(self, plan_id):
@@ -497,7 +488,6 @@ class Admet:
             plan = self._protocol_plans.get(plan_id)
             if plan is not None and not plan.get("run_id"):
                 self._protocol_plans.pop(plan_id, None)
-                self._plan_projects.pop(plan_id, None)
 
     def planned_protocols(self, plan_id: str = "") -> dict[str, Any]:
         self._refresh_plan_lifecycle()
@@ -532,42 +522,36 @@ class Admet:
         if plan["camera_required"] and not (engine and engine.camera_live):
             raise RuntimeError("Connect the camera and start Live before executing this plan")
         plan["state"] = "executing"
-        plan["run_id"] = f"run_{uuid.uuid4().hex}"
         plan["executed_at"] = _now_iso()
         self._executing_plan_id = plan_id
         try:
-            store = self._plan_store(plan_id)
-            if store is not None:
-                directory = store.begin(plan)
-                self._run_artifacts[plan_id] = {
-                    "directory": directory, "artifacts": {},
-                    "recording": False,
-                }
-            self._save_plan(plan)
+            run = self.runs.begin(plan)                    # the run's folder, its record holding the plan
+            plan["run_id"] = run.run_id
+            self._run_artifacts[plan_id] = {"run": run, "artifacts": {}, "recording": False}
             if plan["operation_id"] == "run_json_protocol":
                 if engine is not None and engine.recording_active:
                     raise RuntimeError("stop the existing recording before executing a JSON protocol")
                 # A protocol's recording lasts as long as the protocol: a frame or
-                # time limit would close the fluidics CSV while it still runs.
-                recording = self.do("start_recording", {
-                    "recording_label": plan["run_id"], "include_video": False,
+                # time limit would close the timeline file while it still runs.
+                self.do("start_recording", {
+                    "recording_label": run.run_id, "include_video": False,
                     "recording_max_frames": 0, "recording_max_seconds": 0,
                 })
-                fluidics_csv = self._project_relative(recording.get("csv_path"))
                 if plan["recording"]["video_steps"]:
-                    # Video is per step, opened and closed by the steps themselves. Every recording's
-                    # record names the run's timeline file, so its slice of it is one cut by time.
-                    engine.arm_step_video(self.project.records_dir / "camera", plan["run_id"], {
-                        "project_id": self.project.session.project_id, "run_id": plan["run_id"],
-                        "tag": plan.get("tag", ""),
+                    # Video is per step, opened and closed by the steps themselves, into the run's
+                    # folder. Every recording's record names the run's timeline file, so its slice
+                    # of it is one cut by time.
+                    engine.arm_step_video(run.path, run.name, {
+                        "run_id": run.run_id, "tag": plan.get("tag", ""),
                         "protocol": str(plan.get("name") or plan.get("protocol_name") or plan.get("operation_id") or ""),
-                        "fluidics_csv": fluidics_csv,
+                        "fluidics_csv": TIMELINE,
                     })
                 artifact = self._run_artifacts[plan_id]
                 artifact["recording"] = True
-                artifact["artifacts"]["fluidics_csv"] = recording.get("csv_path")
+                artifact["artifacts"]["fluidics_csv"] = TIMELINE
                 artifact["artifacts"]["polling_origin_monotonic"] = self.polling_started_monotonic()
                 artifact["artifacts"]["recording_closed"] = False
+                run.update(artifacts=artifact["artifacts"])
             result = op.run(self, deepcopy(plan["normalized_settings"]))
         except Exception as exc:
             plan["state"] = "failed"
@@ -595,28 +579,18 @@ class Admet:
         self._save_plan(plan)
         return deepcopy(plan)
 
-    def _plan_store(self, plan_id):
-        """The store for a plan's project, built from the project as it is now."""
-        from admet.core.protocol_store import ProtocolStore
-
-        path = self._plan_projects.get(plan_id)
-        if path is None or self.project is None or self.project.path != path:
-            return None
-        return ProtocolStore(self.project)
+    def _run_of(self, plan) -> Run | None:
+        """The run a plan became, once it has one."""
+        artifact = self._run_artifacts.get(plan["plan_id"])
+        if artifact is not None and artifact.get("run") is not None:
+            return artifact["run"]
+        run_id = plan.get("run_id")
+        return self.runs.open(run_id) if self.runs.exists(run_id) else None
 
     def _save_plan(self, plan):
-        store = self._plan_store(plan["plan_id"])
-        if store is not None and plan.get("run_id"):
-            store.plan(plan)
-
-    def _project_relative(self, path: Any) -> str:
-        """A path as the project stores it: relative to the project when it lies inside."""
-        if not path:
-            return ""
-        try:
-            return Path(path).resolve().relative_to(self.project.path.resolve()).as_posix()
-        except (ValueError, AttributeError):
-            return str(path)
+        run = self._run_of(plan)
+        if run is not None:
+            run.update(**plan)
 
     def _finish_plan(self, plan):
         artifact = self._run_artifacts.get(plan["plan_id"])
@@ -627,10 +601,8 @@ class Admet:
                 engine = self._engines.get("acquisition")
                 videos = engine.step_videos() if engine is not None and plan["recording"]["video_steps"] else []
                 if videos:
-                    root = self.project.path.resolve()
-                    artifact["artifacts"]["videos"] = [
-                        {**video, "video_path": Path(video["video_path"]).resolve().relative_to(root).as_posix()
-                         if video["video_path"] else ""}
+                    artifact["artifacts"]["videos"] = [        # named within the run's folder
+                        {**video, "video_path": Path(video["video_path"]).name if video["video_path"] else ""}
                         for video in videos]
                     for video in videos:
                         if not video["video_path"]:
@@ -641,9 +613,8 @@ class Admet:
                             log.exception("could not list the video of step %s", video.get("step"))
         finally:
             self._save_plan(plan)
-            store = self._plan_store(plan["plan_id"])
-            if artifact and store is not None:
-                store.finish(plan, artifact["directory"], artifact["artifacts"])
+            if artifact and artifact.get("run") is not None:
+                artifact["run"].update(artifacts=artifact["artifacts"])
             self._run_artifacts.pop(plan["plan_id"], None)
 
     def _archive_protocol_event(self, plan_id, event):
@@ -651,10 +622,8 @@ class Admet:
         if event.error_msg:
             plan["error"] = event.error_msg
         artifact = self._run_artifacts.get(plan_id)
-        if artifact:
-            path = artifact["directory"] / "events.jsonl"
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(_describe_event(event)) + "\n")
+        if artifact and artifact.get("run") is not None:
+            artifact["run"].event(_describe_event(event))
         if not event.step_name and str(event.outcome) in {"completed", "cancelled", "error"}:
             finished = deepcopy(plan)
             finished["state"] = "completed" if str(event.outcome) == "completed" else "failed"
@@ -1048,27 +1017,41 @@ class Admet:
         if not spec.outputs:
             return job
         label = str(job.settings.get("recording_label") or job.id)
-        target = self.project.control_recording_target(label)
-        missing = set(spec.outputs) - set(target.outputs)
+        if self.runs.exists(label):                       # a protocol's run records into its own folder
+            run, recording_id = self.runs.open(label), label
+        else:                                             # a recording started by hand is a run of its own
+            run = self.runs.begin_recording(label)
+            recording_id = f"{run.name}_{time.strftime('%Y%m%d_%H%M%S')}"
+            run.update(recording_id=recording_id)
+        targets = {"video": run.path / f"{recording_id}.avi", "fluidics_csv": run.csv_path}
+        missing = set(spec.outputs) - set(targets)
         if missing:
             raise LookupError(
-                f"{spec.id} declares outputs the project cannot place: {', '.join(sorted(missing))}"
+                f"{spec.id} declares outputs a run cannot place: {', '.join(sorted(missing))}"
             )
-        metadata = {
-            **job.metadata,
-            "recording_id": target.recording_id,
-            "recording_label": label,
-        }
-        outputs = {name: target.outputs[name] for name in spec.outputs}
-        return replace(job, outputs=outputs, metadata=metadata)
+        metadata = {**job.metadata, "recording_id": recording_id, "recording_label": label, "run_id": run.run_id}
+        return replace(job, outputs={name: targets[name] for name in spec.outputs}, metadata=metadata)
 
     def _keep_recording(self, recording: dict[str, Any] | None) -> None:
-        if recording and self.project is not None:
-            self.project.append_control_recording({**recording, "context": self.run_context()})
+        """What the recording left behind goes into its run's record, named within the folder."""
+        if not recording:
+            return
+        folder = Path(str(recording.get("fluidics_csv") or recording.get("video_path") or "")).parent
+        if not (folder / RECORD).is_file():
+            return
+        run = Run(folder)
+        kept = {**recording, "context": self.run_context()}
+        for key in ("video_path", "fluidics_csv"):
+            if kept.get(key):
+                kept[key] = Path(str(kept[key])).name
+        fields: dict[str, Any] = {"recording": kept}
+        if run.read().get("kind") == "recording":
+            fields.update(state="completed", stopped_at=_now_iso())
+        run.update(**fields)
 
     def _register(self, spec: ActionSpec, result: RunResult) -> None:
-        """Put what the action produced into the manifest, so it can be found."""
-        if not spec.artifact or self.project is None:
+        """Put what the action produced into its run's record, so it can be found."""
+        if not spec.artifact:
             return
         if spec.artifact == "control_recording":
             self._keep_recording(result.metadata.get("recording"))

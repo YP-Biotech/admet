@@ -75,8 +75,7 @@ def scout_context(directory, *, drift=0, missing=False, short=False, curved=Fals
         writer = csv.writer(handle)
         writer.writerow(["elapsed_s", "pressure_1_mbar", "flow_1_ul_min"])
         writer.writerows(rows)
-    (directory / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    return {"directory": directory, "document": source, "csv": csv_path,
+    return {"directory": directory, "document": source, "csv": csv_path, "events": events,
             "summary": {"state": "completed", "artifacts": {"polling_origin_monotonic": origin}}}
 
 
@@ -210,6 +209,5 @@ class ScoutTests(unittest.TestCase):
             context["summary"]["artifacts"]["polling_origin_monotonic"] = None
             self.assertIsNone(analyze_scout(context)["recommendation"])
             context["summary"]["artifacts"]["polling_origin_monotonic"] = 100
-            with (Path(tmp) / "events.jsonl").open("a") as handle:
-                handle.write(json.dumps({"state": "paused"}) + "\n")
+            context["events"].append({"state": "paused"})
             self.assertIsNone(analyze_scout(context)["recommendation"])

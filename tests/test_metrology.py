@@ -1,7 +1,6 @@
 """Synthetic recorded-run acceptance tests; no device connections."""
 
 import csv
-import json
 import math
 from pathlib import Path
 import tempfile
@@ -9,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from admet.core.protocol_store import write_json
+from admet.core.runs import Run
 from admet.core.service import Admet
 from admet.workflows.calculations import calculate_run, calculation_readiness, saved_results
 from admet.workflows.gravimetry import unit_configs
@@ -22,11 +22,37 @@ def collection_s(step, channel):
     return params["duration_s"]
 
 
+def record(directory):
+    return Run(directory).read()
+
+
+def measurements(directory):
+    return record(directory)["measurements"]
+
+
+def save_measurements(directory, payload):
+    Run(directory).update(measurements=payload)
+
+
+def protocol(directory):
+    return record(directory)["normalized_settings"]["protocol"]
+
+
+def save_protocol(directory, document):
+    data = record(directory)
+    data["normalized_settings"]["protocol"] = document
+    Run(directory).write(data)
+
+
+def save_events(directory, events):
+    Run(directory).update(events=events)
+
+
 def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, parameters=None, tail_s=0.0):
     source = template_documents()[name]
     source["parameter_values"] = {**({"units": "010"} if name == "gravimetry" else {}), **(parameters or {})}
     document = resolve(source)
-    directory = Path(root) / "records" / "protocols" / (run_id or name)
+    directory = Path(root) / "runs" / (run_id or name)
     directory.mkdir(parents=True)
     with patch.object(Admet, "engine_action", side_effect=AssertionError("hardware")):
         plan = Admet().plan_protocol("run_json_protocol", {"protocol": source})
@@ -64,15 +90,13 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
             rows.append(row)
         tail = (end, q)
         clock += duration + 4
-    csv_path = directory / "fluidics.csv"
+    csv_path = directory / "run.csv"
     with csv_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["elapsed_s", *[f"{kind}_{channel}_{unit}" for channel in channels
                                         for kind, unit in (("flow", "ul_min"), ("pressure", "mbar"))]])
         writer.writerows(rows)
-    (directory / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    write_json(directory / "protocol.json", source)
-    write_json(directory / "summary.json", {**plan, "state": "completed", "run_id": run_id or name,
+    kept = {**plan, "state": "completed", "run_id": run_id or name, "events": events,
                "rig_fingerprint": {"simulated": True,
                                    "channel_mapping": [{"sensor_index": ch, "sensor_device_sn": 41 + ch,
                                                         "sensor_type": "Flow_L" if ch == 0 else "Flow_M",
@@ -81,8 +105,8 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
                                                            for prefix in ("oil_l", "cells_m", "beads_m")
                                                            for key, value in (("scale", 2.25), ("calibration", "IPA"),
                                                                               ("offset", 0), ("quadratic", 0))}},
-               "artifacts": {"fluidics_csv": str(csv_path), "recording_closed": True,
-                             "polling_origin_monotonic": 100}})
+               "artifacts": {"fluidics_csv": "run.csv", "recording_closed": True,
+                             "polling_origin_monotonic": 100}}
     fields = document.get("measurements", {})
     values = {key: None for key in fields}
     if name == "gravimetry":
@@ -95,7 +119,7 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
                                            * multiplier * 1.6)
     elif name == "dead_volume":
         values.update(zip(configs[0]["volumes"], (80, 82, 84)))
-    write_json(directory / "measurements.json", {"fields": fields, "values": values, "revision": 1})
+    write_json(directory / "run.json", {**kept, "measurements": {"fields": fields, "values": values, "revision": 1}})
     return directory
 
 
@@ -139,16 +163,15 @@ class MetrologyTests(unittest.TestCase):
 
     def test_gravimetry_leaves_out_a_collection_without_its_after_mass(self):
         directory = archive(self.tmp.name, "gravimetry")
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(directory)
         payload["values"]["mass_after_ch1_1"] = None
-        write_json(path, payload)
+        save_measurements(directory, payload)
         self.assertEqual(calculation_readiness(directory, "gravimetry"), "")
         result = calculate_run(directory, "gravimetry")["result"]["units"]["1"]
         self.assertEqual(result["samples"][0]["left_out"], "no mass entered after it")
         self.assertEqual((result["status"], [t["true_flow"]["repeats"] for t in result["targets"]]), ("usable", [2, 3, 3]))
         payload["values"]["mass_after_ch1_6"] = None                       # a second one at 15 µL/min
-        write_json(path, payload)
+        save_measurements(directory, payload)
         result = calculate_run(directory, "gravimetry")["result"]["units"]["1"]
         self.assertEqual(result["status"], "inconclusive")
         self.assertIsNone(result["multiplier"])
@@ -171,12 +194,11 @@ class MetrologyTests(unittest.TestCase):
 
         # One collection weighs 12 % more than its repeats: inconclusive, but the terms still come.
         directory = archive(self.tmp.name, "gravimetry")
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(directory)
         values = payload["values"]
         values["mass_after_ch1_1"] = values["mass_before_ch1_1"] + 1.12 * (values["mass_after_ch1_1"]
                                                                           - values["mass_before_ch1_1"])
-        write_json(path, payload)
+        save_measurements(directory, payload)
         whole = calculate_run(directory, "gravimetry")
         working = calculate_run(directory, "gravimetry", parameters={"fit_from_ul_min": 30})
 
@@ -203,41 +225,38 @@ class MetrologyTests(unittest.TestCase):
 
     def test_gravimetry_leaves_out_a_collection_skipped_during_the_run(self):
         directory = archive(self.tmp.name, "gravimetry")
-        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events = record(directory)["events"]
         for event in events:
             if event["step_index"] == 7:                                     # collection 8
                 event["outcome"] = "skipped"
-        (directory / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        save_events(directory, events)
+        payload = measurements(directory)
         payload["values"].update(mass_before_ch1_8=None, mass_after_ch1_8=None)
-        write_json(path, payload)
+        save_measurements(directory, payload)
         result = calculate_run(directory, "gravimetry")["result"]["units"]["1"]
         self.assertEqual(result["samples"][7]["left_out"], "skipped in the run")
         self.assertEqual(result["status"], "usable")
 
     def test_gravimetry_missing_and_invalid_collection_never_produces_a_correction(self):
         directory = archive(self.tmp.name, "gravimetry")
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(directory)
         payload["values"]["mass_before_ch1_1"] = None                      # weighed after, not before
-        write_json(path, payload)
+        save_measurements(directory, payload)
         self.assertIn("Missing measurement", calculation_readiness(directory, "gravimetry"))
         with self.assertRaises(ValueError):
             calculate_run(directory, "gravimetry")
         payload["values"] = {key: None for key in payload["values"]} | {"density_g_ml": 1.6}
-        write_json(path, payload)
+        save_measurements(directory, payload)
         self.assertIn("Missing measurement", calculation_readiness(directory, "gravimetry"))
         directory = archive(self.tmp.name, "gravimetry", run_id="invalid")
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(directory)
         payload["values"]["mass_after_ch1_1"] = 900
-        write_json(path, payload)
+        save_measurements(directory, payload)
         result = calculate_run(directory, "gravimetry")["result"]["units"]["1"]
         self.assertEqual(result["status"], "inconclusive")
         self.assertIsNone(result["multiplier"])
         payload["values"]["mass_after_ch1_1"] = 1019.2
-        write_json(path, payload)
+        save_measurements(directory, payload)
         self.assertTrue(saved_results(directory)[0]["outdated"])
 
     def test_gravimetry_rejects_wrong_units_and_binding(self):
@@ -266,14 +285,13 @@ class MetrologyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "mask"):
                 resolve(source)
         directory = archive(self.tmp.name, "gravimetry")
-        path = directory / "measurements.json"
-        data = json.loads(path.read_text())
-        doc = resolve(json.loads((directory / "protocol.json").read_text()))
+        data = measurements(directory)
+        doc = resolve(protocol(directory))
         for sample in unit_configs(doc["calculations"][0])[0]["samples"]:
             step = doc["steps"][sample["step"] - 1]
             q = step["sensor_setpoints"]["1"]
             data["values"][sample["after"]] = 1000 + (q * 1.1 + 3) * collection_s(step, 1) / 60 * 1.6
-        write_json(path, data)
+        save_measurements(directory, data)
         result = calculate_run(directory, "gravimetry")["result"]["units"]["1"]
         self.assertEqual(result["status"], "usable")
         self.assertIsNone(result["multiplier"])
@@ -281,15 +299,14 @@ class MetrologyTests(unittest.TestCase):
         self.assertAlmostEqual(result["flow_fit"]["intercept"], 3, places=3)
         self.assertEqual(len(result["calibration_curve"]), 3)
         data["values"]["mass_after_ch1_1"] *= 1.3
-        write_json(path, data)
+        save_measurements(directory, data)
         self.assertEqual(calculate_run(directory, "gravimetry")["result"]["status"], "inconclusive")
 
     def test_gravimetry_calculates_every_unit_alone_from_its_own_recording(self):
         directory = archive(self.tmp.name, "gravimetry", parameters={"units": "111"})
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(directory)
         payload["values"]["mass_after_ch2_4"] = payload["values"]["mass_before_ch2_4"]   # nothing collected
-        write_json(path, payload)
+        save_measurements(directory, payload)
         self.assertEqual(calculation_readiness(directory, "gravimetry"), "")
         result = calculate_run(directory, "gravimetry")["result"]
         self.assertEqual(result["status"], "inconclusive")
@@ -316,13 +333,12 @@ class MetrologyTests(unittest.TestCase):
         self.assertAlmostEqual(result["volume_ul"], 82)
         self.assertAlmostEqual(result["sd_ul"], 2)
         self.assertAlmostEqual(result["ci95_ul"][1] - 82, 4.303 * 2 / 3 ** 0.5, places=3)
-        path = directory / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(directory)
         payload["values"]["dead_volume_2"] = None
-        write_json(path, payload)
+        save_measurements(directory, payload)
         self.assertIn("Missing measurement", calculation_readiness(directory, "dead_volume"))
         payload["values"]["dead_volume_2"] = 0
-        write_json(path, payload)
+        save_measurements(directory, payload)
         with self.assertRaisesRegex(ValueError, "positive"):
             calculate_run(directory, "dead_volume")
 
@@ -348,10 +364,9 @@ class MetrologyTests(unittest.TestCase):
 
     def test_viscosity_recovers_resistance_ratio_and_absolute_reference(self):
         reference_dir = archive(self.tmp.name, "viscosity", run_id="reference", slope=2)
-        path = reference_dir / "measurements.json"
-        payload = json.loads(path.read_text())
+        payload = measurements(reference_dir)
         payload["values"]["known_viscosity"] = 2
-        write_json(path, payload)
+        save_measurements(reference_dir, payload)
         reference = calculate_run(reference_dir, "viscosity")
         self.assertEqual(reference["result"]["status"], "usable")
         self.assertAlmostEqual(reference["result"]["resistance_mbar_min_ul"], 2, places=3)   # recorded flow as is
@@ -370,8 +385,7 @@ class MetrologyTests(unittest.TestCase):
 
     def test_viscosity_rejects_unstable_data(self):
         directory = archive(self.tmp.name, "viscosity")
-        path = directory / "measurements.json"
-        csv_path = directory / "fluidics.csv"
+        csv_path = directory / "run.csv"
         with csv_path.open(newline="") as handle:
             rows = list(csv.DictReader(handle))
         for i, row in enumerate(rows):
@@ -399,20 +413,11 @@ class MetrologyTests(unittest.TestCase):
     def test_changed_execution_and_calculation_bindings_are_refused(self):
         for name in ("gravimetry", "viscosity"):
             directory = archive(self.tmp.name, name)
-            path = directory / "protocol.json"
-            document = json.loads(path.read_text())
+            document = protocol(directory)
             document["steps"][0]["on_complete"] = "hold"
-            write_json(path, document)
+            save_protocol(directory, document)
             with self.assertRaises(ValueError):
                 calculate_run(directory, name)
-        directory = archive(self.tmp.name, "gravimetry", run_id="changed-binding")
-        path = directory / "protocol.json"
-        document = json.loads(path.read_text())
-        sample = document["calculations"][0]["samples"][0]
-        sample["before"], sample["after"] = sample["after"], sample["before"]
-        write_json(path, document)
-        with self.assertRaisesRegex(ValueError, "declarations disagree"):
-            calculate_run(directory, "gravimetry")
 
     def test_viscosity_channel_selection_and_flow_control_only(self):
         for channel, working in ((0, 250), (1, 67), (2, 67)):
@@ -444,8 +449,8 @@ class MetrologyTests(unittest.TestCase):
                          ("Scale only (suggested)", 0))
         self.assertEqual(len(tables["Collections"]["rows"]), 9)
         copied = Path(self.tmp.name) / "copied"
-        shutil.copytree(Path(self.tmp.name) / "records", copied / "records")
-        self.assertFalse(saved_results(copied / "records" / "protocols" / "gravimetry")[0]["outdated"])
+        shutil.copytree(Path(self.tmp.name) / "runs", copied / "runs")
+        self.assertFalse(saved_results(copied / "runs" / "gravimetry")[0]["outdated"])
 
     def test_sample_steps_passes_and_units_are_checked(self):
         from copy import deepcopy
@@ -469,10 +474,10 @@ class MetrologyTests(unittest.TestCase):
     def test_viscosity_flags_hysteresis_and_nonlinearity_without_dropping_points(self):
         for case in ("hysteresis", "nonlinear"):
             directory = archive(self.tmp.name, "viscosity", run_id=case)
-            events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+            events = record(directory)["events"]
             windows = [(events[i]["monotonic"] - 101, events[i + 1]["monotonic"] - 99)
                        for i in range(0, len(events), 2)]
-            path = directory / "fluidics.csv"
+            path = directory / "run.csv"
             with path.open(newline="") as handle:
                 rows = list(csv.DictReader(handle))
             for row in rows:

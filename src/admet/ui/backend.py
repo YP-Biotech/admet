@@ -195,11 +195,11 @@ class DesktopBackend:
 
     def measurements(self, run_id, changes=None):
         with self.lock:
-            return self.service.protocol_store().measurements(run_id, changes)
+            return self.service.measurements(run_id, changes)
 
     def measurement_runs(self):
         with self.lock:
-            return self.service.protocol_store().measurement_runs()
+            return self.service.measurement_runs()
 
     def call(self, operation, settings=None):
         with self.lock:

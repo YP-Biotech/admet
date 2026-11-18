@@ -3,10 +3,10 @@
 A project is a folder ending in `.admetp`. It is what `admet analyze` reads: the
 videos registered for analysis, the analysis settings and results.
 
-`admet control` no longer writes projects. It records into the admet home's
-data folder and keeps the rig's settings in `control/rig.json` there; see
-[the home](../control/overview#the-home). The data folder is laid out like a
-project's `records/` and is what analyze is pointed at.
+`admet control` no longer writes projects. It records one folder per run into the
+admet home's `data/runs/` and keeps the rig's settings in `control/rig.json`; see
+[the home](../control/overview#the-home) and [Recording](../control/running#recording).
+The data folder is what analyze will be pointed at.
 
 ```text
 experiment.admetp/
