@@ -58,6 +58,34 @@ class MatrixChangeTests(unittest.TestCase):
         self.assertEqual([row.active for row in view.matrix], [True, True, False])
         self.assertEqual([row.sample_id for row in view._targets("opencv")], ["a", "b"])
 
+    def test_a_setting_applied_from_the_header_lands_on_every_ticked_file_that_takes_it(self):
+        from admet.ui.analyze_matrix import apply_setting, mass_edit_fields
+
+        view = _make_view()
+        view.matrix = [_row(engine="cellpose", sample=f"img{i}", detect_inclusions=True) for i in range(3)]
+        view.matrix += [_row(sample="vid", k_sigma=4.0)]
+        view.matrix[1].active = False                                        # unticked: left alone
+        view._notify = lambda *a, **k: None
+
+        changed = view._apply_to_ticked("detect_inclusions", False)
+
+        self.assertEqual([row.sample_id for row in changed], ["img0", "img2"])
+        self.assertEqual([row.settings.get("detect_inclusions") for row in view.matrix], [False, True, False, None])
+        self.assertEqual(view._apply_to_ticked("detect_inclusions", False), [])   # already so: nothing changes
+
+        changed = view._apply_to_ticked("microns_per_pixel", "2.27")
+        self.assertEqual(len(changed), 3)
+        self.assertEqual(view.matrix[0].settings["px_to_um"], 2.27)             # the imaging engine's name for it
+        self.assertEqual(view.matrix[3].settings["microns_per_pixel"], 2.27)
+        self.assertNotIn("px_to_um", view.matrix[1].settings)
+
+        self.assertEqual(apply_setting(view.matrix, "k_sigma", 3), [view.matrix[3]])
+        self.assertEqual(view.matrix[3].settings["k_sigma"], 3.0)
+        self.assertEqual(apply_setting(view.matrix, "no_such_setting", 1), [])
+        self.assertEqual([f for f, _l, _k in mass_edit_fields({"cellpose"})],
+                         ["microns_per_pixel", "frame_limit", "detect_inclusions"])
+        self.assertEqual(len(mass_edit_fields({"opencv", "cellpose"})), 12)
+
     def test_a_scale_typed_in_the_table_lands_on_the_row(self):
         view = _make_view()
         view.matrix = [_row(sample="a"), _row(engine="cellpose", sample="imgs")]

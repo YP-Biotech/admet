@@ -78,6 +78,11 @@ passes once); **satellite size**, **min droplet area** and **threshold × noise*
 Tick *Show detection stages* to see each step on the preview frame. *Reset file
 settings* puts the selected file back to the defaults, keeping its µm/px and FPS.
 
+To set one thing on many files, use **Apply to ticked files** above the table: pick
+the setting, give the value, press Apply, and every ticked file whose engine has
+that setting takes it, for example *Detect inclusions* off on every image folder, or
+one µm/px on every video. Unticked files are left alone.
+
 ## Setting an image folder up
 
 Image folders are grouped into frames by name (`…_z01_…a01f001d4.tif`: z-slice and

@@ -110,6 +110,52 @@ def wire_analyse_table(table: Any, on_change: Any) -> None:
     table.on("matrix-change", on_change)
 
 
+# What can be set on many files at once: the field, its label, its kind, the engines it applies to.
+MASS_EDIT_FIELDS: tuple[tuple[str, str, ParamKind, tuple[str, ...]], ...] = (
+    ("microns_per_pixel", "µm/px", ParamKind.FLOAT, ("opencv", "cellpose")),
+    ("fps", "FPS", ParamKind.FLOAT, ("opencv",)),
+    ("start_frame", "First frame", ParamKind.INTEGER, ("opencv",)),
+    ("end_frame", "Last frame", ParamKind.INTEGER, ("opencv",)),
+    ("k_sigma", "Threshold, × noise", ParamKind.FLOAT, ("opencv",)),
+    ("satellite_px", "Satellite size, px", ParamKind.INTEGER, ("opencv",)),
+    ("min_area", "Min droplet area, px²", ParamKind.FLOAT, ("opencv",)),
+    ("skip_left_pct", "Skip left, %", ParamKind.FLOAT, ("opencv",)),
+    ("skip_right_pct", "Skip right, %", ParamKind.FLOAT, ("opencv",)),
+    ("gate_pct", "Gate, %", ParamKind.FLOAT, ("opencv",)),
+    ("frame_limit", "Image limit", ParamKind.INTEGER, ("cellpose",)),
+    ("detect_inclusions", "Detect inclusions", ParamKind.BOOLEAN, ("cellpose",)),
+)
+
+
+def mass_edit_fields(engines: set[str] | tuple[str, ...]) -> list[tuple[str, str, ParamKind]]:
+    """The settings that can be applied to many files at once, for the engines among them."""
+    return [(field, label, kind) for field, label, kind, applies in MASS_EDIT_FIELDS
+            if any(engine in applies for engine in engines)]
+
+
+def setting_key(field: str, engine: str) -> str:
+    """The settings key a table field means for an engine: the imaging engine names the scale px_to_um."""
+    return "px_to_um" if field == "microns_per_pixel" and engine == "cellpose" else field
+
+
+def apply_setting(rows: list[Any], field: str, value: Any) -> list[Any]:
+    """Set one field on every ticked row whose engine takes it; the rows that changed."""
+    spec = next((item for item in MASS_EDIT_FIELDS if item[0] == field), None)
+    if spec is None:
+        return []
+    _field, _label, kind, applies = spec
+    changed = []
+    for row in rows:
+        if not row.active or row.engine not in applies:
+            continue
+        key = setting_key(field, row.engine)
+        new = cast_matrix_value(kind, value)
+        if row.settings.get(key) != new:
+            row.settings[key] = new
+            changed.append(row)
+    return changed
+
+
 def cast_matrix_value(kind: ParamKind, value: Any) -> Any:
     if kind is ParamKind.BOOLEAN:
         return bool(value)
