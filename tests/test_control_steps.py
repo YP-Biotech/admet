@@ -46,10 +46,11 @@ class ExperimentStepTests(unittest.TestCase):
     def stage_index(self, stage_id):
         return next(i for i, stage in enumerate(self.window.workflow.stages) if stage.id == stage_id)
 
-    def wait_plan(self, editor, previous=None):
+    def wait_plan(self, editor, previous_id=None):
+        # Compared by id: the editor swaps its plan for a fresh copy from the backend on every refresh.
         for _ in range(100):
             self.pump(0.05)
-            if editor.plan is not None and editor.plan is not previous:
+            if editor.plan is not None and editor.plan["plan_id"] != previous_id:
                 return editor.plan
         self.fail("no plan arrived")
 
@@ -75,10 +76,10 @@ class ExperimentStepTests(unittest.TestCase):
         with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", False)):
             editor.build_plan()
             self.pump(0.3)
-        self.assertIs(editor.plan, plan)                                      # backing out plans nothing
+        self.assertEqual(editor.plan["plan_id"], plan["plan_id"])              # backing out plans nothing
         with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", True)):
             editor.build_plan()
-            again = self.wait_plan(editor, previous=plan)
+            again = self.wait_plan(editor, previous_id=plan["plan_id"])
         self.assertEqual(again["tag"], "Oil 3")                               # an empty name keeps the last one
 
     def test_an_added_step_can_be_removed_and_its_plan_goes_with_it(self):
