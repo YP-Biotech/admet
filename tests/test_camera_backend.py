@@ -59,15 +59,22 @@ class FakeTransportLayer:
 
 
 class FakeGrabResult:
-    def __init__(self, frame):
+    def __init__(self, frame, ticks=0, number=0):
         self.frame = frame
         self.released = False
+        self.ticks, self.number = ticks, number
 
     def GrabSucceeded(self):
         return True
 
     def GetArray(self):
         return self.frame
+
+    def GetTimeStamp(self):
+        return self.ticks
+
+    def GetBlockID(self):
+        return self.number
 
     def Release(self):
         self.released = True
@@ -195,6 +202,12 @@ class CameraTests(unittest.TestCase):
         camera.start_grabbing(latest_only=False)
         self.assertEqual(camera.device.strategy, "one_by_one")
         self.assertTrue(np.array_equal(camera.grab_frame(), camera.device.frame))
+        camera.device.result = FakeGrabResult(camera.device.frame, ticks=5_000_000, number=17)
+        frame, ticks, number = camera.grab()
+        self.assertTrue(np.array_equal(frame, camera.device.frame))
+        self.assertEqual((ticks, number), (5_000_000, 17))
+        camera.device.result = None
+        self.assertEqual(camera.grab()[1:], (0, 0))                      # a source without stamps says 0
         self.assertEqual(camera.get_resulting_framerate(), 120.0)
 
         camera.close()
@@ -463,6 +476,44 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
         for value in range(3):
             acquisition.process_frame(np.full((2, 2), value, dtype=np.uint8))
         self.assertEqual(len(bursts), 2)
+
+    def test_the_camera_clock_is_measured_from_consecutive_frames_and_counts_the_skipped(self):
+        from admet.engines.acquisition.camera.acquisition import CLOCK_SAMPLES, FrameClock
+
+        clock = FrameClock()
+        period_ticks, fps = 250_000, 4000.0                             # 1 GHz ticks, 250 µs a frame
+        for k in range(CLOCK_SAMPLES):
+            arrived = 100.0 + k * 0.00025 + (0.0005 if k % 7 else 0.0001)   # latency 0.1 to 0.5 ms
+            clock.observe(1_000_000 + k * period_ticks, 10 + k, arrived, fps)
+        self.assertAlmostEqual(clock.tick_hz, 1e9, delta=1)
+        self.assertAlmostEqual(clock.offset_s, 100.0 - 0.001 + 0.0001, places=6)   # the least latency
+        self.assertAlmostEqual(clock.time_of(1_000_000 + 10 * period_ticks), 100.0 + 0.0025 + 0.0001, places=6)
+        self.assertEqual(clock.skipped, 0)
+        clock.observe(1_000_000 + 60 * period_ticks, 10 + 60, 100.02, fps)          # 20 numbers missing
+        self.assertEqual(clock.skipped, 20)
+        facts = clock.facts()
+        self.assertEqual((facts["first_frame_ticks"], facts["first_frame_number"], facts["frames_skipped"]),
+                         (1_000_000, 10, 20))
+        self.assertEqual(facts["camera_timestamp_hz"], 1_000_000_000)
+        self.assertRegex(facts["first_frame_at"], r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}")
+        clock.reset_recording()
+        self.assertEqual((clock.skipped, clock.first), (0, None))
+        self.assertIsNotNone(clock.offset_s)                                        # the clock itself stays
+
+    def test_a_recording_record_carries_the_cameras_time_and_the_skipped_frames(self):
+        camera = FakeRecordingCamera()
+        writer = FakeWriter()
+        writer.record = {"recording_id": "r"}
+        acquisition = CameraAcquisitionThread(camera, preview_callback=lambda frame: None)
+        acquisition.frame_rate_hint = 4000.0
+        self.assertTrue(acquisition.start_recording(writer, max_frames=3))
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8), ticks=1_000_000, number=100)
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8), ticks=1_250_000, number=101)
+        acquisition.process_frame(np.ones((2, 2), dtype=np.uint8), ticks=2_000_000, number=104)   # 102, 103 lost
+
+        self.assertTrue(writer.stopped)
+        self.assertEqual((writer.record["first_frame_number"], writer.record["frames_skipped"]), (100, 2))
+        self.assertEqual(writer.record["first_frame_ticks"], 1_000_000)
 
     def test_the_recording_hooks_bracket_the_writer(self):
         camera = FakeRecordingCamera()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta
 from collections.abc import Callable
 from threading import Event, Thread
 from typing import Any, Protocol
@@ -92,6 +93,80 @@ class CameraSource(Protocol):
         ...
 
 
+DEFAULT_TICK_HZ = 1_000_000_000.0     # a Basler USB camera's timestamp counts nanoseconds
+CLOCK_SAMPLES = 40                    # consecutive frames the camera's clock is measured over
+
+
+class FrameClock:
+    """The camera's clock on the PC's monotonic one, and the frames the camera made that never arrived.
+
+    Each frame comes with the camera's timestamp, in its own ticks, and its number. Over the first
+    consecutive frames of a session the tick rate is measured against the camera's known frame rate,
+    and the offset to the PC clock is the smallest latency seen, since a frame can only arrive after
+    it was taken. From then on time_of() places any frame to a fraction of a millisecond, and a gap
+    in the numbers counts the frames skipped on the camera's side, which no counter on the PC sees.
+    """
+
+    def __init__(self) -> None:
+        self.tick_hz = DEFAULT_TICK_HZ
+        self.offset_s: float | None = None          # PC monotonic = ticks / tick_hz + offset
+        self.skipped = 0                            # frames the camera numbered that never arrived
+        self.frames = 0
+        self._last_number: int | None = None
+        self._samples: list[tuple[int, int, float]] = []
+        self.first: tuple[int, int, float] | None = None   # (ticks, number, arrived) of the first frame kept
+
+    def observe(self, ticks: int, number: int, arrived: float, fps_hint: float = 0.0) -> None:
+        """A frame arrived now with these camera stamps; fps_hint is the camera's own frame rate."""
+        if not ticks and not number:
+            return
+        self.frames += 1
+        if self._last_number is not None and number > self._last_number + 1:
+            self.skipped += number - self._last_number - 1
+        self._last_number = number
+        if self.first is None:
+            self.first = (ticks, number, arrived)
+        if ticks and len(self._samples) < CLOCK_SAMPLES:
+            self._samples.append((ticks, number, arrived))
+            if len(self._samples) == CLOCK_SAMPLES:
+                self._settle(fps_hint)
+            elif self.offset_s is None:
+                self.offset_s = arrived - ticks / self.tick_hz
+
+    def _settle(self, fps_hint: float) -> None:
+        steps = [(t1 - t0) / (n1 - n0) for (t0, n0, _), (t1, n1, _) in zip(self._samples, self._samples[1:])
+                 if n1 > n0 and t1 > t0]
+        if fps_hint and steps:
+            measured = float(np.median(steps)) * fps_hint
+            if 0.5 * DEFAULT_TICK_HZ <= measured <= 2 * DEFAULT_TICK_HZ or measured > 1e5:
+                self.tick_hz = measured          # within reason: the camera's rate and its ticks agree
+        self.offset_s = min(arrived - ticks / self.tick_hz for ticks, _n, arrived in self._samples)
+
+    def time_of(self, ticks: int) -> float | None:
+        """When a frame with these ticks was taken, on the PC's monotonic clock."""
+        if self.offset_s is None or not ticks:
+            return None
+        return ticks / self.tick_hz + self.offset_s
+
+    def reset_recording(self) -> None:
+        """A recording starts: its first frame and its skipped count start over; the clock stays."""
+        self.first = None
+        self.skipped = 0
+        self.frames = 0
+        self._last_number = None
+
+    def facts(self) -> dict[str, Any]:
+        """What a recording's record keeps of the camera's time."""
+        if self.first is None:
+            return {}
+        ticks, number, arrived = self.first
+        taken = self.time_of(ticks)
+        first_at = datetime.now() - timedelta(seconds=time.monotonic() - (taken if taken is not None else arrived))
+        return {"first_frame_ticks": ticks, "first_frame_number": number,
+                "first_frame_at": first_at.isoformat(timespec="milliseconds"),
+                "camera_timestamp_hz": round(self.tick_hz), "frames_skipped": self.skipped}
+
+
 class FrameWriter(Protocol):
     frame_count: int
 
@@ -150,6 +225,7 @@ class CameraAcquisitionThread(Thread):
         self._last_burst_at = 0.0
         self.on_recording_started: Callable[[Any], None] | None = None
         self.on_recording_stopped: Callable[[], None] | None = None
+        self.clock = FrameClock()                   # the camera's time on the PC's
 
         self._stop_event = Event()
         self._recording_event = Event()
@@ -180,7 +256,15 @@ class CameraAcquisitionThread(Thread):
         self.live_started_monotonic = time.monotonic()
         self.last_stats_time = time.time()
         self.camera.start_grabbing(latest_only=True)
+        grab = getattr(self.camera, "grab", None)
         while not self._stop_event.is_set():
+            if grab is not None:
+                grabbed = grab()
+                if grabbed is None:
+                    time.sleep(self.sleep_s)
+                    continue
+                self.process_frame(grabbed[0], ticks=grabbed[1], number=grabbed[2])
+                continue
             frame = self.camera.grab_frame()
             if frame is None:
                 time.sleep(self.sleep_s)
@@ -188,9 +272,11 @@ class CameraAcquisitionThread(Thread):
             self.process_frame(frame)
         self.camera.stop_grabbing()
 
-    def process_frame(self, frame: np.ndarray) -> None:
+    def process_frame(self, frame: np.ndarray, *, ticks: int = 0, number: int = 0) -> None:
         self.total_frames += 1
         self.latest_frame_monotonic = time.monotonic()
+        if ticks or number:
+            self.clock.observe(ticks, number, self.latest_frame_monotonic, self.frame_rate_hint)
         if self._recording_event.is_set() and not self._recording_paused.is_set() and self.writer:
             if self.writer.write(frame):
                 self.frame_count += 1
@@ -253,6 +339,7 @@ class CameraAcquisitionThread(Thread):
         self.start_time = time.time()
         self._recording_paused.clear()
         self._burst, self._last_burst_at = None, 0.0        # the first burst comes at once
+        self.clock.reset_recording()
         if not self.writer.start():
             self.writer = None
             return False
@@ -272,6 +359,9 @@ class CameraAcquisitionThread(Thread):
         self._recording_paused.clear()
         if self.writer:
             self.last_writer_frame_count = getattr(self.writer, "frame_count", None)
+            record = getattr(self.writer, "record", None)
+            if isinstance(record, dict):
+                record.update(self.clock.facts())     # the camera's own time, into the recording's record
             self.writer.stop()
             self.writer = None
         self.last_recording_frames = frames

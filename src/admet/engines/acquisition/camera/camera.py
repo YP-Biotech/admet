@@ -25,6 +25,14 @@ class CameraAvailability:
     error_type: str = ""
 
 
+def _camera_int(result: Any, name: str) -> int:
+    try:
+        value = getattr(result, name)()
+        return int(value) if value is not None else 0
+    except Exception:
+        return 0
+
+
 class Camera:
     def __init__(self, pylon_module: Any | None = None):
         self._pylon = pylon_module
@@ -208,6 +216,14 @@ class Camera:
             self._is_grabbing = False
 
     def grab_frame(self, timeout_ms: int = 5) -> np.ndarray | None:
+        grabbed = self.grab(timeout_ms)
+        return grabbed[0] if grabbed is not None else None
+
+    def grab(self, timeout_ms: int = 5) -> tuple[np.ndarray, int, int] | None:
+        """The next frame with the camera's own time: (frame, timestamp ticks, frame number).
+
+        The timestamp is the camera's clock, the number its count of frames sent, so a frame the
+        host never received shows as a gap in the numbers. Either is 0 when the camera has none."""
         if not self.device or not self.device.IsGrabbing():
             return None
 
@@ -218,9 +234,8 @@ class Camera:
                 self._pylon_module().TimeoutHandling_Return,
             )
             if result and result.GrabSucceeded():
-                if self._is_mono8(result):
-                    return result.GetArray()
-                return self._to_mono8().Convert(result).GetArray()
+                frame = result.GetArray() if self._is_mono8(result) else self._to_mono8().Convert(result).GetArray()
+                return frame, _camera_int(result, "GetTimeStamp"), _camera_int(result, "GetBlockID")
             return None
         except Exception:
             return None
