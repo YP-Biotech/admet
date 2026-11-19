@@ -52,6 +52,8 @@ from admet.ui.analyze_results import (
     export_csv_zip,
     file_results,
     iter_rows,
+    live_cells,
+    live_qc,
     load_stored_result,
     local_time,
     result_charts,
@@ -1051,7 +1053,7 @@ class AnalyzeWorkflowView:
         rows = self._results_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
             if not rows:
-                ui.label("Nothing analysed yet.").classes("muted text-xs")
+                ui.label("Nothing analysed yet, and no live QC from a run.").classes("muted text-xs")
                 return
             fields = tuple(f for f in RESULT_FIELDS
                            if f != "inclusions" or any(r.inclusion_counts for r in self._results(ticked_only=False)))
@@ -1061,18 +1063,36 @@ class AnalyzeWorkflowView:
             wire_results_table(table, self._handle_matrix_change, fields)
 
     def _results_rows(self) -> list[dict[str, Any]]:
-        """Every listed file that has a stored result, ticked or not, with the plot colour of the ticked ones."""
+        """Every listed file with a stored result or a live QC, ticked or not; the ticked ones in their plot colour.
+
+        A video recorded on the rig gets a second line: what the live QC measured while it was recorded,
+        to set against what the analysis found. Before the analysis runs, that line stands alone.
+        """
         shown = {_result_key(r): i for i, r in enumerate(self._results())}
-        by_key = {self._row_key(row): row for row in self.matrix}
+        by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
-        for result in self._results(ticked_only=False):
-            key = _result_key(result)
-            row = by_key.get(key)
-            if row is None:
+        for row in self.matrix:
+            key = self._row_key(row)
+            result, live = by_key.get(key), self._live_qc(row)
+            if result is None and live is None:
                 continue
             color = chart_color(shown[key]) if key in shown else "var(--text-disabled)"
-            rows.append({"uid": row.uid, "active": row.active, **results_cells(result, color, active=row.active)})
+            if result is not None:
+                rows.append({"uid": row.uid, "active": row.active, **results_cells(result, color, active=row.active)})
+            if live is not None:
+                rows.append({"uid": f"{row.uid}:live", "active": row.active,
+                             **live_cells(live, "" if result is not None else row.sample_id, color, active=row.active)})
         return rows
+
+    def _live_qc(self, row: MatrixRow):
+        """The live QC the rig wrote for this video while recording it, when the file came from a run."""
+        if not row.run or row.engine != "opencv":
+            return None
+        try:
+            mtime = (Path(row.run) / "run.csv").stat().st_mtime
+        except OSError:
+            return None
+        return _live_qc_of(row.run, str(Path(row.source_path)), mtime)
 
     def _render_results_plots(self) -> None:
         from nicegui import ui
@@ -1133,7 +1153,8 @@ class AnalyzeWorkflowView:
             self._notify("Nothing to export yet.", "warning")
             self._mount_sidebar()
             return
-        ui.download.content(export_csv_zip(self._stored_results(), results, self._corrections()), "analysis.zip")
+        live = {self._row_key(row): measured for row in self.matrix if (measured := self._live_qc(row)) is not None}
+        ui.download.content(export_csv_zip(self._stored_results(), results, self._corrections(), live), "analysis.zip")
         self._log(f"export: {len(results)} result(s) as CSV")
         self._notify(f"Exported {_count(len(results), 'result')} as CSV.", "success")
         self._sync_stage()
@@ -1325,7 +1346,7 @@ class AnalyzeWorkflowView:
         payload = getattr(event, "args", {})
         if not isinstance(payload, dict):
             return
-        uid = str(payload.get("uid") or "")
+        uid = str(payload.get("uid") or "").removesuffix(":live")       # the live line ticks with its file
         field_name = str(payload.get("field") or "")
         value = payload.get("value")
         row = next((item for item in self.matrix if item.uid == uid), None)
@@ -1648,6 +1669,11 @@ def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, s
     corrections = {(engine, source): value for engine, source, value in json.loads(fixes)}
     scale_of = {(engine, source): (scale, fps, *flow) for engine, source, scale, fps, *flow in json.loads(scales)}
     return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of))
+
+
+@lru_cache(maxsize=64)
+def _live_qc_of(run_dir: str, source_path: str, _mtime: float):
+    return live_qc(run_dir, source_path)
 
 
 def _result_key(result: FileResult) -> tuple[str, str, str]:

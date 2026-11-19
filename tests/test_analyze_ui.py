@@ -240,5 +240,28 @@ class PathLabelTests(unittest.TestCase):
         self.assertEqual(label.props["title"], path)
 
 
+class LiveRowTests(unittest.TestCase):
+    def test_a_video_from_a_run_shows_the_rigs_live_qc_as_a_line_that_ticks_with_the_file(self):
+        from tests.test_analyze_results import _run_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            run, names = run_with_videos(data, "oil", videos=1)
+            _run_csv(run.path, Path(names[0]).stem)
+            view = _make_view(Registry(Path(tmp) / "analyze"))
+            view._add_root(data)
+
+            rows = view._results_rows()
+
+            self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])   # no analysis yet: the rig's line alone
+            self.assertIn("STABLE", rows[0]["analysed"])
+            self.assertIn("oil", rows[0]["sample"])
+            view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
+            self.assertFalse(view.matrix[0].active)
+            self.assertFalse(view._results_rows()[0]["active"])
+            view.matrix[0].run = ""
+            self.assertEqual(view._results_rows(), [])                                   # a loose file has no live line
+
+
 if __name__ == "__main__":
     unittest.main()
