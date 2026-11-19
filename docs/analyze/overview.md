@@ -2,32 +2,39 @@
 
 ![admet analyze](/admet_analyze.png)
 
-`admet analyze` serves project analysis over the network. Run it on a machine
-that can see the projects; anyone on the lab network opens it in a browser. It
-reads project data only and never touches the rig.
+`admet analyze` serves the analysis over the network. Run it on a machine that
+can see the recorded runs, the server or your own; anyone on the lab network opens
+it in a browser. It reads recorded data only and never touches the rig.
 
 ```bash
 uv run --extra analyze admet analyze                      # every interface, port 8080
 uv run --extra analyze admet analyze --port 9000
-uv run --extra analyze admet analyze --host 127.0.0.1 --projects /data/admet
+uv run --extra analyze admet analyze --host 127.0.0.1 --data /srv/admet/runs
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--host` | `0.0.0.0` | Address to listen on; the default is every interface |
 | `--port` | `8080` | Port to listen on |
-| `--projects` | see [where projects live](../guide/installation#where-projects-live) | Folder holding the `.admetp` projects |
+| `--data` | none | A folder of runs to watch: a data folder, or the export folder on the server |
+| `--home` | `ADMET_HOME` or `~/.admet` | The admet home whose `analyze/` room holds the registry and the results |
+
+Analyze keeps its own room in the home: `analyze/registry.json` lists the folders
+it watches and every file it knows with its sample name, engine and settings;
+`analyze/results/` holds one folder per file and detection settings, named by a
+digest of the file's content and those settings, so the same video analysed the
+same way is never analysed twice and a copy of the file finds its result.
 
 Press **Ctrl+C** to stop. Running analyses are asked to stop cleanly first, so no
 one's work is left half-written.
 
 ## The workflow
 
-The last project opened comes back by itself; pick another at the top or browse for it.
+The file list comes back as you left it.
 
 | Stage | What you do there |
 |---|---|
-| **1. Files** | Add the videos and image folders to analyse. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. |
+| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's name; **Add files…** takes single videos and image folders. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. |
 | **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. |
 | **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 
@@ -37,10 +44,10 @@ same three stages.
 ## The file list
 
 Each row is one file with its sample name, engine and when it was last analysed.
-**Use** decides which files run and which results are shown; **✕** takes a file
-analyze added off the list and out of the project (recordings made by `admet
-control` stay). The list and every file's settings are saved with the project, so
-reopening it restores where you were.
+**Use** decides which files run and which results are shown; **✕** takes a file off
+the list (its stored results stay). **Rescan** at the top lists videos that arrived
+in the watched folders since. The list and every file's settings are kept in the
+registry, so the screen comes back as you left it.
 
 ## Setting a video up
 

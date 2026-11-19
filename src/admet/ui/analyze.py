@@ -1,8 +1,9 @@
-"""The analyze screen: the files of a project, their set-up and run, and what was found.
+"""The analyze screen: the files analyze knows, their set-up and run, and what was found.
 
-Three stages. On *Files* the user picks and ticks files; on *Analyse* each file is set up
-on its own preview and run; *Results* is view only, with export. One screen state per
-browser page; the file list and settings are kept in the project, so it comes back as left.
+Three stages. On *Files* the user adds folders of runs or single files and ticks them; on
+*Analyse* each file is set up on its own preview and run; *Results* is view only, with export.
+One screen state per browser page; the file list and settings are kept in analyze's registry,
+so it comes back as left.
 """
 
 from __future__ import annotations
@@ -14,15 +15,13 @@ import json
 import math
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from admet.core.discovery import discover_projects, project_ref_label, projects_root
 from admet.core.engine import EngineRegistry, ParamKind
-from admet.core.project import ProjectStore
-from admet.core.session import session_path
+from admet.core.home import AdmetHome
+from admet.core.registry import Registry, infer_engine
 from admet.engines.cellpose.detection import CellposeDetection, read_image_8bit
 from admet.engines.opencv.settings import OPENCV_SETTINGS
 from admet.ui import theme
@@ -44,7 +43,7 @@ from admet.ui.analyze_results import (
     FileResult,
     RESULT_FIELDS,
     RESULT_LABELS,
-    StoredRun,
+    StoredResult,
     chart_color,
     corrected_inclusions,
     correction_key,
@@ -52,10 +51,9 @@ from admet.ui.analyze_results import (
     dispersed_flow_ul_min,
     export_csv_zip,
     file_results,
-    iter_raw_rows,
-    load_stored_runs,
+    iter_rows,
+    load_stored_result,
     local_time,
-    resolve_project_path,
     result_charts,
     results_cells,
     zip_bytes,
@@ -63,11 +61,10 @@ from admet.ui.analyze_results import (
 from admet.ui.window import log_state, panel_specs, settings_panel_state, structure_signature
 from admet.ui.workflow_view import action_button_state, current_stage, instruction_text, stage_by_id, toc_row_states
 from admet.workflows import StageStatus, Workflow, WorkflowState
-from admet.workflows.analyze_runner import AnalyzeBatchReport, AnalyzeBatchRunner, AnalyzeTarget, infer_engine
+from admet.workflows.analyze_runner import AnalyzeBatchReport, AnalyzeBatchRunner, AnalyzeTarget
 
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-ANALYSIS_SETUP_KEY = "analysis_setup"
 # Per-file detection settings a video row starts with and "Reset file settings" goes back to.
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
@@ -78,15 +75,17 @@ IMAGING_DEFAULTS = {"px_to_um": 1.14, "frame_limit": 0, "detect_inclusions": Tru
 @dataclass
 class MatrixRow:
     uid: str
-    project_path: str
     source_path: str
     engine: str
     sample_id: str
     cache_policy: str = "use"
     active: bool = True
     settings: dict[str, Any] = field(default_factory=dict)
-    # A recording control made belongs to the project; only files analyze added can be removed.
-    removable: bool = True
+    run: str = ""                      # the run folder the file came from, when it did
+
+    @property
+    def run_name(self) -> str:
+        return Path(self.run).name if self.run else ""
 
 
 def render_workflow(
@@ -96,6 +95,7 @@ def render_workflow(
     *,
     registry: EngineRegistry | None = None,
     api: Any | None = None,
+    store: Registry | None = None,
 ) -> None:
     from nicegui import ui
 
@@ -106,30 +106,25 @@ def render_workflow(
             registry.register(engine.id, lambda: engine)
 
     ui.add_head_html(_style())
-    AnalyzeWorkflowView(workflow, state, registry).render()
+    AnalyzeWorkflowView(workflow, state, registry, store=store).render()
 
 
 class AnalyzeWorkflowView:
     def __init__(self, workflow: Workflow, state: WorkflowState, registry: EngineRegistry,
-                 *, recent: dict[str, str] | None = None) -> None:
+                 *, store: Registry | None = None) -> None:
         self.workflow = workflow
         self.state = state
         self.registry = registry
-        self.discovery_root = str(projects_root())
-        self._recent_override = recent
-        self.project_refs = self._discover()
-        self.project_path = ""
+        self.store = store if store is not None else Registry(AdmetHome.resolve().ensure().analyze_dir)
         self.selected_uid = ""
-        self.matrix: list[MatrixRow] = []
-        self.cache_root = str(Path.home() / ".admet-cache")
+        self._saved_matrix: list[dict[str, Any]] | None = None
+        self.matrix: list[MatrixRow] = self._load_matrix()
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
         self.show_overlay = True
         self.show_stages = False
-        # What each project last had saved, so an unchanged screen writes nothing.
-        self._saved_setup: dict[str, dict[str, Any]] = {}
-        self.notice = "Open a project to start."
+        self.notice = "Add a folder of runs, or files, to start."
         self.notice_kind = "primary"
         self.action_log: list[str] = ["Analyze UI ready."]
         self._mounted_signature: tuple[Any, ...] | None = None
@@ -152,20 +147,7 @@ class AnalyzeWorkflowView:
         self._mount_topbar()
         self._mount_sidebar()
         self._mount_content_shell()
-        last = self.last_project()
-        if last is not None:
-            self._load_project(last)              # draws the stage itself
-        else:
-            self._render_current_stage(force_mount=True)
-
-    def last_project(self) -> Path | None:
-        """The project opened most recently that still exists: the one to come back to."""
-        recent = self._recent_projects()
-        for path, _opened in sorted(recent.items(), key=lambda item: item[1], reverse=True):
-            candidate = session_path(path)
-            if (candidate / "manifest.json").is_file():
-                return candidate
-        return None
+        self._render_current_stage(force_mount=True)
 
     def _mount_topbar(self) -> None:
         from nicegui import ui
@@ -177,17 +159,12 @@ class AnalyzeWorkflowView:
         with topbar:
             with ui.row().classes("items-baseline gap-3"):
                 ui.label("admet analyze").classes("text-xl font-semibold")
-                hint = ui.label(f"projects in {_compact_path(self.discovery_root)}").classes("muted text-xs root-hint")
-                hint.props["title"] = self.discovery_root
+                roots = self.store.roots()
+                text = "runs in " + ", ".join(_compact_path(root) for root in roots) if roots else "no folder of runs yet"
+                hint = ui.label(text).classes("muted text-xs root-hint")
+                hint.props["title"] = "\n".join(roots) if roots else "Add folder… on 1. Files"
             with ui.row().classes("items-center gap-2"):
-                options = self._project_options()
-                selected = self.project_path if self.project_path in options else None
-                self._refs["project_select"] = ui.select(
-                    options, label="Project", value=selected,
-                    on_change=lambda event: self._select_project(event.value),
-                ).classes("project-select")
-                ui.button("Browse…", on_click=self._open_project_browser).props("dense no-caps outline")
-                ui.button("Refresh", on_click=self._refresh_projects).props("dense no-caps outline")
+                ui.button("Rescan", on_click=self._rescan).props("dense no-caps outline")
 
     def _mount_sidebar(self) -> None:
         sidebar = self._refs.get("sidebar")
@@ -224,7 +201,7 @@ class AnalyzeWorkflowView:
         self._sync_stage()
 
     def _structure_signature(self) -> tuple[Any, ...]:
-        return structure_signature(self._stage_id(), self.selected_uid, self.project_path,
+        return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(row.uid for row in self.matrix), self._running)
 
     def _mount_stage(self) -> None:
@@ -255,13 +232,7 @@ class AnalyzeWorkflowView:
         self._sync_log()
 
     def _sync_topbar(self) -> None:
-        select = self._refs.get("project_select")
-        if select is not None:
-            select.options = self._project_options()
-            selected = self.project_path if self.project_path in select.options else None
-            if getattr(select, "value", None) != selected:
-                select.set_value(selected)
-            select.update()
+        self._mount_topbar()                    # the folders watched may have changed
 
     def _mount_action_box(self) -> None:
         from nicegui import ui
@@ -308,7 +279,7 @@ class AnalyzeWorkflowView:
         ticked = self._targets()
         if stage_id == "files":
             if not self.matrix:
-                return 0.0, "no files" if self.project_path else "no project"
+                return 0.0, "no files"
             return 1.0, f"{_count(len(self.matrix), 'file')} · {len(ticked)} ticked"
         if stage_id == "analyse":
             if not ticked:
@@ -380,7 +351,7 @@ class AnalyzeWorkflowView:
         target = self._selected_row()
         image = self._refs.get("frame_image")
         if target is not None and image is not None and target.engine == "opencv":
-            source = self._resolve_media_path(target.source_path, target.project_path)
+            source = Path(target.source_path)
             frame_index = _preview_frame_index(target)
             frame = _read_video_frame(source, frame_index)
             if not frame["error"]:
@@ -406,7 +377,7 @@ class AnalyzeWorkflowView:
             preview.content = self._image_preview_html(target)
         image = self._refs.get("image_image")
         if target is not None and image is not None and target.engine == "cellpose":
-            source = self._resolve_media_path(target.source_path, target.project_path)
+            source = Path(target.source_path)
             index = _row_int(target, "image_frame", 1)
             shown = _read_image_source(source, index)
             if not shown["error"]:
@@ -491,10 +462,10 @@ class AnalyzeWorkflowView:
 
     def _files_rows(self) -> list[dict[str, Any]]:
         return [files_row(row, count=self._count_text(row), analyzed=self._analyzed_at(row),
-                          removable=row.removable) for row in self.matrix]
+                          removable=True) for row in self.matrix]
 
     def _count_text(self, row: MatrixRow) -> str:
-        source = self._resolve_media_path(row.source_path, row.project_path)
+        source = Path(row.source_path)
         if row.engine == "opencv":
             size = _known_video_size(source)
             return str(size[0]) if size else "unreadable"
@@ -510,7 +481,7 @@ class AnalyzeWorkflowView:
                 ui.label("Select a file in the list to see it." if self.matrix else
                          "Nothing to show until files are added.").classes("muted text-xs")
                 return
-            source = self._resolve_media_path(target.source_path, target.project_path)
+            source = Path(target.source_path)
             with ui.element("div").classes("facts-grid w-full"):
                 with ui.column().classes("gap-1 min-w-0"):
                     if target.engine == "opencv":
@@ -621,7 +592,7 @@ class AnalyzeWorkflowView:
         self._sync_tables()
         self._sync_action_box()
         self._mount_sidebar()
-        self._save_setup()
+        self._save_matrix()
         self._notify(f"{label} = {shown} on {len(changed)} ticked file(s).", "positive")
         return changed
 
@@ -629,7 +600,7 @@ class AnalyzeWorkflowView:
         rows = []
         for row in self.matrix:
             if row.engine == "opencv":
-                size = _known_video_size(self._resolve_media_path(row.source_path, row.project_path))
+                size = _known_video_size(Path(row.source_path))
                 frames = size[0] if size else 0
                 start, end = _row_int(row, "start_frame", 0), _row_int(row, "end_frame", 0) or frames
                 range_text = f"{start}–{end}" if frames else "—"
@@ -663,7 +634,7 @@ class AnalyzeWorkflowView:
     def _render_video_editor(self, target: MatrixRow) -> None:
         from nicegui import ui
 
-        source = self._resolve_media_path(target.source_path, target.project_path)
+        source = Path(target.source_path)
         size = _known_video_size(source)
         if size is None:
             ui.label(_friendly_video_error(f"cannot open video {source}")).classes("editor-note editor-warning")
@@ -834,9 +805,9 @@ class AnalyzeWorkflowView:
 
     def _analysis_overlay(self, row: MatrixRow, frame: int, width: int, height: int) -> str:
         analysis = self._stored_analysis(row)
-        if analysis is None or not analysis["raw_path"].is_file():
+        if analysis is None or not analysis["rows_path"].is_file():
             return ""
-        raw = analysis["raw_path"]
+        raw = analysis["rows_path"]
         index = _overlay_index(str(raw), raw.stat().st_mtime, analysis["file_id"])
         # Positions were measured inside the crop the analysis used; shift them back onto the frame.
         crop = analysis["settings"]
@@ -865,7 +836,7 @@ class AnalyzeWorkflowView:
             return ""
         from admet.engines.opencv.debug import detection_stages
 
-        source = self._resolve_media_path(target.source_path, target.project_path)
+        source = Path(target.source_path)
         try:
             stages = detection_stages(source, self._engine_settings(target), _preview_frame_index(target))
         except Exception as exc:
@@ -893,7 +864,7 @@ class AnalyzeWorkflowView:
         """The image with the stored droplets over it; a click on a droplet corrects it."""
         from nicegui import ui
 
-        source = self._resolve_media_path(target.source_path, target.project_path)
+        source = Path(target.source_path)
         _path_label(target.source_path)
         index = _row_int(target, "image_frame", 1)
         shown = _read_image_source(source, index)
@@ -946,8 +917,8 @@ class AnalyzeWorkflowView:
         """The stored droplets of this image as circles with their inclusion counts, corrections applied."""
         parts = []
         analysis = self._stored_analysis(target) if self.show_overlay else None
-        if analysis is not None and analysis["raw_path"].is_file():
-            raw = analysis["raw_path"]
+        if analysis is not None and analysis["rows_path"].is_file():
+            raw = analysis["rows_path"]
             fixes = target.settings.get("corrections") or {}
             for droplet in _overlay_index(str(raw), raw.stat().st_mtime, analysis["file_id"])["frames"].get(frame_id, []):
                 cx, cy, radius = _droplet_circle(droplet)
@@ -966,11 +937,11 @@ class AnalyzeWorkflowView:
         """A click on a droplet switches it off or on; with shift or alt it changes its inclusions."""
         def handler(event: Any) -> None:
             analysis = self._stored_analysis(target)
-            if analysis is None or not analysis["raw_path"].is_file():
+            if analysis is None or not analysis["rows_path"].is_file():
                 return
-            source = self._resolve_media_path(target.source_path, target.project_path)
+            source = Path(target.source_path)
             frame_id = _frame_id_at(source, _row_int(target, "image_frame", 1))
-            raw = analysis["raw_path"]
+            raw = analysis["rows_path"]
             droplets = _overlay_index(str(raw), raw.stat().st_mtime, analysis["file_id"])["frames"].get(frame_id, [])
             hit = _droplet_at(droplets, event.image_x, event.image_y)
             if hit is None:
@@ -990,7 +961,7 @@ class AnalyzeWorkflowView:
         self._settings_edited(target)
 
     def _image_preview_html(self, target: MatrixRow) -> str:
-        source = self._resolve_media_path(target.source_path, target.project_path)
+        source = Path(target.source_path)
         image = _read_image_source(source, _row_int(target, "image_frame", 1))
         if image["error"]:
             return f'<div class="editor-note editor-warning">{html.escape(image["error"])}</div>'
@@ -1053,7 +1024,7 @@ class AnalyzeWorkflowView:
         self._sync_tables()
         self._sync_action_box()
         self._mount_sidebar()
-        self._save_setup()
+        self._save_matrix()
 
     def _toggle_overlay(self, show: bool) -> None:
         self.show_overlay = bool(show)
@@ -1065,21 +1036,11 @@ class AnalyzeWorkflowView:
 
     def _stored_analysis(self, row: MatrixRow) -> dict[str, Any] | None:
         """The stored analysis of this file: where its rows are and the crop it ran with."""
-        source = str(Path(row.source_path).resolve())
-        for run in reversed(self._stored_runs()):
-            for job in run.jobs:
-                if (job.get("engine") != row.engine or job.get("status") not in {"complete", "cached"}
-                        or str(resolve_project_path(run.project_path, str(job.get("source_path") or "")).resolve())
-                        != source):
-                    continue
-                file_id = str(job.get("file_id") or "")
-                settings = next((entry.get("settings") or {} for entry in run.matrix
-                                 if entry.get("file_id") == file_id), {})
-                at = str((job.get("metadata") or {}).get("analyzed_at") or "")
-                return {"raw_path": run.raw_path if run.raw_path.is_absolute() else run.project_path / run.raw_path,
-                        "file_id": file_id, "settings": settings,
-                        "analyzed": local_time(at) if at else "an earlier run"}
-        return None
+        stored = self._stored_result(row)
+        if stored is None:
+            return None
+        return {"rows_path": stored.rows_path, "file_id": stored.file_id, "settings": stored.settings,
+                "analyzed": local_time(stored.analyzed_at) if stored.analyzed_at else "an earlier run"}
 
     # -- 3. Results -----------------------------------------------------------------------
 
@@ -1139,8 +1100,8 @@ class AnalyzeWorkflowView:
         scales = json.dumps([[row.engine, self._row_key(row)[2], *self._row_scale(row), self._row_flow(row)]
                              for row in self.matrix], sort_keys=True)
         results = []
-        for run in self._stored_runs():
-            results.extend(result for result in _cached_results(run, fixes, scales)
+        for stored in self._stored_results():
+            results.extend(result for result in _cached_results(stored, fixes, scales)
                            if _result_key(result) in listed)
         return results
 
@@ -1154,11 +1115,10 @@ class AnalyzeWorkflowView:
         """The flow that made the file's droplets, µL/min, from the recording's own record."""
         if row.engine == "cellpose":
             return 0.0
-        return dispersed_flow_ul_min(_video_record(self._resolve_media_path(row.source_path, row.project_path)))
+        return dispersed_flow_ul_min(_video_record(Path(row.source_path)))
 
     def _row_key(self, row: MatrixRow) -> tuple[str, str, str]:
-        return (Path(row.project_path).name, row.engine,
-                str(self._resolve_media_path(row.source_path, row.project_path).resolve()))
+        return (row.run_name, row.engine, str(Path(row.source_path).resolve()))
 
     def _corrections(self) -> dict[tuple[str, str], dict[str, Any]]:
         """Hand corrections by (engine, source path), the way the results are keyed."""
@@ -1173,8 +1133,7 @@ class AnalyzeWorkflowView:
             self._notify("Nothing to export yet.", "warning")
             self._mount_sidebar()
             return
-        ui.download.content(export_csv_zip(self._stored_runs(), results, self._corrections()),
-                            f"{self._project_name()}_analysis.zip")
+        ui.download.content(export_csv_zip(self._stored_results(), results, self._corrections()), "analysis.zip")
         self._log(f"export: {len(results)} result(s) as CSV")
         self._notify(f"Exported {_count(len(results), 'result')} as CSV.", "success")
         self._sync_stage()
@@ -1193,56 +1152,39 @@ class AnalyzeWorkflowView:
                                                               "backgroundColor": "#ffffff"})
             if isinstance(url, str) and "," in url:
                 files[f"{name}.png"] = base64.b64decode(url.split(",", 1)[1])
-        ui.download.content(zip_bytes(files), f"{self._project_name()}_plots.zip")
+        ui.download.content(zip_bytes(files), "analysis_plots.zip")
         self._log(f"export: {len(files)} plot(s) as PNG")
         self._notify(f"Exported {_count(len(files), 'plot')} as PNG.", "success")
         self._sync_stage()
 
-    def _project_name(self) -> str:
-        return Path(self.project_path).stem if self.project_path else "analysis"
-
     # -- stored data ----------------------------------------------------------------------
 
-    def _stored_runs(self) -> list[StoredRun]:
-        return load_stored_runs(self._project_paths())
+    def _stored_result(self, row: MatrixRow) -> StoredResult | None:
+        """This file's stored analysis for the settings it has now, if there is one."""
+        return load_stored_result(self.store.result_dir(Path(row.source_path), self._engine_settings(row)),
+                                  source_path=Path(row.source_path), engine=row.engine, sample_id=row.sample_id,
+                                  run=row.run)
+
+    def _stored_results(self) -> list[StoredResult]:
+        return [stored for stored in (self._stored_result(row) for row in self.matrix) if stored is not None]
 
     def _analyzed_at(self, row: MatrixRow) -> str:
-        """When this file was last analysed, from the stored runs; empty if never."""
-        source = str(Path(row.source_path).resolve())
-        for run in reversed(self._stored_runs()):
-            for job in run.jobs:
-                if job.get("status") not in {"complete", "cached"} or job.get("engine") != row.engine:
-                    continue
-                if str(resolve_project_path(run.project_path, str(job.get("source_path") or "")).resolve()) != source:
-                    continue
-                at = str((job.get("metadata") or {}).get("analyzed_at") or "")
-                return local_time(at) if at else "yes"
-        return ""
-
-    def _project_paths(self) -> list[Path]:
-        paths = {session_path(self.project_path)} if self.project_path else set()
-        paths.update(session_path(row.project_path) for row in self.matrix)
-        return sorted(paths)
-
-    def _resolve_media_path(self, source: str, project_path: str | None = None) -> Path:
-        path = Path(source)
-        if path.is_absolute():
-            return path
-        project = project_path or self.project_path
-        return session_path(project) / path if project else path
+        """When this file was last analysed as it is set up now; empty if never."""
+        stored = self._stored_result(row)
+        if stored is None:
+            return ""
+        return local_time(stored.analyzed_at) if stored.analyzed_at else "yes"
 
     # -- dialogs --------------------------------------------------------------------------
 
-    def _open_project_browser(self) -> None:
-        current = session_path(self.project_path) if self.project_path else None
-        self._open_path_browser(title="Open project",
-                                start=current.parent if current is not None else projects_root(self.discovery_root),
-                                mode="project")
+    def _open_folder_browser(self) -> None:
+        roots = self.store.roots()
+        self._open_path_browser(title="Add a folder of runs", start=Path(roots[0]) if roots else Path.home(),
+                                mode="folder")
 
     def _open_source_browser(self) -> None:
-        project = session_path(self.project_path)
-        start = project / "media" if (project / "media").is_dir() else project
-        self._open_path_browser(title="Add files", start=start, mode="source")
+        roots = self.store.roots()
+        self._open_path_browser(title="Add files", start=Path(roots[0]) if roots else Path.home(), mode="source")
 
     def _open_path_browser(self, *, title: str, start: Path, mode: str) -> None:
         from nicegui import ui
@@ -1256,6 +1198,9 @@ class AnalyzeWorkflowView:
             if multi:
                 ui.label("Videos (.avi, .mp4, .mov, .mkv) and folders of images (.tif, .png, .jpg). "
                          "Press ＋ to pick, then Add.").classes("muted text-xs")
+            else:
+                ui.label("A data folder, an export folder on the server, or one run: every video of every run "
+                         "in it is listed. Open the folder, then Add this folder.").classes("muted text-xs")
             path_label = ui.label(str(state["path"])).classes("browser-path")
             rows = ui.column().classes("browser-list w-full gap-1")
             with ui.row().classes("w-full gap-2 justify-end items-center"):
@@ -1263,6 +1208,8 @@ class AnalyzeWorkflowView:
                 ui.button("Cancel", on_click=dialog.close).props("dense no-caps outline")
                 if multi:
                     ui.button("Add", on_click=lambda: finish()).props("dense no-caps")
+                else:
+                    ui.button("Add this folder", on_click=lambda: choose_folder()).props("dense no-caps")
 
         def toggle(path: Path) -> None:
             key = str(path.resolve())
@@ -1289,7 +1236,7 @@ class AnalyzeWorkflowView:
                         "dense no-caps flat").classes("browser-row browser-name")
                 entries = _browser_entries(current, mode)
                 if not entries:
-                    ui.label("Nothing here to add." if multi else "No projects here.").classes("muted text-xs")
+                    ui.label("Nothing here to add." if multi else "No folders here.").classes("muted text-xs")
                     return
                 for entry in entries:
                     with ui.row().classes("browser-row w-full items-center no-wrap gap-2"):
@@ -1300,18 +1247,15 @@ class AnalyzeWorkflowView:
                             ).classes("browser-select")
                         elif multi:
                             ui.element("span").classes("browser-select")
-                        if mode == "project" and _is_project(entry):
-                            ui.button(f"▣  {entry.name}", on_click=lambda path=entry: open_project(path)).props(
-                                "dense no-caps flat").classes("grow browser-name")
-                        elif entry.is_dir():
+                        if entry.is_dir():
                             ui.button(entry.name + "/", on_click=lambda path=entry: navigate(path)).props(
                                 "dense no-caps flat").classes("grow browser-name")
                         else:
                             ui.label(entry.name).classes("grow browser-name")
 
-        def open_project(path: Path) -> None:
+        def choose_folder() -> None:
             dialog.close()
-            self._load_project(path)
+            self._add_root(state["path"])
 
         def navigate(path: Path) -> None:
             state["path"] = _existing_dir(path)
@@ -1323,7 +1267,7 @@ class AnalyzeWorkflowView:
     # -- the file list --------------------------------------------------------------------
 
     def _append_source(self, source: Path) -> str:
-        """Add a file to the list and the project; its name if it was new, empty otherwise."""
+        """Add a file to the list and the registry; its name if it was new, empty otherwise."""
         source = source.expanduser().resolve()
         try:
             engine = infer_engine(source)
@@ -1332,26 +1276,14 @@ class AnalyzeWorkflowView:
             return ""
         if any(Path(item.source_path) == source for item in self.matrix):
             return ""
-        row = MatrixRow(uid=_uid(), project_path=str(session_path(self.project_path)), source_path=str(source),
-                        engine=engine, sample_id=source.stem or f"sample_{len(self.matrix) + 1}")
+        row = MatrixRow(uid=_uid(), source_path=str(source), engine=engine,
+                        sample_id=source.stem or f"sample_{len(self.matrix) + 1}")
         self.matrix.append(row)
         self.selected_uid = row.uid
-        self._link_source(source, engine, row.sample_id)
+        self.store.add_source(source, engine=engine, sample_id=row.sample_id)
         self._prefill_settings(row)
         self._log(f"files: added {source.name} → {engine}")
         return source.name
-
-    def _link_source(self, source: Path, engine: str, sample_id: str) -> None:
-        # Remember the file in the project, so it is there on the next visit. A file the
-        # project already lists -- a recording made by control -- is left as it is.
-        try:
-            store = ProjectStore(session_path(self.project_path))
-            if any(store.resolve_file_path(file).resolve() == source.resolve() for file in store.session.files):
-                return
-            store.register_analysis_file(source, engine=engine, sample_id=sample_id)
-            store.save()
-        except Exception as exc:
-            self._log(f"project: could not link {source.name}: {exc}")
 
     def _handle_matrix_remove(self, event: Any) -> None:
         payload = getattr(event, "args", {})
@@ -1362,26 +1294,19 @@ class AnalyzeWorkflowView:
             self._refresh()
 
     def _remove_row(self, row: MatrixRow) -> None:
-        """Take a file off the list and out of the project; its stored results stay on disk."""
-        if not row.removable:
-            return
+        """Take a file off the list and out of the registry; its stored results stay on disk."""
         self.matrix.remove(row)
         if self.selected_uid == row.uid:
             self.selected_uid = ""
-        try:
-            ProjectStore(session_path(row.project_path)).remove_analysis_file(row.source_path)
-        except Exception as exc:
-            self._log(f"project: could not forget {Path(row.source_path).name}: {exc}")
+        self.store.remove_source(row.source_path)
+        self._saved_matrix = None
         self._log(f"files: removed {Path(row.source_path).name}")
         self._notify(f"Removed {Path(row.source_path).name} from the list.", "success")
 
     def _clear_matrix(self) -> None:
         for row in list(self.matrix):
-            if row.removable:
-                self._remove_row(row)
-            else:
-                row.active = False
-        self._notify("List cleared; the project's own recordings stay, unticked.", "success")
+            self._remove_row(row)
+        self._notify("List cleared; the stored results stay.", "success")
         self._log("files: cleared")
         self._refresh()
 
@@ -1408,7 +1333,7 @@ class AnalyzeWorkflowView:
             return
         if field_name == "active":
             row.active = bool(value)
-            self._save_setup()
+            self._save_matrix()
             self._sync_action_box()
             self._notify(self._stage_summary(), "primary")
             self._mount_sidebar()
@@ -1418,7 +1343,7 @@ class AnalyzeWorkflowView:
             return
         if field_name == "sample_id":
             row.sample_id = str(value or "")
-            self._save_setup()
+            self._save_matrix()
             return
         kind = matrix_field_kind(field_name)
         if kind is None:
@@ -1446,100 +1371,7 @@ class AnalyzeWorkflowView:
             return _row_float(row, "px_to_um", 0.0) > 0
         return _row_float(row, "microns_per_pixel", 0.0) > 0 and _row_float(row, "fps", 0.0) > 0
 
-    # -- project --------------------------------------------------------------------------
-
-    def _load_project(self, path: Path) -> None:
-        path = session_path(path)
-        if not (path / "manifest.json").is_file():
-            self._notify(f"{path.name} is not a project: no manifest.json in it.", "warning")
-            self._refresh()
-            return
-        try:
-            store = ProjectStore(path)
-        except Exception as exc:
-            self._notify(f"Project load failed: {exc}", "danger")
-            self._refresh()
-            return
-        self.project_path = str(store.path)
-        self.matrix = []
-        self.selected_uid = ""
-        self.cache_root = _usable_cache_root(store.session.metadata.get("cache_root"))
-        self._restore_setup(store)
-        self._load_project_files(store)
-        for row in self.matrix:
-            self._prefill_settings(row)
-        if self.matrix and not self.selected_uid:
-            self.selected_uid = self.matrix[0].uid
-        self._notify(f"Project {store.path.stem}: {_count(len(self.matrix), 'file')} listed.", "success")
-        self._log(f"project: opened {store.path.name}")
-        self._remember_project(store.path)
-        self.project_refs = self._discover()
-        self._refresh(force_mount=True)
-
-    def _restore_setup(self, store: ProjectStore) -> None:
-        """Bring back the file list and per-file settings saved in the project."""
-        saved = store.session.metadata.get(ANALYSIS_SETUP_KEY)
-        if not isinstance(saved, dict):
-            return
-        for entry in saved.get("matrix") or []:
-            if not isinstance(entry, dict) or not entry.get("source"):
-                continue
-            source = str(resolve_project_path(store.path, str(entry["source"])))
-            self.matrix.append(MatrixRow(
-                uid=_uid(), project_path=str(store.path), source_path=source,
-                engine=str(entry.get("engine") or infer_engine(Path(source))),
-                sample_id=str(entry.get("sample_id") or Path(source).stem),
-                cache_policy=str(entry.get("cache_policy") or "use"),
-                active=bool(entry.get("active", True)),
-                settings=dict(entry.get("settings") or {}),
-            ))
-        self._saved_setup[str(store.path)] = saved
-
-    def _load_project_files(self, store: ProjectStore) -> None:
-        existing = {row.source_path for row in self.matrix}
-        for file in store.files_by_role(("control_video", "analysis_video", "analysis_image_dir")):
-            engine = str(file.metadata.get("engine") or ("cellpose" if file.role == "analysis_image_dir" else "opencv"))
-            source_path = str(store.resolve_file_path(file))
-            if source_path in existing:
-                row = next(row for row in self.matrix if row.source_path == source_path)
-                row.removable = file.role != "control_video"
-                continue
-            self.matrix.append(MatrixRow(
-                uid=_uid(), project_path=str(store.path), source_path=source_path, engine=engine,
-                sample_id=str(file.metadata.get("sample_id") or Path(file.path).stem),
-                removable=file.role != "control_video",
-            ))
-
-    def _setup_for(self, project: Path) -> dict[str, Any]:
-        """This screen's state for one project: its file rows with their settings."""
-        def stored(source: str) -> str:
-            path = Path(source)
-            try:
-                return path.resolve().relative_to(project.resolve()).as_posix()
-            except ValueError:
-                return str(path)
-
-        return {"matrix": [
-            {"source": stored(row.source_path), "engine": row.engine, "sample_id": row.sample_id,
-             "cache_policy": row.cache_policy, "active": row.active, "settings": dict(row.settings)}
-            for row in self.matrix if session_path(row.project_path) == project
-        ]}
-
-    def _save_setup(self) -> None:
-        """Keep what the screen shows in each project it involves, so a reopened project comes back as left."""
-        projects = {row.project_path for row in self.matrix} | ({self.project_path} if self.project_path else set())
-        for project in projects:
-            path = session_path(project)
-            if not (path / "manifest.json").is_file():
-                continue
-            setup = self._setup_for(path)
-            if self._saved_setup.get(str(path)) == setup:
-                continue
-            try:
-                ProjectStore(path).update_metadata(**{ANALYSIS_SETUP_KEY: setup})
-                self._saved_setup[str(path)] = setup
-            except Exception as exc:
-                self._log(f"project: could not save the analysis setup of {path.name}: {exc}")
+    # -- the registry -----------------------------------------------------------------------
 
     def _prefill_settings(self, row: MatrixRow) -> None:
         """Fill what a file does not have yet: frames and crop from the video, detection defaults,
@@ -1550,7 +1382,7 @@ class AnalyzeWorkflowView:
             return
         for key, value in DETECTION_DEFAULTS.items():
             row.settings.setdefault(key, value)
-        size = _known_video_size(self._resolve_media_path(row.source_path, row.project_path))
+        size = _known_video_size(Path(row.source_path))
         if size is not None:
             frames, width, height = size
             for key, value in {"start_frame": 0, "end_frame": frames, "roi_x": 0, "roi_y": 0,
@@ -1563,43 +1395,71 @@ class AnalyzeWorkflowView:
         if measured and not _row_float(row, "microns_per_pixel", 0.0):
             row.settings["microns_per_pixel"] = round(measured, 4)
 
-    def _project_options(self) -> dict[str, str]:
-        return {str(ref.path): project_ref_label(ref) for ref in self.project_refs}
+    def _load_matrix(self) -> list[MatrixRow]:
+        rows = []
+        for entry in self.store.sources():
+            try:
+                engine = str(entry.get("engine") or infer_engine(Path(entry["path"])))
+            except ValueError:
+                continue
+            rows.append(MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=engine,
+                                  sample_id=str(entry.get("sample_id") or Path(entry["path"]).stem),
+                                  cache_policy=str(entry.get("cache_policy") or "use"),
+                                  active=bool(entry.get("active", True)), settings=dict(entry.get("settings") or {}),
+                                  run=str(entry.get("run") or "")))
+        for row in rows:
+            self._prefill_settings(row)
+        self._saved_matrix = self._matrix_record(rows)
+        return rows
 
-    def _select_project(self, value: str | None) -> None:
-        if value and str(session_path(value)) != self.project_path:
-            self._load_project(session_path(value))
+    @staticmethod
+    def _matrix_record(rows: list[MatrixRow]) -> list[dict[str, Any]]:
+        return [{"path": row.source_path, "engine": row.engine, "sample_id": row.sample_id,
+                 "cache_policy": row.cache_policy, "active": row.active, "settings": dict(row.settings), "run": row.run}
+                for row in rows]
 
-    def _discover(self) -> list:
-        return discover_projects(self.discovery_root, recent=self._recent_projects())
-
-    def _recent_projects(self) -> dict[str, str]:
-        """Projects opened before, wherever they are; kept by the server across restarts."""
-        if self._recent_override is not None:
-            return dict(self._recent_override)
-        try:
-            from nicegui import app
-
-            return dict(app.storage.general.get("recent_projects", {}))
-        except Exception:  # no running server, e.g. in tests
-            return {}
-
-    def _remember_project(self, path: Path) -> None:
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        if self._recent_override is not None:
-            self._recent_override[str(Path(path).resolve())] = stamp
+    def _save_matrix(self) -> None:
+        """Keep what the screen shows, so it comes back as left; an unchanged screen writes nothing."""
+        record = self._matrix_record(self.matrix)
+        if record == self._saved_matrix:
             return
         try:
-            from nicegui import app
+            self.store.set_sources(record)
+            self._saved_matrix = record
+        except Exception as exc:
+            self._log(f"registry: could not save the file list: {exc}")
 
-            app.storage.general["recent_projects"] = {**self._recent_projects(), str(Path(path).resolve()): stamp}
-        except Exception:
-            pass
+    def _add_root(self, folder: Path) -> None:
+        folder = Path(folder)
+        new = self.store.add_root(folder)
+        added = self.store.scan(folder)
+        self._adopt(added)
+        self._notify(f"{'Watching' if new else 'Rescanned'} {folder.name}: {_count(len(added), 'new video')}.",
+                     "success")
+        self._log(f"files: folder {folder} → {len(added)} new")
+        self._refresh(force_mount=True)
 
-    def _refresh_projects(self) -> None:
-        self.project_refs = self._discover()
-        self._notify(f"Found {_count(len(self.project_refs), 'project')}.", "success")
-        self._refresh()
+    def _rescan(self) -> None:
+        added = self.store.scan()
+        self._adopt(added)
+        self._notify(f"Rescanned {_count(len(self.store.roots()), 'folder')}: {_count(len(added), 'new video')}.",
+                     "success")
+        self._refresh(force_mount=True)
+
+    def _adopt(self, entries: list[dict[str, Any]]) -> None:
+        """New registry entries become rows on the screen."""
+        known = {str(Path(row.source_path).resolve()) for row in self.matrix}
+        for entry in entries:
+            if str(Path(entry["path"]).resolve()) in known:
+                continue
+            row = MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=str(entry["engine"]),
+                            sample_id=str(entry["sample_id"]), run=str(entry.get("run") or ""))
+            self._prefill_settings(row)
+            self.matrix.append(row)
+        if self.matrix and not self.selected_uid:
+            self.selected_uid = self.matrix[0].uid
+        if entries:
+            self._saved_matrix = None
 
     # -- running --------------------------------------------------------------------------
 
@@ -1638,7 +1498,6 @@ class AnalyzeWorkflowView:
         else:
             self._notify(f"Analysed {_count(len(report.jobs), 'file')} · see 3. Results.", "success")
         self._log(f"analysis: done, {len(report.jobs) - len(failed)} of {len(report.jobs)} complete")
-        self.project_refs = self._discover()
         self._refresh(force_mount=True)
 
     def _run_batch(self, jobs: tuple[AnalyzeTarget, ...]) -> AnalyzeBatchReport:
@@ -1648,7 +1507,7 @@ class AnalyzeWorkflowView:
         def on_file_progress(percent: float) -> None:
             self._run_step_progress = percent
 
-        return AnalyzeBatchRunner(self.registry, cache_root=self.cache_root).run(
+        return AnalyzeBatchRunner(self.registry, results_dir=self.store.results_dir).run(
             jobs, on_progress=on_progress, on_file_progress=on_file_progress)
 
     def _sync_run_progress(self) -> None:
@@ -1660,10 +1519,8 @@ class AnalyzeWorkflowView:
             text.set_text(self._progress()[1])
 
     def _target_to_run(self, row: MatrixRow) -> AnalyzeTarget:
-        return AnalyzeTarget(project_path=Path(row.project_path),
-                             source_path=self._resolve_media_path(row.source_path, row.project_path),
-                             engine=row.engine, sample_id=row.sample_id, settings=self._engine_settings(row),
-                             cache_policy=row.cache_policy)
+        return AnalyzeTarget(source_path=Path(row.source_path), engine=row.engine, sample_id=row.sample_id,
+                             settings=self._engine_settings(row), cache_policy=row.cache_policy)
 
     def _engine_settings(self, row: MatrixRow) -> dict[str, Any]:
         if row.engine == "cellpose":
@@ -1680,7 +1537,7 @@ class AnalyzeWorkflowView:
         for key, default in DETECTION_DEFAULTS.items():
             settings[key] = (_row_int if isinstance(default, int) else _row_float)(row, key, default)
         if _row_int(row, "roi_width", 0) or _row_int(row, "roi_height", 0):
-            size = _known_video_size(self._resolve_media_path(row.source_path, row.project_path)) or (0, 0, 0)
+            size = _known_video_size(Path(row.source_path)) or (0, 0, 0)
             settings.update({"roi_x": _row_int(row, "roi_x", 0), "roi_y": _row_int(row, "roi_y", 0),
                              "roi_width": _row_int(row, "roi_width", 0) or size[1],
                              "roi_height": _row_int(row, "roi_height", 0) or size[2]})
@@ -1699,6 +1556,8 @@ class AnalyzeWorkflowView:
     def _action_handler(self, action: str | None) -> Any:
         if action == "browse_source":
             return self._open_source_browser
+        if action == "browse_folder":
+            return self._open_folder_browser
         if action == "clear_matrix":
             return self._clear_matrix
         if action == "reset_row_settings":
@@ -1716,8 +1575,6 @@ class AnalyzeWorkflowView:
     def _guard_value(self, guard: str) -> bool:
         ticked = self._targets()
         selected = self._selected_row()
-        if guard == "project_ready":
-            return bool(self.project_path) and (session_path(self.project_path) / "manifest.json").is_file()
         if guard == "has_matrix_rows":
             return bool(self.matrix)
         if guard == "has_targets":
@@ -1775,34 +1632,35 @@ class AnalyzeWorkflowView:
         self.action_log.append(f"{time.strftime('%H:%M:%S')} {message}")
 
     def _refresh(self, *, force_mount: bool = False) -> None:
-        self._save_setup()
+        self._save_matrix()
         self._render_current_stage(force_mount=force_mount)
 
 
 # -- stored results, read once per version of the raw file ------------------------------
 
 @lru_cache(maxsize=16)
-def _results_of(project_path: str, raw_path: str, _mtime: float, run_id: str, fixes: str,
-                scales: str) -> tuple[FileResult, ...]:
-    run = next((run for run in load_stored_runs([Path(project_path)]) if run.run_id == run_id), None)
-    if run is None:
+def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, sample_id: str, run: str,
+                fixes: str, scales: str) -> tuple[FileResult, ...]:
+    stored = load_stored_result(Path(result_dir), source_path=Path(source_path), engine=engine, sample_id=sample_id,
+                                run=run)
+    if stored is None:
         return ()
     corrections = {(engine, source): value for engine, source, value in json.loads(fixes)}
     scale_of = {(engine, source): (scale, fps, *flow) for engine, source, scale, fps, *flow in json.loads(scales)}
-    return tuple(file_results(run, iter_raw_rows(run.project_path, run.raw_path), corrections, scale_of))
+    return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of))
 
 
 def _result_key(result: FileResult) -> tuple[str, str, str]:
-    return (result.project, result.engine, str(Path(result.source_path).resolve()))
+    return (result.run, result.engine, str(Path(result.source_path).resolve()))
 
 
-def _cached_results(run: StoredRun, fixes: str = "[]", scales: str = "[]") -> tuple[FileResult, ...]:
-    raw = run.raw_path if run.raw_path.is_absolute() else run.project_path / run.raw_path
+def _cached_results(stored: StoredResult, fixes: str = "[]", scales: str = "[]") -> tuple[FileResult, ...]:
     try:
-        mtime = raw.stat().st_mtime
+        mtime = stored.rows_path.stat().st_mtime
     except OSError:
         return ()
-    return _results_of(str(run.project_path), str(raw), mtime, run.run_id, fixes, scales)
+    return _results_of(str(stored.result_dir), mtime, str(stored.source_path), stored.engine, stored.sample_id,
+                       stored.run, fixes, scales)
 
 
 _cached_results.cache_clear = _results_of.cache_clear  # type: ignore[attr-defined]
@@ -2002,16 +1860,8 @@ def _png_src(image: Any) -> str:
 
 
 def _recorded_capture_fps(row: MatrixRow) -> float:
-    """The capture rate the recording carries: in the project's listing, else in the video itself."""
-    source = Path(row.source_path).resolve()
-    try:
-        store = ProjectStore(session_path(row.project_path))
-        for file in store.files_by_role(("control_video",)):
-            if store.resolve_file_path(file).resolve() == source:
-                return float(file.metadata.get("acquisition_fps") or 0.0)
-    except Exception:
-        pass
-    return float((_video_record(source) or {}).get("acquisition_fps") or 0.0)
+    """The capture rate the recording carries in its own record."""
+    return float((_video_record(Path(row.source_path).resolve()) or {}).get("acquisition_fps") or 0.0)
 
 
 def _recorded_scale(row: MatrixRow) -> float:
@@ -2192,18 +2042,6 @@ def _friendly_video_error(message: str) -> str:
     return message
 
 
-def _usable_cache_root(value: Any) -> str:
-    """A project's cache folder if it is a path on this machine; otherwise this machine's own.
-
-    The last machine to analyse the project writes its cache folder into it: a Windows
-    path on a Mac is not a folder here, it is a name, and must not be created as one.
-    """
-    path = Path(str(value)) if value else None
-    if path is not None and path.is_absolute() and path.anchor and "\\" not in str(value):
-        return str(path)
-    return str(Path.home() / ".admet-cache")
-
-
 def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
@@ -2229,10 +2067,6 @@ def _existing_dir(path: Path) -> Path:
     return candidate if candidate.is_dir() else Path.cwd()
 
 
-def _is_project(path: Path) -> bool:
-    return path.suffix == ".admetp" and (path / "manifest.json").is_file()
-
-
 def _holds_images(path: Path) -> bool:
     try:
         return any(item.is_file() and item.suffix.lower() in IMAGE_SUFFIXES for item in path.iterdir())
@@ -2253,7 +2087,7 @@ def _browser_entries(path: Path, mode: str) -> list[Path]:
     except OSError:
         return []
     dirs = [entry for entry in entries if entry.is_dir()]
-    files = [] if mode == "project" else [entry for entry in entries if entry.is_file() and _addable(entry)]
+    files = [] if mode == "folder" else [entry for entry in entries if entry.is_file() and _addable(entry)]
     return sorted(dirs, key=lambda item: item.name.lower()) + sorted(files, key=lambda item: item.name.lower())
 
 
@@ -2314,7 +2148,6 @@ def _style() -> str:
     .toc-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--text-disabled); border: 1px solid var(--border); }
     .toc-dot-active { background: var(--accent); border-color: var(--accent); }
     .toc-dot-done { background: var(--success-hover); border-color: var(--success-hover); }
-    .project-select { min-width: 360px; }
     .root-hint { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .browser-card { width: min(760px, 92vw); max-height: 82vh; border-radius: 8px; box-shadow: none; border: 1px solid var(--border); gap: 8px; }
     .browser-path { color: var(--text-muted); font-family: Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }

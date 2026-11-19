@@ -20,13 +20,36 @@ from admet.ui import theme
 
 
 @dataclass(frozen=True)
-class StoredRun:
-    project_path: Path
-    run_id: str
-    raw_path: Path
-    jobs: tuple[dict[str, Any], ...]
-    # Each file's settings when it was analysed (crop, frames, ...).
-    matrix: tuple[dict[str, Any], ...] = ()
+class StoredResult:
+    """One source's stored analysis: where its rows and summary are, and what it was analysed as."""
+
+    source_path: Path
+    engine: str
+    sample_id: str
+    result_dir: Path
+    metadata: dict[str, Any]           # result.json: the summary, when it was analysed, the settings it ran with
+    run: str = ""                      # the run folder the source came from, if any
+
+    @property
+    def rows_path(self) -> Path:
+        return self.result_dir / "rows.jsonl"
+
+    @property
+    def settings(self) -> dict[str, Any]:
+        settings = self.metadata.get("settings")
+        return dict(settings) if isinstance(settings, dict) else {}
+
+    @property
+    def analyzed_at(self) -> str:
+        return str(self.metadata.get("analyzed_at") or "")
+
+    @property
+    def file_id(self) -> str:
+        return str(self.metadata.get("file_id") or self.result_dir.name)
+
+    @property
+    def run_name(self) -> str:
+        return Path(self.run).name if self.run else ""
 
 
 @dataclass(frozen=True)
@@ -37,7 +60,7 @@ class FileResult:
     in), so a droplet seen for forty frames counts once, like one seen for four.
     """
 
-    project: str
+    run: str                         # the run folder's name the file came from, empty for a loose file
     sample_id: str
     engine: str
     source_path: str
@@ -87,36 +110,25 @@ class FileResult:
         return sum(self.inclusion_counts)
 
 
-def load_stored_runs(project_paths: list[Path]) -> list[StoredRun]:
-    runs = []
-    for project_path in project_paths:
-        metadata_path = project_path / "analysis" / "metadata.json"
-        if not metadata_path.is_file():
-            continue
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        for run in metadata.get("runs", []):
-            if not isinstance(run, dict):
-                continue
-            raw_path = resolve_project_path(project_path, str(run.get("raw_path") or ""))
-            run_metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
-            jobs = tuple(job for job in run_metadata.get("jobs", ()) if isinstance(job, dict))
-            settings = run.get("settings") if isinstance(run.get("settings"), dict) else {}
-            runs.append(StoredRun(
-                project_path=project_path,
-                run_id=str(run.get("run_id") or raw_path.parent.name),
-                raw_path=raw_path,
-                jobs=jobs,
-                matrix=tuple(row for row in settings.get("matrix", ()) if isinstance(row, dict)),
-            ))
-    return runs
+def load_stored_result(result_dir: Path, *, source_path: Path, engine: str, sample_id: str,
+                       run: str = "") -> StoredResult | None:
+    """The stored analysis in a results folder, if the folder holds a finished one."""
+    result_dir = Path(result_dir)
+    if not (result_dir / "result.json").is_file() or not (result_dir / "rows.jsonl").is_file():
+        return None
+    try:
+        metadata = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    return StoredResult(source_path=Path(source_path), engine=engine, sample_id=sample_id, result_dir=result_dir,
+                        metadata=metadata, run=run)
 
 
-def iter_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = None):
-    """The rows of a raw file one at a time: a recording's rows run into the hundreds of thousands."""
-    path = raw_path if raw_path.is_absolute() else project_path / raw_path
+def iter_rows(path: Path, *, limit: int | None = None):
+    """The rows of a rows file one at a time: a recording's rows run into the hundreds of thousands."""
+    path = Path(path)
     if not path.is_file():
         return
     count = 0
@@ -136,37 +148,35 @@ def iter_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = Non
                 yield value
 
 
-def read_raw_rows(project_path: Path, raw_path: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
-    return list(iter_raw_rows(project_path, raw_path, limit=limit))
+def read_rows(path: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+    return list(iter_rows(path, limit=limit))
 
 
 PLOT_POINTS = 6000      # detections kept per file for the plots: a uniform sample, not the first ones
 
 
-def file_results(run: StoredRun, rows, corrections: dict[tuple[str, str], dict[str, Any]] | None = None,
+def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], dict[str, Any]] | None = None,
                  scales: dict[tuple[str, str], tuple[float, float]] | None = None) -> list[FileResult]:
-    """Each file's result from one run's rows, in one pass: distributions per droplet, rate and speed.
+    """The source's result from its stored rows, in one pass: distributions per droplet, rate and speed.
 
-    Files are told apart by their id, never by the sample name two files may share. CORRECTIONS,
-    by (engine, source path), are what the user changed by hand on imaging droplets: a droplet
-    switched off is left out, an inclusion count is taken as corrected. SCALES, by the same key,
-    are the µm per px and fps to read the rows with: the engine measures in pixels and frames,
-    so changing either needs no new run.
+    CORRECTIONS, by (engine, source path), are what the user changed by hand on imaging droplets:
+    a droplet switched off is left out, an inclusion count is taken as corrected. SCALES, by the
+    same key, are the µm per px and fps to read the rows with: the engine measures in pixels and
+    frames, so changing either needs no new run. Rows are grouped by the file id they carry, so a
+    rows file holding more than one file (as none written now does) still gives one result each.
     """
-    jobs = _jobs_by_key(run)
+    source = str(stored.source_path)
     files: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         key = _row_key(row)
         kind = row.get("kind")
         acc = files.get(key)
         if acc is None:
-            job = jobs.get(key, {})
-            source = str(resolve_project_path(run.project_path, str(job.get("source_path") or "")))
             acc = files[key] = {"context": {}, "per_droplet": {}, "loose_d": [], "loose_a": [], "points": [],
-                                "seen": 0, "inclusions": [], "frames": set(), "um": False, "job": job,
-                                "source": source, "rng": random.Random(0),
-                                "fixes": (corrections or {}).get((key[0], source), {}),
-                                "scale": tuple((scales or {}).get((key[0], source), (0.0, 0.0)))}
+                                "seen": 0, "inclusions": [], "frames": set(), "um": False,
+                                "job": stored.metadata, "source": source, "rng": random.Random(0),
+                                "fixes": (corrections or {}).get((stored.engine, source), {}),
+                                "scale": tuple((scales or {}).get((stored.engine, source), (0.0, 0.0)))}
         if kind == "run_context":
             acc["context"] = _values(row)
             continue
@@ -211,7 +221,7 @@ def file_results(run: StoredRun, rows, corrections: dict[tuple[str, str], dict[s
         if frame is not None:
             entry["f"].append(frame)
             entry["x"].append(cx or 0.0)
-    return [_finish(run, key, acc) for key, acc in sorted(files.items())]
+    return [_finish(stored, key, acc) for key, acc in sorted(files.items())]
 
 
 def _reservoir(acc: dict[str, Any], point: tuple[float, float, float, float]) -> None:
@@ -225,11 +235,11 @@ def _reservoir(acc: dict[str, Any], point: tuple[float, float, float, float]) ->
         acc["points"][slot] = point
 
 
-def _finish(run: StoredRun, key: tuple[str, str], acc: dict[str, Any]) -> FileResult:
-    engine = key[0]
+def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> FileResult:
+    engine = stored.engine or key[0]
     job, context = acc["job"], acc["context"]
     analysis = _as_dict(context.get("analysis"))
-    meta = _as_dict(job.get("metadata"))
+    meta = _as_dict(job)                                  # result.json: the summary the engine returned
     scale = acc["scale"][0] or _num(analysis.get("microns_per_pixel")) or 1.0
     fps = acc["scale"][1] or _num(analysis.get("fps")) or 0.0
     to_um = 1.0 if acc["um"] else scale                  # engine rows in px are scaled; µm rows are kept
@@ -277,14 +287,14 @@ def _finish(run: StoredRun, key: tuple[str, str], acc: dict[str, Any]) -> FileRe
     expected = expected_rate_hz(dispersed, median(diameters)) if dispersed and diameters else 0.0
     analyzed_at = str(meta.get("analyzed_at") or "")
     points = sorted(acc["points"])
-    settings = _run_settings(run, job, analysis, _as_dict(context.get("detection")))
+    settings = _run_settings(stored, analysis, _as_dict(context.get("detection")))
     settings.update({"microns_per_pixel": scale, "fps": fps} if engine != "cellpose" else {"px_to_um": scale})
     return FileResult(
-        project=run.project_path.name,
-        sample_id=str(job.get("sample_id") or key[1]),
+        run=stored.run_name,
+        sample_id=stored.sample_id or str(job.get("sample_id") or key[1]),
         engine=engine,
         source_path=acc["source"],
-        file_id=str(job.get("file_id") or key[1]),
+        file_id=key[1] if key[1] != "sample" else stored.file_id,
         analyzed_at=local_time(analyzed_at) if analyzed_at else "",
         settings=settings,
         fps=fps,
@@ -657,29 +667,24 @@ def _empty_chart(title: str) -> dict[str, Any]:
 
 # -- export ----------------------------------------------------------------------------
 
-def export_csv_zip(runs: list[StoredRun], results: list[FileResult],
+def export_csv_zip(stored: list[StoredResult], results: list[FileResult],
                    corrections: dict[tuple[str, str], dict[str, Any]] | None = None) -> bytes:
     """A zip: summary.csv over the results, and every droplet row of each file as its own CSV.
 
     Imaging droplets switched off by hand are left out; corrected inclusion counts are written
     with the raw count beside them.
     """
-    wanted = {(result.project, result.engine, result.source_path): result.sample_id for result in results}
+    wanted = {(result.run, result.engine, result.source_path): result.sample_id for result in results}
     files: dict[str, bytes] = {"summary.csv": _summary_csv(results)}
-    for run in runs:
-        jobs = _jobs_by_key(run)
-        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for row in iter_raw_rows(run.project_path, run.raw_path):
-            if row.get("kind") in {"detection", "droplet", "track", "droplet_geometry"}:
-                groups.setdefault(_row_key(row), []).append(row)
-        for key, rows in sorted(groups.items()):
-            engine = key[0]
-            source = str(resolve_project_path(run.project_path, str(jobs.get(key, {}).get("source_path") or "")))
-            sample_id = wanted.get((run.project_path.name, engine, source))
-            if sample_id is None:
-                continue
-            fixes = (corrections or {}).get((engine, source), {})
-            files[f"droplets/{_safe(run.project_path.stem)}_{_safe(sample_id)}_{engine}.csv"] = _rows_csv(rows, fixes)
+    for item in stored:
+        source = str(item.source_path)
+        sample_id = wanted.get((item.run_name, item.engine, source))
+        if sample_id is None:
+            continue
+        rows = [row for row in iter_rows(item.rows_path)
+                if row.get("kind") in {"detection", "droplet", "track", "droplet_geometry"}]
+        fixes = (corrections or {}).get((item.engine, source), {})
+        files[f"droplets/{_safe(item.run_name or 'files')}_{_safe(sample_id)}_{item.engine}.csv"] = _rows_csv(rows, fixes)
     return zip_bytes(files)
 
 
@@ -694,11 +699,11 @@ def zip_bytes(files: dict[str, bytes]) -> bytes:
 def _summary_csv(results: list[FileResult]) -> bytes:
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["project", "sample", "engine", "source", "analysed_at", "frames", "droplets", "inclusions",
+    writer.writerow(["run", "sample", "engine", "source", "analysed_at", "frames", "droplets", "inclusions",
                      "mean_diameter_um", "sd_diameter_um", "cv_percent", "mean_area_um2", "sd_area_um2",
                      "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings"])
     for result in results:
-        writer.writerow([result.project, result.sample_id, result.engine, result.source_path, result.analyzed_at,
+        writer.writerow([result.run, result.sample_id, result.engine, result.source_path, result.analyzed_at,
                          result.frames, result.droplets, result.inclusions,
                          _fmt(result.mean_diameter, 3), _fmt(result.std_diameter, 3), _fmt(result.cv_percent, 3),
                          _fmt(result.mean_area, 2), _fmt(result.std_area, 2), _fmt(result.rate_hz, 3),
@@ -740,11 +745,6 @@ def _cell(value: Any) -> Any:
 
 # -- small helpers ---------------------------------------------------------------------
 
-def resolve_project_path(project_path: Path, stored_path: str) -> Path:
-    path = Path(stored_path)
-    return path if path.is_absolute() else project_path / path
-
-
 def local_time(stamp: str) -> str:
     try:
         return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d %H:%M")
@@ -758,21 +758,8 @@ def _row_key(row: dict[str, Any]) -> tuple[str, str]:
             str(row.get("file_id") or row.get("item_id") or row.get("sample_id") or "sample"))
 
 
-def _jobs_by_key(run: StoredRun) -> dict[tuple[str, str], dict[str, Any]]:
-    jobs: dict[tuple[str, str], dict[str, Any]] = {}
-    for job in run.jobs:
-        engine = str(job.get("engine") or "")
-        jobs.setdefault((engine, str(job.get("sample_id") or "sample")), job)
-        if job.get("file_id"):
-            jobs[(engine, str(job["file_id"]))] = job
-    return jobs
-
-
-def _run_settings(run: StoredRun, job: dict[str, Any], analysis: dict[str, Any],
-                  detection: dict[str, Any]) -> dict[str, Any]:
-    file_id = str(job.get("file_id") or "")
-    settings = dict(next((_as_dict(entry.get("settings")) for entry in run.matrix
-                          if entry.get("file_id") == file_id), {}))
+def _run_settings(stored: StoredResult, analysis: dict[str, Any], detection: dict[str, Any]) -> dict[str, Any]:
+    settings = dict(stored.settings)
     for key in ("microns_per_pixel", "fps"):
         if analysis.get(key) not in {None, ""}:
             settings[key] = analysis[key]

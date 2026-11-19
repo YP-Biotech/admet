@@ -1,12 +1,13 @@
 # Projects
 
-A project is a folder ending in `.admetp`. It is what `admet analyze` reads: the
-videos registered for analysis, the analysis settings and results.
+A project is a folder ending in `.admetp`, the format earlier versions recorded
+into. Neither `admet control` nor `admet analyze` writes one any more; `admet
+migrate` will convert them into run folders.
 
 `admet control` no longer writes projects. It records one folder per run into the
 admet home's `data/runs/` and keeps the rig's settings in `control/rig.json`; see
 [the home](../control/overview#the-home) and [Recording](../control/running#recording).
-The data folder is what analyze will be pointed at.
+`admet analyze` is pointed at that data folder, or at the export folder on the server.
 
 ```text
 experiment.admetp/
