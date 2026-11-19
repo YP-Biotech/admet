@@ -6,7 +6,7 @@ saved files only; it needs no device and changes nothing on the rig.
 - The **runs table** lists the recorded runs in the data folder, newest first, with when they
   were recorded, how they ended and how long they ran. Tick a run to plot it; its
   line style appears in the *Line* column.
-- **Load file…** adds any fluidics CSV with the same columns, for example an older
+- **Load file…**, in the action bar, adds any fluidics CSV with the same columns, for example an older
   DropleGen log. Loaded files stay in the table until ADMET closes.
 - **Channels** hides or shows Oil L, Cells M and Beads M. Each channel keeps the
   colour it has on the live plots.
@@ -20,7 +20,7 @@ saved files only; it needs no device and changes nothing on the rig.
     is drawn from 0, so steps and replicates overlay;
   - *Recorded time* shows each run as recorded, in seconds since ADMET began reading
     the Fluigent.
-- **Reset view** fits the plots to the data again.
+- **Reset view**, in the action bar, fits the plots to the data again.
 
 The four plots sit in a grid, pressure and flow above, droplets and their CV below,
 all on one time axis. The droplet plots show the QC rows each recording wrote into the run's CSV while it

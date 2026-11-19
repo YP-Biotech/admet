@@ -295,7 +295,9 @@ def create_control_workflow() -> Workflow:
                 "review", "Review runs",
                 instructions=("Tick recorded runs to plot their pressure and flow. Reads saved files only.",),
                 features=("review",),
-                actions=(StageAction("Continue", completes=True),),
+                actions=(StageAction("Load file…", "review_load_file", variant="secondary"),
+                         StageAction("Reset view", "review_reset_view", variant="secondary"),
+                         StageAction("Continue", completes=True)),
                 show_settings=False,
             ),
             Stage(

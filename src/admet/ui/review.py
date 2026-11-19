@@ -312,7 +312,8 @@ class _Crosshair:
 
 
 class ReviewPanel(QWidget):
-    """The runs table on top, one row of view controls, then four plots in a grid sharing the time axis:
+    """The runs table on top, one row of view controls (the stage's action bar holds Load file and Reset view),
+    then four plots in a grid sharing the time axis:
     pressure and flow above, the droplet rate and its CV below, from the QC each recording wrote."""
 
     def __init__(self):
@@ -340,15 +341,8 @@ class ReviewPanel(QWidget):
         self.table.itemChanged.connect(self._run_toggled)
         root.addWidget(self.table)
 
-        actions = QHBoxLayout()
+        actions = QHBoxLayout()                        # Load file and Reset view are the stage's actions
         actions.setSpacing(ui.spacing("control"))
-        load = ui.button("Load file…")
-        load.clicked.connect(self._load_files)
-        actions.addWidget(load)
-        reset = ui.button("Reset view")
-        reset.clicked.connect(self._reset_view)
-        actions.addWidget(reset)
-        actions.addSpacing(ui.spacing("default"))
         actions.addWidget(QLabel("Bin"))
         self.bin = QDoubleSpinBox()
         self.bin.setRange(0.0, 60.0)
@@ -456,7 +450,7 @@ class ReviewPanel(QWidget):
         return [self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) for row in range(self.table.rowCount())
                 if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.CheckState.Checked]
 
-    def _load_files(self) -> None:
+    def load_files(self) -> None:
         paths, _filter = QFileDialog.getOpenFileNames(self, "Load fluidics CSV", "", "CSV files (*.csv)")
         self.add_files(paths)
 
@@ -576,7 +570,7 @@ class ReviewPanel(QWidget):
                         begin = i
         return points
 
-    def _reset_view(self) -> None:
+    def reset_view(self) -> None:
         for plot in self.crosshairs:
             plot.enableAutoRange()
 
