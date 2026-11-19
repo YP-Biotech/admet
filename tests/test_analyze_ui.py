@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from admet.core.engine import EngineRegistry
 from admet.core.registry import Registry
 from admet.ui.analyze import (
+    IMAGING_DEFAULTS,
     AnalyzeWorkflowView,
     MatrixRow,
     _addable,
@@ -83,20 +84,28 @@ class MatrixChangeTests(unittest.TestCase):
         self.assertEqual(apply_setting(view.matrix, "k_sigma", 3), [view.matrix[3]])
         self.assertEqual(apply_setting(view.matrix, "no_such_setting", 1), [])
 
-    def test_reset_ticked_puts_every_ticked_file_back_to_the_defaults_keeping_its_scale_and_fps(self):
+    def test_reset_ticked_puts_every_ticked_file_back_to_the_defaults_and_what_its_recording_carries(self):
+        import admet.ui.analyze as module
+
         view = _make_view()
-        view.matrix = [_row(sample="a", k_sigma=9.0, microns_per_pixel=1.1, fps=24.0),
+        view.matrix = [_row(sample="a", k_sigma=9.0, microns_per_pixel=3.0, fps=24.0),
                        _row(sample="b", k_sigma=9.0, microns_per_pixel=1.2),
                        _row(engine="cellpose", sample="i", px_to_um=2.0, detect_inclusions=False)]
         view.matrix[1].active = False
         view._notify = lambda *a, **k: None
-
-        view._reset_ticked_settings()
+        recorded_scale, recorded_fps = module._recorded_scale, module._recorded_capture_fps
+        module._recorded_scale = lambda row: 2.5 if row.sample_id == "a" else 0.0      # a typed 3.0 goes back to it
+        module._recorded_capture_fps = lambda row: 500.0 if row.sample_id == "a" else 0.0
+        try:
+            view._reset_ticked_settings()
+        finally:
+            module._recorded_scale, module._recorded_capture_fps = recorded_scale, recorded_fps
 
         self.assertEqual((view.matrix[0].settings["k_sigma"], view.matrix[0].settings["microns_per_pixel"],
-                          view.matrix[0].settings["fps"]), (4.0, 1.1, 24.0))
+                          view.matrix[0].settings["fps"]), (4.0, 2.5, 500.0))
         self.assertEqual(view.matrix[1].settings["k_sigma"], 9.0)                  # unticked: left alone
-        self.assertEqual((view.matrix[2].settings["detect_inclusions"], view.matrix[2].settings["px_to_um"]), (True, 2.0))
+        self.assertEqual((view.matrix[2].settings["detect_inclusions"], view.matrix[2].settings["px_to_um"]),
+                         (True, IMAGING_DEFAULTS["px_to_um"]))                      # the typed 2.0 is gone
 
     def test_the_use_header_ticks_or_clears_every_file(self):
         view = _make_view()
@@ -176,7 +185,7 @@ class ReadinessTests(unittest.TestCase):
         view.matrix[0].settings["px_to_um"] = 1.14
         self.assertTrue(view._row_ready(view.matrix[0]))
 
-    def test_reset_keeps_scale_and_fps_and_restores_detection_defaults(self):
+    def test_reset_restores_the_detection_defaults_and_drops_a_typed_scale_and_fps(self):
         view = _make_view()
         view.matrix = [_row(sample="a", microns_per_pixel=1.2, fps=200, k_sigma=9, gate_pct=80)]
         view.selected_uid = view.matrix[0].uid
@@ -184,7 +193,8 @@ class ReadinessTests(unittest.TestCase):
         view._reset_row_settings()
 
         settings = view.matrix[0].settings
-        self.assertEqual((settings["microns_per_pixel"], settings["fps"]), (1.2, 200))
+        self.assertNotIn("microns_per_pixel", settings)                            # a loose file: nothing recorded
+        self.assertNotIn("fps", settings)
         self.assertEqual((settings["k_sigma"], settings["gate_pct"]), (4.0, 50.0))
 
 

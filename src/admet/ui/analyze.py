@@ -1411,7 +1411,7 @@ class AnalyzeWorkflowView:
         self._refresh(force_mount=True)
 
     def _reset_ticked_settings(self) -> None:
-        """Every ticked file back to the defaults and to what its recording carries."""
+        """Every ticked file back to the defaults and to the fps and µm/px its recording carries."""
         rows = self._targets()
         for row in rows:
             self._reset_settings(row)
@@ -1420,9 +1420,8 @@ class AnalyzeWorkflowView:
         self._refresh(force_mount=True)
 
     def _reset_settings(self, row: MatrixRow) -> None:
-        """The defaults again, then the fps and µm/px the recording carries; a typed scale or fps stays."""
-        keep = {key: row.settings[key] for key in ("microns_per_pixel", "fps", "px_to_um") if key in row.settings}
-        row.settings = keep
+        """The defaults again, with the fps and µm/px the recording carries; whatever was typed goes."""
+        row.settings = {}
         self._prefill_settings(row)
 
     def _handle_matrix_change(self, event: Any) -> None:
