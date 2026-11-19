@@ -134,6 +134,52 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(guard.eventFilter(viewport, wheel(Qt.KeyboardModifier.NoModifier)))
 
 
+class ReviewActionBarTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyleSheet(ui.stylesheet())
+
+    def pump(self, seconds=0.2):
+        import time
+
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.app.processEvents()
+            time.sleep(0.01)
+
+    def test_load_file_and_reset_view_are_the_stages_actions_not_buttons_on_the_page(self):
+        from unittest.mock import patch
+
+        from PySide6.QtWidgets import QPushButton
+
+        from admet.ui.backend import DesktopBackend
+        from admet.ui.control import ControlWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            api = DesktopBackend(simulated=True, home=Path(tmp) / "home")
+            self.addCleanup(api.shutdown)
+            window = ControlWindow(api)
+            self.addCleanup(window.close)
+            window.show()
+            self.pump()
+            ids = [stage.id for stage in window.workflow.stages]
+            window._select_stage(ids.index("review"))
+            self.pump()
+            stage = window.workflow.stages[ids.index("review")]
+
+            specs = {spec[0]: spec for spec in window._action_button_specs(stage)}
+            self.assertEqual([spec[0] for spec in window._action_button_specs(stage)][:2], ["Load file…", "Reset view"])
+            self.assertTrue(specs["Load file…"][2] and specs["Reset view"][2])
+            panel = window._review
+            self.assertEqual([b.text() for b in panel.findChildren(QPushButton) if b.text() in ("Load file…", "Reset view")], [])
+            with patch.object(panel, "load_files") as load, patch.object(panel, "reset_view") as reset:
+                specs["Load file…"][1]()
+                specs["Reset view"][1]()
+            load.assert_called_once()
+            reset.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
 

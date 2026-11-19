@@ -1707,6 +1707,10 @@ class ControlWindow(QMainWindow):
         if control.action == "export_runs":
             self._export_runs()
             return
+        if control.action in {"review_load_file", "review_reset_view"}:
+            if self._review is not None:
+                self._review.load_files() if control.action == "review_load_file" else self._review.reset_view()
+            return
         if control.action is not None:
             result = self._run(control.action)
             if control.completes:
