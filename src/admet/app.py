@@ -17,11 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
     control.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
 
     analyze = sub.add_parser(
-        "analyze", help="serve project analysis over the network; it reads project data and never drives the rig"
+        "analyze", help="serve the analysis over the network; it reads recorded data and never drives the rig"
     )
     analyze.add_argument("--host", default="0.0.0.0", help="address to listen on (default: every interface)")
     analyze.add_argument("--port", type=int, default=8080)
-    analyze.add_argument("--projects", help="folder holding the .admetp projects to serve")
+    analyze.add_argument("--data", help="a folder of runs to watch: a data folder, or an export folder on the server")
+    analyze.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
 
     describe = sub.add_parser(
         "describe", help="what exists: every operation, or one operation or engine"
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         return desktop_main(["--home", args.home] if args.home else [])
 
     if args.command == "analyze":
-        return run_analyze_server(args.host, args.port, projects=args.projects)
+        return run_analyze_server(args.host, args.port, data=args.data, home=args.home)
 
     if args.command == "describe":
         from admet.core.service import Admet
@@ -90,24 +91,25 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def run_analyze_server(host: str, port: int, *, projects: str | None = None) -> int:
-    """One server for every browser that connects; each visit gets its own view."""
-    import os
-
+def run_analyze_server(host: str, port: int, *, data: str | None = None, home: str | None = None) -> int:
+    """One server for every browser that connects; each visit gets its own view of one registry."""
     from nicegui import ui
 
-    from admet.core.discovery import ENV_ROOT
+    from admet.core.home import AdmetHome
+    from admet.core.registry import Registry
     from admet.engines import create_engine_registry
     from admet.ui.analyze import render_workflow
     from admet.workflows import create_analyze_workflow
 
-    if projects:
-        os.environ[ENV_ROOT] = projects
+    store = Registry(AdmetHome.resolve(home).ensure().analyze_dir)
+    if data:
+        store.add_root(data)
+        store.scan(data)
     registry = create_engine_registry("analyze")
 
     def root() -> None:
         workflow = create_analyze_workflow()
-        render_workflow(workflow, workflow.initial_state(), registry=registry)
+        render_workflow(workflow, workflow.initial_state(), registry=registry, store=store)
 
     try:
         ui.run(root=root, host=host, port=port, reload=False, show=False, title="admet analyze")

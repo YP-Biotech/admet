@@ -26,7 +26,7 @@ class SurfaceTests(unittest.TestCase):
 
     def test_analyze_serves_on_every_interface_by_default(self):
         args = build_parser().parse_args(["analyze"])
-        self.assertEqual((args.host, args.port, args.projects), ("0.0.0.0", 8080, None))
+        self.assertEqual((args.host, args.port, args.data, args.home), ("0.0.0.0", 8080, None, None))
 
     def test_control_launches_desktop_and_forwards_only_the_home(self):
         for args, forwarded in (

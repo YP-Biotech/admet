@@ -4,9 +4,15 @@ import unittest
 from pathlib import Path
 
 from admet.core.engine import ActionSpec, EngineRegistry, Param, ParamKind, ParamSchema
+from admet.core.registry import content_key
 from admet.core.run import RunJob, RunResult
-from admet.core.session import load_session
 from admet.workflows.analyze_runner import AnalyzeBatchRunner, AnalyzeTarget, infer_engine
+
+
+def _registry(engine=None):
+    registry = EngineRegistry()
+    registry.register("opencv", lambda: engine or FakeAnalyzeEngine("opencv"))
+    return registry
 
 
 class AnalyzeBatchRunnerTests(unittest.TestCase):
@@ -18,209 +24,117 @@ class AnalyzeBatchRunnerTests(unittest.TestCase):
             self.assertEqual(infer_engine(Path(tmpdir) / "sample.avi"), "opencv")
             self.assertEqual(infer_engine(image_dir), "cellpose")
 
-    def test_runner_writes_raw_project_run_without_project_cache(self):
+    def test_a_file_is_analysed_into_its_own_results_folder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / "source.avi"
             source.write_bytes(b"video")
-            cache_root = root / "external-cache"
-            project = root / "study.admetp"
             engine = FakeAnalyzeEngine("opencv")
-            registry = EngineRegistry()
-            registry.register("opencv", lambda: engine)
+            settings = {"microns_per_pixel": 1.2, "fps": 30.0, "start_frame": 0, "end_frame": 3}
 
-            report = AnalyzeBatchRunner(registry, cache_root=cache_root).run(
-                (
-                    AnalyzeTarget(
-                        project_path=project,
-                        source_path=source,
-                        engine="opencv",
-                        sample_id="set01",
-                        settings={
-                            "microns_per_pixel": 1.2,
-                            "fps": 30.0,
-                            "start_frame": 0,
-                            "end_frame": 3,
-                        },
-                    ),
-                )
-            )
+            report = AnalyzeBatchRunner(_registry(engine), results_dir=root / "results").run(
+                (AnalyzeTarget(source_path=source, engine="opencv", sample_id="set01", settings=settings),))
 
-            session = load_session(project)
-            raw_rows = [
-                json.loads(line)
-                for line in report.projects[0].raw_path.read_text(encoding="utf-8").splitlines()
-            ]
-            analysis_metadata = json.loads(
-                (project / "analysis" / "metadata.json").read_text(encoding="utf-8")
-            )
+            job, = report.jobs
+            result_dir = Path(job.result_dir)
+            self.assertEqual((job.status, job.sample_id, job.source_path), ("complete", "set01", str(source)))
+            self.assertEqual(result_dir, root / "results" / content_key(source, {"start_frame": 0, "end_frame": 3}))
+            rows = [json.loads(line) for line in (result_dir / "rows.jsonl").read_text().splitlines()]
+            self.assertEqual((rows[0]["engine"], rows[0]["file_id"], rows[0]["item_id"]),
+                             ("opencv", result_dir.name, "set01"))
+            summary = json.loads((result_dir / "result.json").read_text())
+            self.assertEqual((summary["source_path"], summary["sample_id"], summary["engine"]),
+                             (str(source), "set01", "opencv"))
+            self.assertEqual(summary["settings"], settings)
+            self.assertTrue(summary["analyzed_at"])
+            self.assertEqual(engine.calls[0]["cache_dir"], result_dir)
+            self.assertEqual(engine.calls[0]["settings"], {"microns_per_pixel": 1.2, "fps": 30.0, "start_frame": 0,
+                                                           "end_frame": 3})
 
-        self.assertEqual(len(report.projects), 1)
-        self.assertEqual(report.jobs[0].status, "complete")
-        self.assertEqual(report.jobs[0].sample_id, "set01")
-        self.assertEqual(raw_rows[0]["engine"], "opencv")
-        self.assertEqual(raw_rows[0]["file_id"], session.files[0].id)
-        self.assertEqual(session.files[0].role, "analysis_video")
-        self.assertTrue(session.files[0].metadata["external"])
-        self.assertEqual(session.items[0].project_type, "analysis_run")
-        self.assertEqual(session.items[0].files, (session.files[0].id,))
-        # single, stable analysis output -- no timestamped run directories
-        self.assertEqual(session.items[0].metadata["raw_path"], "analysis/raw.jsonl")
-        self.assertFalse((project / "analysis" / "runs").exists())
-        self.assertFalse((project / "cache").exists())
-        self.assertEqual(analysis_metadata["run_count"], 1)
-        self.assertEqual(session.metadata["cache_root"], str(cache_root))
-        self.assertTrue(engine.calls[0]["cache_dir"].is_relative_to(cache_root))
-
-    def test_rerunning_same_batch_is_idempotent(self):
+    def test_the_same_file_analysed_the_same_way_is_read_back_not_run_again(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / "source.avi"
             source.write_bytes(b"video")
-            project = root / "study.admetp"
-            registry = EngineRegistry()
-            registry.register("opencv", lambda: FakeAnalyzeEngine("opencv"))
-            runner = AnalyzeBatchRunner(registry, cache_root=root / "cache")
-            target = AnalyzeTarget(
-                project_path=project, source_path=source, engine="opencv", sample_id="s1"
-            )
+            engine = FakeAnalyzeEngine("opencv")
+            runner = AnalyzeBatchRunner(_registry(engine), results_dir=root / "results")
+            target = AnalyzeTarget(source_path=source, engine="opencv", sample_id="s1")
 
             first = runner.run((target,))
-            first_rows = first.projects[0].raw_path.read_text(encoding="utf-8").splitlines()
             second = runner.run((target,))
-            raw_path = second.projects[0].raw_path
-            second_rows = raw_path.read_text(encoding="utf-8").splitlines()
+            fresh = runner.run((AnalyzeTarget(source_path=source, engine="opencv", sample_id="s1", cache_policy="discard"),))
 
-            analysis_metadata = json.loads(
-                (project / "analysis" / "metadata.json").read_text(encoding="utf-8")
-            )
-            session = load_session(project)
+            self.assertEqual([job.status for job in (*first.jobs, *second.jobs, *fresh.jobs)],
+                             ["complete", "cached", "complete"])
+            self.assertEqual(len(engine.calls), 2)
+            self.assertEqual(first.jobs[0].result_dir, second.jobs[0].result_dir)
+            self.assertTrue(second.jobs[0].metadata["cached"])
+            self.assertEqual(len(list((root / "results").iterdir())), 1)
 
-        # one stable output path, reused across runs
-        self.assertEqual(first.projects[0].raw_path, raw_path)
-        self.assertEqual(raw_path.name, "raw.jsonl")
-        # data is rewritten in place, not duplicated
-        self.assertGreater(len(first_rows), 0)
-        self.assertEqual(len(second_rows), len(first_rows))
-        # exactly one run / one analysis item, no timestamped run dirs
-        self.assertEqual(analysis_metadata["run_count"], 1)
-        self.assertEqual(len(session.items), 1)
-        self.assertFalse((project / "analysis" / "runs").exists())
-
-    def test_a_file_removed_from_the_project_leaves_the_next_run_alone(self):
-        """The earlier run listed the file; the run after its removal must not bring the name back."""
-        from admet.core.project import ProjectStore
-
+    def test_a_copy_of_the_file_elsewhere_finds_the_result(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            gone, kept = root / "gone.avi", root / "kept.avi"
-            gone.write_bytes(b"video")
-            kept.write_bytes(b"video")
-            project = root / "study.admetp"
-            registry = EngineRegistry()
-            registry.register("opencv", lambda: FakeAnalyzeEngine("opencv"))
-            runner = AnalyzeBatchRunner(registry, cache_root=root / "cache")
-            runner.run((AnalyzeTarget(project_path=project, source_path=gone, engine="opencv", sample_id="g"),
-                        AnalyzeTarget(project_path=project, source_path=kept, engine="opencv", sample_id="k")))
-            ProjectStore(project).remove_analysis_file(gone)
+            source = root / "a.avi"
+            source.write_bytes(b"video bytes")
+            copy = root / "server" / "b.avi"
+            copy.parent.mkdir()
+            copy.write_bytes(b"video bytes")
+            engine = FakeAnalyzeEngine("opencv")
+            runner = AnalyzeBatchRunner(_registry(engine), results_dir=root / "results")
 
-            report = runner.run((AnalyzeTarget(project_path=project, source_path=kept, engine="opencv",
-                                               sample_id="k"),))
-            session = load_session(project)
-            run_metadata = json.loads((project / "analysis" / "run.json").read_text(encoding="utf-8"))
+            runner.run((AnalyzeTarget(source_path=source, engine="opencv"),))
+            report = runner.run((AnalyzeTarget(source_path=copy, engine="opencv"),))
 
-        self.assertIn(report.jobs[0].status, {"complete", "cached"})
-        self.assertEqual(session.items[0].files, tuple(file.id for file in session.files))
-        self.assertEqual(run_metadata["files"], list(session.items[0].files))
-        self.assertEqual([job["sample_id"] for job in run_metadata["metadata"]["jobs"]], ["k"])
+            self.assertEqual(report.jobs[0].status, "cached")
+            self.assertEqual(len(engine.calls), 1)
 
-    def test_runner_groups_rows_by_project(self):
+    def test_reports_monotonic_intra_file_progress(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            source_a = root / "a.avi"
-            source_b = root / "b.avi"
-            source_a.write_bytes(b"a")
-            source_b.write_bytes(b"b")
-            registry = EngineRegistry()
-            registry.register("opencv", lambda: FakeAnalyzeEngine("opencv"))
-
-            report = AnalyzeBatchRunner(registry, cache_root=root / "cache-root").run(
-                (
-                    AnalyzeTarget(root / "one.admetp", source_a, engine="opencv"),
-                    AnalyzeTarget(root / "two.admetp", source_b, engine="opencv"),
-                )
-            )
-
-        self.assertEqual({project.project_path.name for project in report.projects}, {"one.admetp", "two.admetp"})
-        self.assertEqual(len(report.jobs), 2)
-
-    def test_runner_reports_monotonic_intra_file_progress(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            source_a = root / "a.avi"
-            source_b = root / "b.avi"
-            source_a.write_bytes(b"a")
-            source_b.write_bytes(b"b")
-            registry = EngineRegistry()
-            registry.register("opencv", lambda: FakeAnalyzeEngine("opencv"))
-
+            for name in ("a", "b"):
+                (root / f"{name}.avi").write_bytes(name.encode())
             seen: list[float] = []
-            AnalyzeBatchRunner(registry, cache_root=root / "cache-root").run(
-                (
-                    AnalyzeTarget(root / "one.admetp", source_a, engine="opencv"),
-                    AnalyzeTarget(root / "two.admetp", source_b, engine="opencv"),
-                ),
-                on_progress=lambda pct: seen.append(round(pct, 3)),
-            )
 
-        self.assertEqual(seen[0], 0.0)
-        self.assertEqual(seen[-1], 100.0)
+            AnalyzeBatchRunner(_registry(), results_dir=root / "results").run(
+                (AnalyzeTarget(root / "a.avi", engine="opencv"), AnalyzeTarget(root / "b.avi", engine="opencv")),
+                on_progress=lambda pct: seen.append(round(pct, 3)))
+
+        self.assertEqual((seen[0], seen[-1]), (0.0, 100.0))
         self.assertEqual(seen, sorted(seen))
         # two files: 50% of file 1 -> 25% overall, 50% of file 2 -> 75% overall
         self.assertIn(25.0, seen)
         self.assertIn(75.0, seen)
 
-    def test_runner_skips_unknown_source_without_aborting_project(self):
+    def test_an_unknown_source_is_skipped_without_aborting_the_rest(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            source = root / "notes.txt"
-            source.write_text("not analysis input", encoding="utf-8")
-            registry = EngineRegistry()
-            registry.register("opencv", lambda: FakeAnalyzeEngine("opencv"))
+            (root / "notes.txt").write_text("not analysis input", encoding="utf-8")
+            (root / "a.avi").write_bytes(b"a")
 
-            report = AnalyzeBatchRunner(registry, cache_root=root / "cache-root").run(
-                (
-                    AnalyzeTarget(root / "study.admetp", source),
-                )
-            )
-            session = load_session(root / "study.admetp")
-            metadata = json.loads(
-                (root / "study.admetp" / "analysis" / "metadata.json").read_text(encoding="utf-8")
-            )
+            report = AnalyzeBatchRunner(_registry(), results_dir=root / "results").run(
+                (AnalyzeTarget(root / "notes.txt"), AnalyzeTarget(root / "a.avi"),
+                 AnalyzeTarget(root / "a.avi", engine="nothing"),
+                 AnalyzeTarget(root / "a.avi", engine="opencv", cache_policy="skip")))
+            kept = len(list((root / "results").iterdir()))
 
-        # the live report surfaces the skip for this run...
-        self.assertEqual(len(report.jobs), 1)
-        self.assertEqual(report.jobs[0].status, "skipped")
+        self.assertEqual([job.status for job in report.jobs], ["skipped", "complete", "skipped", "skipped"])
         self.assertIn("cannot infer analyze engine", report.jobs[0].warnings[0])
-        self.assertEqual(session.files, ())
-        # ...but nothing is persisted for a skipped target -- no data means no record
-        self.assertEqual(metadata["runs"][0]["metadata"]["jobs"], [])
+        self.assertIn("unknown analyze engine", report.jobs[2].warnings[0])
+        self.assertEqual(report.jobs[3].result_dir, "")
+        self.assertEqual(kept, 1)                                                      # nothing kept for a skip
 
 
 class StopTests(unittest.TestCase):
     """Ctrl+C on the server: finish the file in hand, or stop now, and keep finished work."""
 
     def batch(self, root, engine, stop):
-        registry = EngineRegistry()
-        registry.register("opencv", lambda: engine)
         sources = []
         for name in ("a", "b"):
             source = root / f"{name}.avi"
             source.write_bytes(name.encode())
             sources.append(source)
-        targets = tuple(AnalyzeTarget(project_path=root / "study.admetp", source_path=source,
-                                      engine="opencv", sample_id=source.stem) for source in sources)
-        return AnalyzeBatchRunner(registry, cache_root=root / "cache").run(targets, stop=stop)
+        targets = tuple(AnalyzeTarget(source_path=source, engine="opencv", sample_id=source.stem) for source in sources)
+        return AnalyzeBatchRunner(_registry(engine), results_dir=root / "results").run(targets, stop=stop)
 
     def test_stop_after_the_current_file_saves_it_and_skips_the_rest(self):
         from admet.workflows.analyze_runner import AnalysisStop
@@ -231,13 +145,12 @@ class StopTests(unittest.TestCase):
         engine.run = lambda job: (stop.after_file.set(), original(job))[1]   # Ctrl+C during file a
         with tempfile.TemporaryDirectory() as tmpdir:
             report = self.batch(Path(tmpdir), engine, stop)
-            raw = report.projects[0].raw_path.read_text(encoding="utf-8")
+            finished = [p.parent.name for p in (Path(tmpdir) / "results").rglob("result.json")]
 
         self.assertEqual([job.status for job in report.jobs], ["complete", "stopped"])
-        self.assertIn('"item_id": "a"', raw)
-        self.assertNotIn('"item_id": "b"', raw)
+        self.assertEqual(finished, [Path(report.jobs[0].result_dir).name])
 
-    def test_stop_now_abandons_the_file_in_hand_and_resumes_from_cache(self):
+    def test_stop_now_abandons_the_file_in_hand_and_resumes_from_what_was_kept(self):
         from admet.workflows.analyze_runner import AnalysisStop
 
         stop = AnalysisStop()
@@ -255,8 +168,7 @@ class StopTests(unittest.TestCase):
             root = Path(tmpdir)
             report = self.batch(root, engine, stop)
             self.assertEqual([job.status for job in report.jobs], ["complete", "stopped"])
-            self.assertEqual(len(list((root / "cache").rglob("result.json"))), 1)   # b left unfinished
-            self.assertIn('"item_id": "a"', report.projects[0].raw_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(list((root / "results").rglob("result.json"))), 1)   # b left unfinished
 
             engine.run = original
             resumed = self.batch(root, engine, AnalysisStop())
@@ -298,26 +210,14 @@ class FakeAnalyzeEngine:
             }
         )
         if job.sink is not None:
-            job.sink.write(
-                {
-                    "job_id": job.id,
-                    "item_id": job.metadata["item_id"],
-                    "file_id": job.metadata["file_id"],
-                    "engine": self.id,
-                    "kind": "frame",
-                    "values": {"frame": 0, "count": 1},
-                }
-            )
+            for frame in range(3):
+                job.sink.write({
+                    "job_id": job.id, "engine": self.id, "kind": "detection",
+                    "file_id": job.metadata.get("file_id"), "item_id": job.metadata.get("item_id"),
+                    "values": {"frame": frame, "droplet_id": 1, "centroid_x": 10.0 + frame, "centroid_y": 5.0,
+                               "equivalent_diameter": 20.0, "area": 314.0},
+                })
         if job.progress is not None:
             job.progress(50, "half")
-            job.progress(100, "done")
-        return RunResult(
-            job_id=job.id,
-            engine=self.id,
-            action=job.action,
-            metadata={"row_count": 1, "cache_dir": str(job.cache_dir)},
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+        return RunResult(job_id=job.id, engine=self.id, action=job.action, status="complete",
+                         metadata={"total_droplets": 1, "frames": 3})

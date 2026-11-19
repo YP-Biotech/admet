@@ -9,7 +9,7 @@ from pathlib import Path
 
 from admet.ui.analyze_results import (
     FileResult,
-    StoredRun,
+    StoredResult,
     results_cells,
     expected_rate_hz,
     dispersed_flow_ul_min,
@@ -31,7 +31,7 @@ from admet.ui.analyze_results import (
 
 
 def _result(**overrides) -> FileResult:
-    values = {"project": "p", "sample_id": "s", "engine": "opencv", "source_path": "/v.avi", "file_id": "f",
+    values = {"run": "p", "sample_id": "s", "engine": "opencv", "source_path": "/v.avi", "file_id": "f",
               "analyzed_at": "",
               "settings": {}, "fps": 100.0, "scale": 2.0, "frames": 10, "droplets": 3, "rate_hz": 20.0,
               "speed_mm_s": 2.0}
@@ -39,12 +39,18 @@ def _result(**overrides) -> FileResult:
     return FileResult(**values)
 
 
-def _run(project: Path) -> StoredRun:
-    return StoredRun(project_path=project, run_id="analysis", raw_path=project / "analysis" / "raw.jsonl",
-                     jobs=({"engine": "opencv", "sample_id": "s", "file_id": "f1", "status": "complete",
-                            "source_path": "media/v.avi",
-                            "metadata": {"analyzed_at": "2026-11-13T10:00:00+00:00", "total_droplets": 3}},),
-                     matrix=({"file_id": "f1", "settings": {"start_frame": 0, "end_frame": 10, "k_sigma": 4}},))
+def _stored(root: Path = Path("/p/study.admetp")) -> StoredResult:
+    """A video's stored analysis, as the runner leaves it: its rows and summary in a results folder."""
+    return StoredResult(source_path=root / "media" / "v.avi", engine="opencv", sample_id="s",
+                        result_dir=root.parent / "results" / "k1",
+                        metadata={"analyzed_at": "2026-11-13T10:00:00+00:00", "total_droplets": 3, "file_id": "f1",
+                                  "settings": {"start_frame": 0, "end_frame": 10, "k_sigma": 4}},
+                        run=str(root.parent / "study"))
+
+
+def _imaging(**metadata) -> StoredResult:
+    return StoredResult(source_path=Path("/p/study.admetp/media/imgs"), engine="cellpose", sample_id="imgs",
+                        result_dir=Path("/p/results/k2"), metadata={"file_id": "f2", **metadata})
 
 
 def _rows() -> list[dict]:
@@ -62,7 +68,7 @@ def _rows() -> list[dict]:
 
 class FileResultTests(unittest.TestCase):
     def test_one_value_per_droplet_with_rate_and_speed(self):
-        result, = file_results(_run(Path("/p/study.admetp")), _rows())
+        result, = file_results(_stored(), _rows())
 
         self.assertEqual(result.droplets, 3)
         self.assertEqual(result.diameters, (40.0, 42.0, 44.0))           # medians per droplet, in µm
@@ -79,7 +85,7 @@ class FileResultTests(unittest.TestCase):
     def test_the_scale_and_fps_of_the_day_apply_without_a_new_run(self):
         scales = {("opencv", "/p/study.admetp/media/v.avi"): (4.0, 200.0)}
 
-        result, = file_results(_run(Path("/p/study.admetp")), _rows(), scales=scales)
+        result, = file_results(_stored(), _rows(), scales=scales)
 
         self.assertEqual(result.diameters, (80.0, 84.0, 88.0))           # px × 4 µm/px, not the run's 2
         self.assertAlmostEqual(result.rate_hz, 40.0)                     # 5 frames apart at 200 fps
@@ -98,7 +104,7 @@ class FileResultTests(unittest.TestCase):
         self.assertEqual(expected_rate_hz(80.0, 0.0), 0.0)
 
         scales = {("opencv", "/p/study.admetp/media/v.avi"): (2.0, 100.0, 80.0)}
-        result, = file_results(_run(Path("/p/study.admetp")), _rows(), scales=scales)
+        result, = file_results(_stored(), _rows(), scales=scales)
 
         self.assertEqual(result.dispersed_ul_min, 80.0)
         self.assertAlmostEqual(result.expected_hz, expected_rate_hz(80.0, 42.0), delta=1)   # the median diameter
@@ -109,25 +115,22 @@ class FileResultTests(unittest.TestCase):
         rows[0]["values"]["generation"] = {"method": "spacing", "spacing_px": 50.0, "period_frames": 5.0,
                                            "crossings": 0, "rate_hz": 20.0}
 
-        result, = file_results(_run(Path("/p/study.admetp")), rows)
+        result, = file_results(_stored(), rows)
 
         self.assertAlmostEqual(result.rate_hz, 20.0)                     # 100 fps over 5 frames
         self.assertEqual(result.rate_note, "speed over spacing")
 
     def test_two_files_with_the_same_sample_name_stay_two_results(self):
-        rows = []
+        results = []
         for file_id, source in (("f1", "media/a.avi"), ("f2", "media/b.avi")):
-            rows.append({"engine": "opencv", "item_id": "cells", "file_id": file_id, "kind": "run_context",
-                         "values": {"analysis": {"fps": 50.0, "microns_per_pixel": 1.0}}})
-            rows.append({"engine": "opencv", "item_id": "cells", "file_id": file_id, "kind": "detection",
-                         "values": {"frame": 1, "droplet_id": 1, "centroid_x": 5.0, "centroid_y": 5.0,
-                                    "equivalent_diameter": 30, "area": 700}})
-        run = StoredRun(Path("/p/study.admetp"), "analysis", Path("analysis/raw.jsonl"),
-                        jobs=tuple({"engine": "opencv", "sample_id": "cells", "file_id": file_id, "status": "complete",
-                                    "source_path": source, "metadata": {}}
-                                   for file_id, source in (("f1", "media/a.avi"), ("f2", "media/b.avi"))))
-
-        results = file_results(run, rows)
+            rows = [{"engine": "opencv", "item_id": "cells", "file_id": file_id, "kind": "run_context",
+                     "values": {"analysis": {"fps": 50.0, "microns_per_pixel": 1.0}}},
+                    {"engine": "opencv", "item_id": "cells", "file_id": file_id, "kind": "detection",
+                     "values": {"frame": 1, "droplet_id": 1, "centroid_x": 5.0, "centroid_y": 5.0,
+                                "equivalent_diameter": 30, "area": 700}}]
+            stored = StoredResult(source_path=Path("/p/study.admetp") / source, engine="opencv", sample_id="cells",
+                                  result_dir=Path("/p/results") / file_id, metadata={"file_id": file_id})
+            results.extend(file_results(stored, rows))
 
         self.assertEqual([(r.sample_id, r.file_id, Path(r.source_path).name) for r in results],
                          [("cells", "f1", "a.avi"), ("cells", "f2", "b.avi")])
@@ -139,7 +142,7 @@ class FileResultTests(unittest.TestCase):
                   "values": {"frame": i, "droplet_id": i, "centroid_x": 1.0, "centroid_y": 1.0,
                              "equivalent_diameter": 10, "area": 78}} for i in range(70_000)]
 
-        result, = file_results(_run(Path("/p/study.admetp")), iter(rows))
+        result, = file_results(_stored(), iter(rows))
 
         self.assertEqual(len(result.diameters), 70_000)
         self.assertEqual(len(result.detections), 6000)
@@ -151,9 +154,7 @@ class FileResultTests(unittest.TestCase):
                  "values": {"frame": frame, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
                             "diameter_um": 140.0 + droplet, "area_um2": 15000.0, "inclusions": frame + droplet}}
                 for frame in (1, 2) for droplet in (0, 1)]
-        run = StoredRun(Path("/p/study.admetp"), "analysis", Path("analysis/raw.jsonl"),
-                        jobs=({"engine": "cellpose", "sample_id": "imgs", "file_id": "f2", "status": "complete",
-                               "source_path": "media/imgs", "metadata": {"droplet_count": 4}},))
+        run = _imaging(droplet_count=4)
 
         result, = file_results(run, rows)
 
@@ -168,9 +169,7 @@ class FileResultTests(unittest.TestCase):
                  "values": {"frame": 1, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
                             "diameter_um": 140.0, "area_um2": 15000.0, "inclusions": 1}}
                 for droplet in (0, 1, 2)]
-        run = StoredRun(Path("/p/study.admetp"), "analysis", Path("analysis/raw.jsonl"),
-                        jobs=({"engine": "cellpose", "sample_id": "imgs", "file_id": "f2", "status": "complete",
-                               "source_path": "media/imgs", "metadata": {"droplet_count": 3}},))
+        run = _imaging(droplet_count=3)
         fixes = {("cellpose", "/p/study.admetp/media/imgs"): {"1:0": {"disabled": True}, "1:2": {"inclusions": 2}}}
 
         result, = file_results(run, rows, fixes)
@@ -179,7 +178,7 @@ class FileResultTests(unittest.TestCase):
         self.assertEqual(result.inclusion_counts, (1, 3))
 
     def test_the_table_holds_the_numbers_and_their_sparklines(self):
-        result, = file_results(_run(Path("/p/study.admetp")), _rows())
+        result, = file_results(_stored(), _rows())
 
         table = results_table_html([result])
 
@@ -266,7 +265,7 @@ class ChartTests(unittest.TestCase):
                   "values": {"frame": 2 * i, "droplet_id": i, "centroid_x": 1.0, "centroid_y": 1.0,
                              "equivalent_diameter": 10, "area": 78}} for i in range(50)]
 
-        result, = file_results(_run(Path("/p/study.admetp")), rows)
+        result, = file_results(_stored(), rows)
 
         self.assertAlmostEqual(result.rate_hz, 50.0)                        # 49 intervals over 98 frames at 100 fps
         self.assertEqual(result.rate_note, "from arrivals; gate saw 2 of 50")
@@ -282,18 +281,17 @@ class ChartTests(unittest.TestCase):
 class ExportTests(unittest.TestCase):
     def test_csv_export_zips_a_summary_and_every_droplet_row(self):
         with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "study.admetp"
-            (project / "analysis").mkdir(parents=True)
-            (project / "analysis" / "raw.jsonl").write_text("\n".join(json.dumps(row) for row in _rows()))
-            run = _run(project)
-            results = file_results(run, _rows())
+            stored = _stored(Path(tmp) / "study.admetp")
+            stored.rows_path.parent.mkdir(parents=True)
+            stored.rows_path.write_text("\n".join(json.dumps(row) for row in _rows()))
+            results = file_results(stored, _rows())
 
-            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([run], results)))
+            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([stored], results)))
 
             self.assertEqual(sorted(archive.namelist()), ["droplets/study_s_opencv.csv", "summary.csv"])
             summary = archive.read("summary.csv").decode().splitlines()
-            self.assertTrue(summary[0].startswith("project,sample,engine"))
-            self.assertIn("study.admetp,s,opencv", summary[1])
+            self.assertTrue(summary[0].startswith("run,sample,engine"))
+            self.assertIn("study,s,opencv", summary[1])
             droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
             self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,equivalent_diameter,area")
             self.assertEqual(len(droplets), 10)
@@ -303,15 +301,15 @@ class ExportTests(unittest.TestCase):
                  "values": {"frame": 1, "droplet_id": droplet, "inclusions": 1}} for droplet in (0, 1)]
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "study.admetp"
-            (project / "analysis").mkdir(parents=True)
-            (project / "analysis" / "raw.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
-            run = StoredRun(project, "analysis", project / "analysis" / "raw.jsonl",
-                            jobs=({"engine": "cellpose", "sample_id": "imgs", "file_id": "f2", "status": "complete",
-                                   "source_path": "media/imgs", "metadata": {}},))
+            stored = StoredResult(source_path=project / "media" / "imgs", engine="cellpose", sample_id="imgs",
+                                  result_dir=Path(tmp) / "results" / "k2", metadata={"file_id": "f2"},
+                                  run=str(Path(tmp) / "study"))
+            stored.rows_path.parent.mkdir(parents=True)
+            stored.rows_path.write_text("\n".join(json.dumps(row) for row in rows))
             fixes = {("cellpose", str(project / "media/imgs")): {"1:0": {"disabled": True},
                                                                   "1:1": {"inclusions": 1}}}
 
-            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([run], file_results(run, rows, fixes), fixes)))
+            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([stored], file_results(stored, rows, fixes), fixes)))
 
             lines = archive.read("droplets/study_imgs_cellpose.csv").decode().splitlines()
             self.assertEqual(lines, ["kind,frame,droplet_id,inclusions,inclusions_raw", "droplet,1,1,2,1"])

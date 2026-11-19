@@ -14,14 +14,14 @@ def create_analyze_workflow() -> Workflow:
                 "1. Files",
                 description="The files to analyse.",
                 instruction_cards=(
-                    StageInstruction("Open a project: pick one at the top, or browse for it.",
-                                     guard="not project_ready"),
-                    StageInstruction("Add the videos or image folders to analyse.", guard="not has_matrix_rows"),
+                    StageInstruction("Add a folder of runs (a data or export folder), or single videos and image "
+                                     "folders, to analyse.", guard="not has_matrix_rows"),
                     StageInstruction("Tick Use on the files to run and name the samples, then go to 2. Analyse."),
                 ),
                 settings_panel=SettingsSpec("matrix", title="Files"),
                 actions=(
-                    StageAction("Add files…", "browse_source", guard="project_ready"),
+                    StageAction("Add folder…", "browse_folder"),
+                    StageAction("Add files…", "browse_source", variant="secondary"),
                     StageAction("Clear list", "clear_matrix", guard="has_matrix_rows", variant="secondary"),
                 ),
                 editor=EditorSpec("file_facts"),

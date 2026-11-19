@@ -14,7 +14,6 @@ from pathlib import Path
 from admet.core.engine import ActionSpec
 from admet.core.run import RunJob, RunResult
 from admet.core.service import Admet
-from admet.core.session import load_session
 
 
 class RecordingEngine:
@@ -480,14 +479,13 @@ class AnalysisTests(unittest.TestCase):
     def test_something_to_analyse_is_registered(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)
-            store = admet.analysis_index
 
             added = admet.do("add_source", {"path": str(self._video(Path(tmp)))})
 
             self.assertEqual(added["engine"], "opencv")
             self.assertEqual(added["role"], "analysis_video")
-            session = load_session(store.path)
-            self.assertEqual([file.role for file in session.files], ["analysis_video"])
+            self.assertEqual([entry["engine"] for entry in admet.registry.sources()], ["opencv"])
+            self.assertEqual(admet.registry.path, admet.home.analyze_dir / "registry.json")
 
     def test_the_engine_is_inferred_from_what_was_added(self):
         with tempfile.TemporaryDirectory() as tmp:

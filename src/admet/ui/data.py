@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-from admet.core.session import session_path
 
 
 VIDEO_TABLE_COLUMNS = (
@@ -96,38 +94,11 @@ def _format_duration(value: Any) -> str:
     return f"{seconds:.2f} s"
 
 
-def analysis_run_rows(project_paths: set[str]) -> list[dict[str, Any]]:
-    rows = []
-    for project_path in sorted(project_paths):
-        path = session_path(project_path)
-        metadata_path = path / "analysis" / "metadata.json"
-        if not metadata_path.is_file():
-            continue
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        for run in metadata.get("runs", []):
-            if not isinstance(run, dict):
-                continue
-            raw = str(run.get("raw_path") or "")
-            rows.append(
-                {
-                    "project": path.name,
-                    "run_id": str(run.get("run_id") or ""),
-                    "jobs": len((run.get("metadata") or {}).get("jobs", [])),
-                    "raw": raw,
-                }
-            )
-    return rows
-
-
 def matrix_row(row: Any, analyzed: str = "") -> dict[str, Any]:
     return {
         "analyzed": analyzed or "—",
         "uid": row.uid,
-        "project": Path(row.project_path).name,
-        "project_path": row.project_path,
+        "run": Path(row.run).name if row.run else "",
         "source": Path(row.source_path).name or row.source_path,
         "source_path": row.source_path,
         "engine": row.engine,

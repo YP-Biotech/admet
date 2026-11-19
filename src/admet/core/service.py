@@ -165,7 +165,6 @@ class Admet:
         self._marks: dict[str, Any] = {}
         self.home = (home if isinstance(home, AdmetHome) else AdmetHome.resolve(home)).ensure()
         self.runs = RunStore(self.home.data_dir)
-        self._analysis_index = None       # the analysis operations' index of sources, until the registry
         self._protocol_plans: dict[str, dict[str, Any]] = {}
         self._executing_plan_id: str | None = None
         self._run_artifacts: dict[str, Any] = {}
@@ -210,13 +209,11 @@ class Admet:
         return ProtocolStore(self.home.data_dir)
 
     @property
-    def analysis_index(self):
-        """What the Python analysis operations work on: a project store under analyze/, until the registry."""
-        if self._analysis_index is None:
-            from admet.core.project import ProjectStore
+    def registry(self):
+        """Analyze's registry: the sources it knows and where their results are."""
+        from admet.core.registry import Registry
 
-            self._analysis_index = ProjectStore.create(self.home.analyze_dir / "index", "analyze")
-        return self._analysis_index
+        return Registry(self.home.analyze_dir)
 
     # -- runs ----------------------------------------------------------------
     def measurements(self, run_id: str, changes: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -765,47 +762,45 @@ class Admet:
         return waiting
 
     # -- analysis ------------------------------------------------------------
-    ANALYSIS_ROLES = ("analysis_video", "analysis_image_dir")
-
     def add_analysis_source(self, path: Path, *, engine: str, sample_id: str = "") -> dict[str, Any]:
-        """Register something to analyse with the analysis index."""
-        file = self.analysis_index.register_analysis_file(
-            path, engine=engine, sample_id=sample_id or Path(path).stem
-        )
-        self.analysis_index.save()
-        return {"id": file.id, "role": file.role, "path": file.path, "engine": engine}
+        """Register something to analyse with analyze's registry."""
+        source = Path(path).resolve()
+        entry = self.registry.add_source(source, engine=engine, sample_id=sample_id or source.stem) \
+            or self.registry.source(source) or {}
+        role = "analysis_image_dir" if engine == "cellpose" else "analysis_video"
+        return {"id": str(entry.get("path", source)), "role": role, "path": str(source), "engine": engine}
 
     def analysis_sources(self) -> list[dict[str, Any]]:
         return [
             {
-                "id": file.id,
-                "role": file.role,
-                "path": str(self.analysis_index.resolve_file_path(file)),
-                "engine": file.metadata.get("engine", ""),
-                "sample_id": file.metadata.get("sample_id", ""),
+                "id": entry["path"],
+                "role": "analysis_image_dir" if entry.get("engine") == "cellpose" else "analysis_video",
+                "path": entry["path"],
+                "engine": entry.get("engine", ""),
+                "sample_id": entry.get("sample_id", ""),
             }
-            for file in self.analysis_index.files_by_role(self.ANALYSIS_ROLES)
+            for entry in self.registry.sources()
         ]
 
     def analyze(self, *, engine: str = "", cache: str = "use") -> dict[str, Any]:
-        """Analyse everything the project holds, writing the results into it."""
+        """Analyse every registered source, the results going to analyze's results folder."""
         from admet.engines import create_engine_registry
         from admet.workflows.analyze_runner import AnalyzeBatchRunner, AnalyzeTarget
 
+        registry = self.registry
         targets = [
             AnalyzeTarget(
-                project_path=self.analysis_index.path,
                 source_path=Path(source["path"]),
                 engine=engine or source["engine"],
                 sample_id=source["sample_id"],
+                settings=dict((registry.source(source["path"]) or {}).get("settings") or {}),
                 cache_policy=cache,
             )
             for source in self.analysis_sources()
         ]
-        report = AnalyzeBatchRunner(create_engine_registry("analyze")).run(targets)
-        self._analysis_index = None                    # read afresh next time
+        report = AnalyzeBatchRunner(create_engine_registry("analyze"), results_dir=registry.results_dir).run(targets)
         return {
-            "projects": len(report.projects),
+            "results": str(registry.results_dir),
             "jobs": [
                 {
                     "sample_id": job.sample_id,
