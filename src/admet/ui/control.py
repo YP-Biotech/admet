@@ -1620,7 +1620,7 @@ class ControlWindow(QMainWindow):
             return entries[rows[0].row()] if rows else None
 
         pill, (add_button, remove_button) = _pill_buttons(("Add", "Remove"))
-        add_button.setEnabled(self.api.session is not None)
+        add_button.setEnabled(True)
         add_button.clicked.connect(add)
         remove_button.setEnabled(False)
         remove_button.setToolTip(f"Removes the selected {kind}; defaults cannot be removed")
@@ -2799,7 +2799,7 @@ class ControlWindow(QMainWindow):
             self._schedule_camera_apply()
         if name in LIQUID_PROFILE_PARAM_NAMES:
             self._apply_liquid_profile(name, value)
-        if name in DEAD_VOLUME_PARAM_NAMES and self.api.session is not None:
+        if name in DEAD_VOLUME_PARAM_NAMES:
             try:
                 self.api.save_calibration(remember_dead_volume(
                     self.api.calibration, name.removesuffix("_dead_volume_ul"), self.values[name]))

@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import json
 import threading
-from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -20,17 +19,6 @@ from .session import (
     session_path,
     write_atomic,
 )
-
-
-@dataclass(frozen=True)
-class ControlRecordingTarget:
-    recording_id: str
-    video_path: Path
-    fluidics_csv_path: Path
-
-    @property
-    def outputs(self) -> dict[str, Path]:
-        return {"video": self.video_path, "fluidics_csv": self.fluidics_csv_path}
 
 
 @dataclass(frozen=True)
@@ -85,36 +73,6 @@ class ProjectStore:
             return cls(existing)
         path = save_session(project_path, new_session(project_id))
         return cls(path)
-
-    # What a project carries that is about the rig and the work, not about one run:
-    # the clone of a project keeps exactly these.
-    SETTINGS_KEYS = ("acquisition_mode", "calibration", "profiles", "liquids", "qt_checkup", "optics")
-
-    @classmethod
-    def clone_settings(cls, source: ProjectStore, project_path: str | Path, project_id: str = "") -> ProjectStore:
-        """A new project with the source's settings and calibration, and none of its data.
-
-        Copied: acquisition mode, each channel's calibration (profile, dead volume),
-        the profiles and liquids added, the preflight set-up and the saved protocols.
-        Left behind: recordings, protocol runs, analyses, media, and anything that
-        belongs to a machine rather than the project.
-        """
-        import shutil
-
-        target = session_path(project_path)
-        if (target / "manifest.json").is_file():
-            raise FileExistsError(f"{target} is already a project")
-        clone = cls.create(target, project_id or target.stem)
-        settings = {key: deepcopy(source.session.metadata[key]) for key in cls.SETTINGS_KEYS
-                    if source.session.metadata.get(key) is not None}
-        if settings:
-            clone.update_metadata(**settings)
-        protocols = source.path / "protocols"
-        if protocols.is_dir():
-            (clone.path / "protocols").mkdir(exist_ok=True)
-            for path in sorted(protocols.glob("*.json")):
-                shutil.copy2(path, clone.path / "protocols" / path.name)
-        return clone
 
     @_locked
     def save(self) -> None:
@@ -173,39 +131,8 @@ class ProjectStore:
         return path if path.is_absolute() else self.path / path
 
     @property
-    def records_dir(self) -> Path:
-        return self.path / "records"
-
-    @property
     def analysis_dir(self) -> Path:
         return self.path / "analysis"
-
-    def control_recording_target(self, label: str) -> ControlRecordingTarget:
-        recording_id = _stamped_id(label)
-        return ControlRecordingTarget(
-            recording_id=recording_id,
-            video_path=self.records_dir / "camera" / f"{recording_id}.avi",
-            fluidics_csv_path=self.records_dir / "fluidics" / f"{recording_id}.csv",
-        )
-
-    @_locked
-    def append_control_recording(self, recording: dict[str, Any]) -> None:
-        normalized = self._normalize_control_recording(recording)
-        metadata_path = self.records_dir / "metadata.json"
-        metadata = _read_metadata(metadata_path, default={"recordings": []})
-        recordings = [item for item in metadata.get("recordings", []) if isinstance(item, dict)]
-        recordings = _upsert_recording(recordings, normalized)
-        metadata.update(
-            {
-                "updated": _local_timestamp(),
-                "report_dir": "records",
-                "recording_count": len(recordings),
-                "recordings": recordings,
-            }
-        )
-        _write_metadata(metadata_path, metadata)
-        self._register_control_recording(normalized)
-        self.save()
 
     def analysis_run_target(self, label: str = "analysis") -> AnalysisRunTarget:
         # A project keeps a single, stable analysis output: one raw.jsonl and one
@@ -312,143 +239,6 @@ class ProjectStore:
         self.session = replace(self.session, items=tuple(items), metadata=session_metadata)
         self.save()
 
-    @_locked
-    def attach_encoded_video(self, video_path: str | Path) -> bool:
-        """List a recording's video once its encoding has finished and the file is there.
-
-        The frames the video carries in its own record (written, dropped) are taken over
-        the recording's estimate; the writer counted them.
-        """
-        recording_id = Path(video_path).stem
-        metadata_path = self.records_dir / "metadata.json"
-        metadata = _read_metadata(metadata_path, default={"recordings": []})
-        recordings = [item for item in metadata.get("recordings", []) if isinstance(item, dict)]
-        for index, entry in enumerate(recordings):
-            if entry.get("recording_id") == recording_id:
-                updated = self._normalize_control_recording(
-                    {**entry, **_facts_from_tag(video_path), "video_path": str(video_path)})
-                recordings[index] = updated
-                metadata.update({"updated": _local_timestamp(), "recordings": recordings})
-                _write_metadata(metadata_path, metadata)
-                self._register_control_recording(updated)
-                self.save()
-                return True
-        return False
-
-    @_locked
-    def register_tagged_recordings(self, only: Path | None = None) -> list[str]:
-        """List every video in records/camera that carries its record and is not listed yet.
-
-        The video is the truth; the manifest only points at it. A manifest that lost
-        a recording -- a run that ended badly, a file copied in from another machine --
-        gets it back from the file. The ids of what was listed.
-        """
-        from admet.engines.acquisition.camera.tags import read_recording_tag
-
-        listed = {self.resolve_file_path(file).resolve() for file in self.session.files}
-        candidates = [only] if only is not None else sorted((self.records_dir / "camera").glob("*.avi"))
-        added = []
-        for video in candidates:
-            if not video.is_file() or video.resolve() in listed:
-                continue
-            tag = read_recording_tag(video)
-            if not tag:
-                continue
-            recording = recording_from_tag(tag, video)
-            metadata_path = self.records_dir / "metadata.json"
-            metadata = _read_metadata(metadata_path, default={"recordings": []})
-            recordings = [item for item in metadata.get("recordings", []) if isinstance(item, dict)]
-            normalized = self._normalize_control_recording(recording)
-            recordings = _upsert_recording(recordings, normalized)
-            metadata.update({"updated": _local_timestamp(), "report_dir": "records",
-                             "recording_count": len(recordings), "recordings": recordings})
-            _write_metadata(metadata_path, metadata)
-            self._register_control_recording(normalized)
-            added.append(normalized["recording_id"])
-        if added:
-            self.save()
-        return added
-
-    def _normalize_control_recording(self, recording: dict[str, Any]) -> dict[str, Any]:
-        recording_id = str(recording.get("recording_id") or "").strip()
-        if not recording_id:
-            raise ValueError("control recording requires recording_id")
-        video_path = Path(str(recording.get("video_path") or self.records_dir / "camera" / f"{recording_id}.avi"))
-        fluidics_csv = Path(str(recording.get("fluidics_csv") or self.records_dir / "fluidics" / f"{recording_id}.csv"))
-        if not video_path.is_absolute():
-            video_path = self.path / video_path
-        if not fluidics_csv.is_absolute():
-            fluidics_csv = self.path / fluidics_csv
-        # A path is only recorded for a file that is actually there. The
-        # manifest already refuses to list one that is not, but leaving the
-        # path here would still be a claim a reader could believe -- and a
-        # fluidics-only run writes no video at all.
-        wrote_video = video_path.is_file()
-        normalized = dict(recording)
-        normalized.update(
-            {
-                "recording_id": recording_id,
-                "report_dir": "records",
-                "output_dir": "records/camera",
-                "video_path": self._stored_path(video_path) if wrote_video else "",
-                "video_candidates": [self._stored_path(video_path)] if wrote_video else [],
-                "fluidics_csv": self._stored_path(fluidics_csv),
-            }
-        )
-        return normalized
-
-    def _register_control_recording(self, recording: dict[str, Any]) -> None:
-        """List what the recording actually produced.
-
-        A recording without a camera writes a fluidics log and no video. Both
-        paths are allocated either way, so registering both unconditionally puts
-        a file in the manifest that was never written -- and a manifest that
-        claims a file exists is worse than one that omits it, because everything
-        downstream believes it.
-        """
-        files = list(self.session.files)
-        recording_id = _safe_id(str(recording["recording_id"]))
-        written: list[str] = []
-        for key, prefix, role, media_type, describe in (
-            ("video_path", "video-", "control_video", "video/avi", _video_metadata),
-            ("fluidics_csv", "fluidics-", "control_fluidics_csv", "text/csv", _csv_metadata),
-        ):
-            stored = str(recording.get(key) or "")
-            if not stored or not self.resolve_file_path(SessionFile("probe", stored, role)).is_file():
-                continue
-            file_id = prefix + recording_id
-            written.append(file_id)
-            files = _upsert_file(
-                files,
-                SessionFile(
-                    id=file_id,
-                    path=stored,
-                    role=role,
-                    media_type=media_type,
-                    metadata=describe(recording),
-                ),
-            )
-        if not written:
-            return
-
-        existing = _find_item(self.session.items, "acq-records")
-        item_files = list(existing.files if existing else ())
-        for file_id in written:
-            if file_id not in item_files:
-                item_files.append(file_id)
-        item = SessionItem(
-            id="acq-records",
-            project_type="control_acquisition",
-            engine="acquisition",
-            files=tuple(item_files),
-            metadata={
-                "recording_count": len({name.split("-", 1)[1] for name in item_files}),
-                "report_dir": "records",
-            },
-        )
-        items = _upsert_item(list(self.session.items), item)
-        self.session = replace(self.session, files=tuple(files), items=tuple(items))
-
     def _stored_path(self, path: Path) -> str:
         path = path.resolve()
         try:
@@ -483,17 +273,6 @@ def _merge(base: AdmetSession, mine: AdmetSession, on_disk: AdmetSession) -> Adm
     )
 
 
-def _stamped_id(label: str) -> str:
-    return f"{_safe_label(label)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-
-def _safe_label(value: str) -> str:
-    label = "_".join(
-        part for part in "".join(ch.lower() if ch.isalnum() else "_" for ch in value).split("_") if part
-    )
-    return label or "run"
-
-
 def _safe_id(value: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-") or "item"
 
@@ -512,16 +291,6 @@ def _read_metadata(path: Path, *, default: dict[str, Any]) -> dict[str, Any]:
 
 def _write_metadata(path: Path, data: dict[str, Any]) -> None:
     write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-
-
-def _upsert_recording(recordings: list[dict[str, Any]], recording: dict[str, Any]) -> list[dict[str, Any]]:
-    recording_id = recording["recording_id"]
-    for index, existing in enumerate(recordings):
-        if existing.get("recording_id") == recording_id:
-            recordings[index] = recording
-            return recordings
-    recordings.append(recording)
-    return recordings
 
 
 def _upsert_run(runs: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -576,75 +345,3 @@ def _find_item(items: tuple[SessionItem, ...], item_id: str) -> SessionItem | No
             return item
     return None
 
-
-def _video_metadata(recording: dict[str, Any]) -> dict[str, Any]:
-    width = int(float(recording.get("width") or 0))
-    height = int(float(recording.get("height") or 0))
-    metadata = {
-        "video_path": str(recording.get("video_path") or ""),
-        "started_at": str(recording.get("started_at") or ""),
-        "stopped_at": str(recording.get("stopped_at") or ""),
-        "duration_s": float(recording.get("duration_s") or 0.0),
-        "frames_recorded": recording.get("frames_recorded"),
-        "frames_written": recording.get("frames_written"),
-        "width": width,
-        "height": height,
-        "dimensions": f"{width}x{height}" if width and height else "",
-        "acquisition_fps": float(recording.get("acquisition_fps") or 0.0),
-        "converted_fps": float(recording.get("converted_fps") or 0.0),
-        "fluidics_csv": str(recording.get("fluidics_csv") or ""),
-    }
-    for key in ("frames_dropped", "complete", "step", "step_name", "part", "run_id", "camera", "channels"):
-        if recording.get(key) is not None:
-            metadata[key] = recording[key]
-    return metadata
-
-
-def _facts_from_tag(video_path: str | Path) -> dict[str, Any]:
-    """What the video's own record says about its frames; empty when it carries none."""
-    from admet.engines.acquisition.camera.tags import read_recording_tag
-
-    tag = read_recording_tag(video_path) or {}
-    facts = {key: tag[key] for key in ("frames_written", "frames_dropped", "complete", "camera", "channels")
-             if key in tag}
-    if tag.get("frames_captured"):
-        facts["frames_recorded"] = tag["frames_captured"]
-    return facts
-
-
-def recording_from_tag(tag: dict[str, Any], video_path: Path) -> dict[str, Any]:
-    """A recording entry, as append_control_recording takes it, from a video's own record."""
-    frames = tag.get("frames_written") or tag.get("frames_captured")
-    started, stopped = str(tag.get("started_at") or ""), str(tag.get("stopped_at") or tag.get("encoded_at") or "")
-    duration = float(tag.get("duration_s") or 0.0)
-    if not duration and started and stopped:
-        try:
-            duration = max(0.0, (datetime.fromisoformat(stopped) - datetime.fromisoformat(started)).total_seconds())
-        except ValueError:
-            duration = 0.0
-    recording = {
-        "recording_id": str(tag.get("recording_id") or video_path.stem),
-        "video_path": str(video_path),
-        "fluidics_csv": str(tag.get("fluidics_csv") or ""),
-        "started_at": started, "stopped_at": stopped, "duration_s": round(duration, 3),
-        "width": tag.get("width"), "height": tag.get("height"),
-        "frames_recorded": tag.get("frames_captured"), "frames_written": tag.get("frames_written"),
-        "acquisition_fps": float(tag.get("acquisition_fps") or (frames / duration if frames and duration else 0.0)),
-        "converted_fps": float(tag.get("file_fps") or 0.0),
-        "listed_from": "video",
-    }
-    for key in ("frames_dropped", "complete", "step", "step_name", "part", "run_id", "protocol", "camera",
-                "channels", "software_version"):
-        if tag.get(key) is not None:
-            recording[key] = tag[key]
-    return recording
-
-
-def _csv_metadata(recording: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "fluidics_csv": str(recording.get("fluidics_csv") or ""),
-        "recording_id": str(recording.get("recording_id") or ""),
-        "started_at": str(recording.get("started_at") or ""),
-        "stopped_at": str(recording.get("stopped_at") or ""),
-        "duration_s": float(recording.get("duration_s") or 0.0),
-    }

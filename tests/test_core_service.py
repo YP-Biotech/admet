@@ -78,11 +78,11 @@ def _admet(tmp: str) -> tuple[Admet, RecordingEngine]:
 
 
 class HomeTests(unittest.TestCase):
-    def test_a_failed_save_leaves_the_index_readable(self):
+    def test_a_failed_save_leaves_a_project_index_readable(self):
         from admet.core.project import ProjectStore
 
         with tempfile.TemporaryDirectory() as tmp:
-            store = Admet(home=tmp).project
+            store = ProjectStore.create(Path(tmp) / "safe", "safe")
             before = (store.path / "manifest.json").read_text()
 
             with self.assertRaises(TypeError):
@@ -137,7 +137,7 @@ class HomeTests(unittest.TestCase):
             for room in ("control", "data", "analyze"):
                 self.assertTrue((Path(tmp) / "h" / room).is_dir())
             self.assertEqual(described["rig"], {})
-            self.assertTrue((admet.home.data_dir / "manifest.json").is_file())
+            self.assertEqual(list(admet.home.data_dir.iterdir()), [])              # nothing until a run
 
 
 class PathOwnershipTests(unittest.TestCase):
@@ -161,14 +161,14 @@ class PathOwnershipTests(unittest.TestCase):
 
             self.assertEqual(engine.jobs[-1].outputs, {})
 
-    def test_the_engine_is_told_which_session_it_is_in(self):
+    def test_the_engine_is_told_which_home_it_works_in(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet, engine = _admet(tmp)
 
             admet.run("acquisition", "noop")
 
-            self.assertEqual(engine.jobs[-1].metadata["session_id"], "data")
-            self.assertEqual(engine.jobs[-1].metadata["workdir"], str(admet.project.path))
+            self.assertEqual(engine.jobs[-1].metadata["home"], str(admet.home.root))
+            self.assertEqual(engine.jobs[-1].metadata["workdir"], str(admet.home.data_dir))
 
 
 class AdaptiveVolumeTests(unittest.TestCase):
@@ -478,7 +478,7 @@ class AnalysisTests(unittest.TestCase):
     def test_something_to_analyse_is_registered(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)
-            store = admet.project
+            store = admet.analysis_index
 
             added = admet.do("add_source", {"path": str(self._video(Path(tmp)))})
 
