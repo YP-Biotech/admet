@@ -52,11 +52,10 @@ def analyse_fields(chosen) -> list[str]:
     return [field for field in ANALYSE_COLUMN_LABELS if field in wanted]
 
 
-def analyse_columns(fields, use_all: bool | None = None) -> list[dict[str, Any]]:
-    """The Analyse table's columns: Use (its header ticking every file: USE_ALL is True, False or None for
-    some), the file, then the chosen setting columns, then when it was analysed."""
+def analyse_columns(fields) -> list[dict[str, Any]]:
+    """The Analyse table's columns: Use, the file, then the chosen setting columns, then when it was analysed."""
     columns = [
-        {"name": "active", "label": "Use", "field": "active", "align": "center", "all": use_all},
+        {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
         {"name": "source", "label": "File", "field": "source", "align": "left"},
         {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
@@ -129,26 +128,21 @@ def wire_files_table(table: Any, on_change: Any, on_remove: Any) -> None:
     table.on("matrix-remove", on_remove)
 
 
-def wire_analyse_table(table: Any, on_change: Any, on_header_set: Any, on_use_all: Any, fields) -> None:
-    """Each setting column edits per row, and its header takes a value for every ticked file; the Use
-    header ticks or clears every file."""
+def wire_analyse_table(table: Any, on_change: Any, fields) -> None:
+    """Each setting column edits per row; a cell is dimmed when the row's engine has no such setting.
+    The headers' controls are NiceGUI elements, added by the view into the header-cell slots."""
     table.add_slot("body-cell-active", _bool_cell_slot("active"))
-    table.add_slot("header-cell-active", _use_all_header_slot())
     kinds = dict(FIELD_KINDS)
     for field in analyse_fields(fields):
         if field not in kinds:
             continue                                         # a read-only summary column
         if kinds[field] is ParamKind.BOOLEAN:
             table.add_slot(f"body-cell-{field}", _bool_cell_slot(field, applies=f"props.row.{field}_applies"))
-            table.add_slot(f"header-cell-{field}", _bool_header_slot(field))
         else:
             required = field in ("microns_per_pixel", "fps")
             table.add_slot(f"body-cell-{field}", _required_number_slot(field, applies=f"props.row.{field}_applies",
                                                                         required=required))
-            table.add_slot(f"header-cell-{field}", _number_header_slot(field))
     table.on("matrix-change", on_change)
-    table.on("header-set", on_header_set)
-    table.on("use-all", on_use_all)
 
 
 def setting_key(field: str, engine: str) -> str:
@@ -223,46 +217,6 @@ def _bool_cell_slot(field: str, *, applies: str = "true") -> str:
         @update:model-value="val => $parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: val}})" />
       <span v-else class="muted">—</span>
     </q-td>
-    """
-
-
-def _use_all_header_slot() -> str:
-    # The column carries the state: true when every file is ticked, false when none, null for some.
-    return """
-    <q-th :props="props">
-      <q-checkbox dense :model-value="props.col.all" title="Tick or clear every file"
-        @click.stop @mousedown.stop
-        @update:model-value="val => $parent.$emit('use-all', {value: props.col.all !== true})" />
-    </q-th>
-    """
-
-
-def _number_header_slot(field: str) -> str:
-    # A value typed here goes to every ticked file that takes the setting, as soon as it is entered.
-    return f"""
-    <q-th :props="props">
-      <div class="col-head">
-        <div class="col-label">{{{{ props.col.label }}}}</div>
-        <q-input dense outlined type="number" step="any" input-class="matrix-num" placeholder="ticked files"
-          @click.stop @mousedown.stop @keydown.stop
-          @keyup.enter="$event.target.blur()"
-          @blur="$parent.$emit('header-set', {{field: '{field}', value: $event.target.value}})" />
-      </div>
-    </q-th>
-    """
-
-
-def _bool_header_slot(field: str) -> str:
-    return f"""
-    <q-th :props="props">
-      <div class="col-head">
-        <div class="col-label">{{{{ props.col.label }}}}</div>
-        <div class="col-actions">
-          <q-btn dense flat no-caps size="sm" label="on" @click.stop="$parent.$emit('header-set', {{field: '{field}', value: true}})" />
-          <q-btn dense flat no-caps size="sm" label="off" @click.stop="$parent.$emit('header-set', {{field: '{field}', value: false}})" />
-        </div>
-      </div>
-    </q-th>
     """
 
 

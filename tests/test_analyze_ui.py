@@ -36,7 +36,7 @@ class WorkflowShapeTests(unittest.TestCase):
 
         self.assertEqual([stage.id for stage in workflow.stages], ["files", "analyse", "results"])
         self.assertEqual([action.label for action in workflow.stages[1].actions],
-                         ["Run all ticked", "Run selected", "Reset file settings"])
+                         ["Run all ticked", "Run selected", "Reset ticked", "Reset file settings"])
         self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export CSV", "Export plots"])
 
 
@@ -67,32 +67,47 @@ class MatrixChangeTests(unittest.TestCase):
         notices = []
         view._notify = lambda text, kind: notices.append((kind, text))
 
-        view._handle_header_set(SimpleNamespace(args={"field": "detect_inclusions", "value": False}))
+        view._handle_header_set("detect_inclusions", False)
 
         self.assertEqual([row.settings.get("detect_inclusions") for row in view.matrix], [False, True, False, None])
         self.assertIn("on 2 ticked file(s)", notices[-1][1])
-        view._handle_header_set(SimpleNamespace(args={"field": "detect_inclusions", "value": False}))
+        view._handle_header_set("detect_inclusions", False)
         self.assertEqual(notices[-1][0], "secondary")                        # already so: nothing changes
-        view._handle_header_set(SimpleNamespace(args={"field": "microns_per_pixel", "value": "2.27"}))
+        view._handle_header_set("microns_per_pixel", "2.27")
         self.assertEqual(view.matrix[0].settings["px_to_um"], 2.27)             # the imaging engine's name for it
         self.assertEqual(view.matrix[3].settings["microns_per_pixel"], 2.27)
         self.assertNotIn("px_to_um", view.matrix[1].settings)
-        view._handle_header_set(SimpleNamespace(args={"field": "k_sigma", "value": ""}))          # left empty
+        view._handle_header_set("k_sigma", "")          # left empty
         self.assertEqual(view.matrix[3].settings["k_sigma"], 4.0)
         self.assertEqual(apply_setting(view.matrix, "k_sigma", 3), [view.matrix[3]])
         self.assertEqual(apply_setting(view.matrix, "no_such_setting", 1), [])
+
+    def test_reset_ticked_puts_every_ticked_file_back_to_the_defaults_keeping_its_scale_and_fps(self):
+        view = _make_view()
+        view.matrix = [_row(sample="a", k_sigma=9.0, microns_per_pixel=1.1, fps=24.0),
+                       _row(sample="b", k_sigma=9.0, microns_per_pixel=1.2),
+                       _row(engine="cellpose", sample="i", px_to_um=2.0, detect_inclusions=False)]
+        view.matrix[1].active = False
+        view._notify = lambda *a, **k: None
+
+        view._reset_ticked_settings()
+
+        self.assertEqual((view.matrix[0].settings["k_sigma"], view.matrix[0].settings["microns_per_pixel"],
+                          view.matrix[0].settings["fps"]), (4.0, 1.1, 24.0))
+        self.assertEqual(view.matrix[1].settings["k_sigma"], 9.0)                  # unticked: left alone
+        self.assertEqual((view.matrix[2].settings["detect_inclusions"], view.matrix[2].settings["px_to_um"]), (True, 2.0))
 
     def test_the_use_header_ticks_or_clears_every_file(self):
         view = _make_view()
         view.matrix = [_row(sample="a"), _row(sample="b")]
         view._notify = lambda *a, **k: None
         self.assertIs(view._use_state(), True)
-        view._handle_use_all(SimpleNamespace(args={"value": False}))
+        view._handle_use_all(False)
         self.assertEqual([row.active for row in view.matrix], [False, False])
         self.assertIs(view._use_state(), False)
         view.matrix[0].active = True
         self.assertIsNone(view._use_state())                                    # some: the box is indeterminate
-        view._handle_use_all(SimpleNamespace(args={"value": True}))
+        view._handle_use_all(True)
         self.assertEqual([row.active for row in view.matrix], [True, True])
 
     def test_the_setting_columns_are_chosen_and_remembered(self):
@@ -105,9 +120,8 @@ class MatrixChangeTests(unittest.TestCase):
             view._columns_changed(SimpleNamespace(value=["k_sigma", "fps", "nonsense"]))
             self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
             self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
-            names = [column["name"] for column in analyse_columns(view.analyse_fields, None)]
+            names = [column["name"] for column in analyse_columns(view.analyse_fields)]
             self.assertEqual(names, ["active", "sample_id", "source", "engine", "fps", "k_sigma", "analyzed"])
-            self.assertIsNone(analyse_columns(view.analyse_fields, None)[0]["all"])
             row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
                               crop_text="full", analyzed="")
             self.assertEqual((row["k_sigma"], row["microns_per_pixel"], row["fps"]), (4.0, 1.1, None))
