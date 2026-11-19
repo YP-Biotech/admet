@@ -543,8 +543,9 @@ def short_names(names: list[str], *, keep: int = 12) -> dict[str, str]:
     prefix = 0
     while all(len(name) > prefix and name[prefix] == distinct[0][prefix] for name in distinct):
         prefix += 1
-    prefix = distinct[0][:prefix].rfind("_") + 1                    # cut at a word, not mid-way through one
-    prefix = min(prefix, min(len(name) for name in distinct) - keep)
+    shared = distinct[0][:prefix]
+    prefix = min(len(shared), min(len(name) for name in distinct) - keep)
+    prefix = max(shared[:prefix].rfind(sep) + 1 for sep in "_ -")    # cut at a word, not mid-way through one
     if prefix < 4:
         return {name: name for name in names}
     return {name: name[prefix:] for name in names}

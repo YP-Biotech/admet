@@ -264,6 +264,8 @@ class ChartTests(unittest.TestCase):
 
         self.assertEqual(short_names(names), {names[0]: "step01_20261113_183825", names[1]: "step02_20261113_184149"})
         self.assertEqual(short_names(["a", "b"]), {"a": "a", "b": "b"})
+        whole = ["dropseq_1n 16:43", "dropseq_3n 19:30 step 1"]                   # too short to cut at a word: kept whole
+        self.assertEqual(short_names(whole), {name: name for name in whole})
         self.assertEqual(short_names(["only"]), {"only": "only"})
         chart = cv_chart([_result(sample_id=names[0], diameters=(1.0, 2.0)),
                           _result(sample_id=names[1], diameters=(1.0, 2.0))])
