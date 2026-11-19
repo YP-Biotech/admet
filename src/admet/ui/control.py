@@ -1493,6 +1493,7 @@ class ControlWindow(QMainWindow):
             self.action_panel.layout().itemAt(0).widget().setText("Export data")
             if self._export is None:
                 self._export = ExportPanel(self.api)
+                self._export.changed.connect(lambda: self._refresh_action_box(self.workflow.current_stage(self.workflow_state)))
             elif not self._export.tasks.busy:
                 self._export.refresh()
             self.action_layout.addWidget(self._export)
@@ -1703,6 +1704,9 @@ class ControlWindow(QMainWindow):
         if control.action == "measure_scale":
             self._begin_scale_measurement()
             return
+        if control.action == "export_runs":
+            self._export_runs()
+            return
         if control.action is not None:
             result = self._run(control.action)
             if control.completes:
@@ -1714,6 +1718,13 @@ class ControlWindow(QMainWindow):
             return
         if control.completes:
             self._request_stage_completion(stage)
+
+    def _export_runs(self) -> None:
+        """The Export button: the page does the work and says how it goes."""
+        if self._export is None:
+            return
+        self._export.export()
+        self._append_log("Export started")
 
     def _request_stage_completion(self, stage: Stage) -> None:
         if stage.pipeline and stage.skippable and not self._guard_value("pipeline_complete"):
@@ -2283,6 +2294,8 @@ class ControlWindow(QMainWindow):
         if name == "devices_released":
             self._refresh_runtime_state()
             return not (self.runtime_state["camera"] or self.runtime_state["fluidics"])
+        if name == "export_ready":
+            return bool(self.api.service.export_path()) and not (self._export is not None and self._export.tasks.busy)
         return True
 
     def _refresh_runtime_state(self) -> None:

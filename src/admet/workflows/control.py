@@ -303,7 +303,8 @@ def create_control_workflow() -> Workflow:
                 instructions=("Copy the finished runs to the server folder. Each file is read back after the copy; "
                               "the videos then leave this computer, the record and the timeline stay.",),
                 features=("export",),
-                actions=(StageAction("Continue", completes=True),),
+                actions=(StageAction("Export", "export_runs", guard="export_ready"),
+                         StageAction("Continue", completes=True)),
                 show_settings=False,
             ),
             protocol_stage("wash", "Wash", builtin="wash"),

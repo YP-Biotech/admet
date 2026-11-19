@@ -48,14 +48,16 @@ class ExportPanelTests(unittest.TestCase):
         self.addCleanup(panel.close)
 
         self.assertEqual(self.cells(panel, 0)[0], "oil 3")
-        self.assertEqual(self.cells(panel, 0)[3:], ["2 here", ""])
-        self.assertFalse(panel.export_button.isEnabled())                       # nowhere to send them yet
+        self.assertEqual(self.cells(panel, 0)[3], "2 here")
+        self.assertEqual(self.cells(panel, 0)[5], "")
+        self.assertIn("choose the server folder", panel.summary.text())
+        self.assertFalse(panel.export())                                          # nowhere to send them yet
         panel.path.setText(str(server))
         panel.path.editingFinished.emit()
         self.assertEqual(AdmetHome(self.root / "home").rig()["export"]["path"], str(server))
-        self.assertTrue(panel.export_button.isEnabled())
+        self.assertNotIn("choose", panel.summary.text())
 
-        panel.export()
+        self.assertTrue(panel.export())
         for _ in range(100):
             self.pump(0.05)
             if not panel.tasks.busy:
@@ -63,12 +65,16 @@ class ExportPanelTests(unittest.TestCase):
         self.assertFalse(panel.tasks.busy)
 
         self.assertEqual(self.cells(panel, 0)[3], "2 on the server")
-        self.assertTrue(self.cells(panel, 0)[4])
+        self.assertTrue(self.cells(panel, 0)[5])
         self.assertIn("1 run(s) exported, 2 video(s)", panel.status.text())
+        self.assertIn("1 exported", panel.summary.text())
         self.assertTrue((server / run.run_id / "run.csv").is_file())
         self.assertEqual([p for p in run.path.iterdir() if p.suffix == ".avi"], [])
 
-    def test_the_window_has_the_export_stage_and_mounts_the_page(self):
+    def test_the_export_button_sits_in_the_action_bar_and_waits_for_a_folder(self):
+        finished_run(self.api.home.data_dir, "oil 3")
+        server = self.root / "server"
+        server.mkdir()
         window = ControlWindow(self.api)
         self.addCleanup(window.close)
         window.show()
@@ -76,14 +82,28 @@ class ExportPanelTests(unittest.TestCase):
         ids = [stage.id for stage in window.workflow.stages]
         self.assertLess(ids.index("review"), ids.index("export"))
         self.assertLess(ids.index("export"), ids.index("wash"))
-
         window._select_stage(ids.index("export"))
         self.pump()
+        stage = window.workflow.stages[ids.index("export")]
 
+        buttons = {spec[0]: spec[2] for spec in window._action_button_specs(stage)}
+        self.assertFalse(buttons["Export"])                                       # no folder yet
         self.assertIsNotNone(window._export)
         self.assertTrue(window._export.isVisible())
-        rows = [window._video_rows()]
-        self.assertEqual(rows, [[]])
+        window._export.path.setText(str(server))
+        window._export.path.editingFinished.emit()
+        self.pump()
+        buttons = {spec[0]: spec[2] for spec in window._action_button_specs(stage)}
+        self.assertTrue(buttons["Export"])
+
+        window._export_runs()
+        for _ in range(100):
+            self.pump(0.05)
+            if not window._export.tasks.busy:
+                break
+        self.pump()
+        self.assertIn("1 run(s) exported", window._export.status.text())
+        self.assertTrue(any("on the server" in row["video"] for row in window._video_rows()))
 
 
 if __name__ == "__main__":
