@@ -17,7 +17,7 @@ jobs:
     # GitHub the way `admet install-sdk` fetches it on a rig, so the simulated fluidics
     # tests run here too.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -40,4 +40,6 @@ jobs:
           uv run admet install-sdk
 
       - name: Test
-        run: make test
+        # Every suite: unit, control, integration and analyze. The latter two have caught what the
+        # first two did not.
+        run: make test-all
