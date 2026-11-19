@@ -133,8 +133,9 @@ class OpenCVEngineTests(unittest.TestCase):
         # 120 frames at one droplet per 1.27 frames: a few lost at the ends of the gate's history
         self.assertAlmostEqual(generation["crossings"], 120 / expected_period, delta=4)
         self.assertAlmostEqual(generation["period_frames"], expected_period, delta=0.03)
-        # Gate timing jitters as the lamp fades (the matched edges move); a double count would read ~0.6.
-        self.assertLess(generation["period_sd_frames"], 0.2)
+        # Gate timing jitters as the lamp fades (the matched edges move): 0.13 here, 0.20 on the Linux
+        # runner, whose OpenCV encodes the MJPG test video differently; a double count would read ~0.6.
+        self.assertLess(generation["period_sd_frames"], 0.3)
         self.assertAlmostEqual(result.metadata["speed_px_frame"], 90, delta=2)
         self.assertAlmostEqual(result.metadata["frequency_hz"], 200 / expected_period, delta=5)
         # The rate is the train's speed over its spacing, which needs no droplet to be followed.
