@@ -529,8 +529,28 @@ def short_names(names: list[str], *, keep: int = 12) -> dict[str, str]:
     return {name: name[prefix:] for name in names}
 
 
-def _names(results: list[FileResult]) -> dict[str, str]:
-    return short_names([result.sample_id for result in results])
+def _name_key(result: FileResult) -> tuple[str, str, str, str]:
+    return (result.run, result.source_path, result.sample_id, result.file_id)
+
+
+def _names(results: list[FileResult]) -> dict[tuple[str, str, str, str], str]:
+    """A name per file for the plots: the sample's, shortened to what differs, and told apart by the
+    run's time and then a number when two files share one."""
+    short = short_names([result.sample_id for result in results])
+    names: dict[tuple[str, str, str, str], str] = {}
+    taken: dict[str, int] = {}
+    for result in results:
+        name = short[result.sample_id]
+        if name in taken.values() or name in taken:
+            stamp = result.run[:15]
+            if len(stamp) == 15 and stamp[8] == "_" and stamp[9:11].isdigit() and f"{stamp[9:11]}:{stamp[11:13]}" not in name:
+                name = f"{name} {stamp[9:11]}:{stamp[11:13]}"
+        base, n = name, 2
+        while name in taken:
+            name, n = f"{base} #{n}", n + 1
+        taken[name] = 1
+        names[_name_key(result)] = name
+    return names
 
 
 def histogram_edges(values: list[float], *, max_bins: int = 40, min_bins: int = 8) -> list[float]:
@@ -569,7 +589,7 @@ def diameter_chart(results: list[FileResult]) -> dict[str, Any]:
         counts = [0] * len(labels)
         for value in result.diameters:
             counts[min(len(labels) - 1, int((value - edges[0]) / width))] += 1
-        series.append({"name": names[result.sample_id], "type": "bar", "data": counts, "barMaxWidth": 18,
+        series.append({"name": names[_name_key(result)], "type": "bar", "data": counts, "barMaxWidth": 18,
                        "itemStyle": {"color": chart_color(index), "opacity": 0.82},
                        "emphasis": {"focus": "series"}})
     return {
@@ -598,7 +618,7 @@ def timeline_chart(results: list[FileResult]) -> dict[str, Any]:
         if len(points) > 4000:
             step = len(points) // 4000 + 1
             points = points[::step] + [points[-1]]
-        series.append({"name": names[result.sample_id], "type": "line", "showSymbol": False, "silent": True,
+        series.append({"name": names[_name_key(result)], "type": "line", "showSymbol": False, "silent": True,
                        "data": points, "lineStyle": {"width": 2, "color": chart_color(index)},
                        "itemStyle": {"color": chart_color(index)}})
     return {
@@ -629,7 +649,7 @@ def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
     for index, result in enumerate(results[:8]):
         data = [point for point in (project(detection) for detection in result.detections) if point is not None]
         if data:
-            series.append({"name": names[result.sample_id], "type": "scatter", "symbolSize": 3, "data": data,
+            series.append({"name": names[_name_key(result)], "type": "scatter", "symbolSize": 3, "data": data,
                            "itemStyle": {"color": chart_color(index)}})
     return {
         "title": _title(title),
@@ -652,7 +672,7 @@ def cv_chart(results: list[FileResult]) -> dict[str, Any]:
         "animation": False,
         "tooltip": {"trigger": "axis"},
         "grid": _grid(bottom=48),
-        "xAxis": {"type": "category", "data": [names[result.sample_id] for result in plotted],
+        "xAxis": {"type": "category", "data": [names[_name_key(result)] for result in plotted],
                   "axisLabel": {"rotate": 25, "fontSize": 10, "hideOverlap": True, "width": 90,
                                 "overflow": "truncate"}},
         "yAxis": _value_axis("CV %"),
@@ -674,7 +694,7 @@ def inclusions_chart(results: list[FileResult]) -> dict[str, Any]:
         counts = {key: 0 for key in keys}
         for value in result.inclusion_counts:
             counts[value] += 1
-        series.append({"name": names[result.sample_id], "type": "bar", "barMaxWidth": 24,
+        series.append({"name": names[_name_key(result)], "type": "bar", "barMaxWidth": 24,
                        "data": [counts[key] for key in keys], "itemStyle": {"color": chart_color(index)}})
     return {
         "title": _title("Inclusions per droplet"),

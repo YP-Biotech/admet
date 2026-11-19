@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,9 @@ class Registry:
                 run_dir = record_path.parent
                 name = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
                            or record.get("name") or run_dir.name)
+                stamp = run_dir.name[:15]
+                if re.fullmatch(r"\d{8}_\d{6}", stamp):
+                    name = f"{name} {stamp[9:11]}:{stamp[11:13]}"            # the run's time tells runs apart
                 videos = [video for video in record.get("artifacts", {}).get("videos", [])
                           if isinstance(video, dict) and video.get("video_path")]
                 if isinstance(record.get("recording"), dict) and record["recording"].get("video_path"):

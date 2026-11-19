@@ -83,14 +83,17 @@ class RegistryTests(unittest.TestCase):
 
             added = registry.scan(data)
 
-            self.assertEqual([entry["sample_id"] for entry in added], ["cap", "Oil 3 step 1", "Oil 3 step 2"])
+            def at(run_id):
+                return f"{run_id[9:11]}:{run_id[11:13]}"
+            self.assertEqual([entry["sample_id"] for entry in added],
+                             [f"cap {at(by_hand.run_id)}", f"Oil 3 {at(run.run_id)} step 1", f"Oil 3 {at(run.run_id)} step 2"])
             self.assertEqual({entry["run"] for entry in added}, {str(run.path.resolve()), str(by_hand.path.resolve())})
             self.assertTrue(all(entry["engine"] == "opencv" for entry in added))
             self.assertEqual(registry.scan(), [])                                     # nothing new the second time
             (run.path / "oil_3_step03_x.avi").write_bytes(b"new")
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n} for i, n in enumerate(
                 [*names, "oil_3_step03_x.avi"])]})
-            self.assertEqual([e["sample_id"] for e in registry.scan()], ["Oil 3 step 3"])
+            self.assertEqual([e["sample_id"] for e in registry.scan()], [f"Oil 3 {at(run.run_id)} step 3"])
 
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:

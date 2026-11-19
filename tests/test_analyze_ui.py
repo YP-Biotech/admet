@@ -200,7 +200,8 @@ class RegistryTests(unittest.TestCase):
 
             view._add_root(data)
 
-            self.assertEqual([row.sample_id for row in view.matrix], ["Oil 3 step 1", "Oil 3 step 2"])
+            at = f"{run.run_id[9:11]}:{run.run_id[11:13]}"                      # the run's time tells runs apart
+            self.assertEqual([row.sample_id for row in view.matrix], [f"Oil 3 {at} step 1", f"Oil 3 {at} step 2"])
             self.assertEqual({row.run for row in view.matrix}, {str(run.path.resolve())})
             self.assertEqual(view._row_key(view.matrix[0])[0], run.run_id)
             self.assertEqual(store.roots(), [str(data.resolve())])
@@ -211,7 +212,7 @@ class RegistryTests(unittest.TestCase):
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n}
                                              for i, n in enumerate([*names, "oil_3_step03_x.avi"])]})
             view._rescan()
-            self.assertEqual([row.sample_id for row in view.matrix][-1], "Oil 3 step 3")
+            self.assertEqual([row.sample_id for row in view.matrix][-1], f"Oil 3 {at} step 3")
             self.assertEqual(len(_make_view(store).matrix), 3)                         # the list persists
             self.assertIn("runs in", view._refs.get("topbar_text", "runs in") or "runs in")
 
