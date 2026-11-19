@@ -16,6 +16,7 @@ from admet.ui.analyze import (
     _uid,
     apply_click,
 )
+from admet.ui.analyze_results import result_charts
 from admet.workflows import create_analyze_workflow
 from tests.test_registry import run_with_videos
 
@@ -303,6 +304,12 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])   # no analysis yet: the rig's line alone
             self.assertIn("STABLE", rows[0]["analysed"])
             self.assertIn("oil", rows[0]["sample"])
+            self.assertNotIn("text-disabled", rows[0]["sample"])                        # ticked: in its plot colour
+            lives = view._lives()
+            self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])
+            self.assertEqual(len(lives[0].points), 5)
+            self.assertEqual([name for name, _ in result_charts([], lives)],
+                             ["cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time"])
             view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
             self.assertFalse(view.matrix[0].active)
             self.assertFalse(view._results_rows()[0]["active"])

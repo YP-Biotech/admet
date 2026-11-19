@@ -44,6 +44,7 @@ from admet.ui.analyze_matrix import (
 )
 from admet.ui.analyze_results import (
     FileResult,
+    LiveQC,
     RESULT_FIELDS,
     RESULT_LABELS,
     StoredResult,
@@ -1122,7 +1123,10 @@ class AnalyzeWorkflowView:
         A video recorded on the rig gets a second line: what the live QC measured while it was recorded,
         to set against what the analysis found. Before the analysis runs, that line stands alone.
         """
-        shown = {_result_key(r): i for i, r in enumerate(self._results())}
+        results, lives = self._results(), self._lives()
+        colours = {_result_key(result): chart_color(index) for index, result in enumerate(results)}
+        colours.update({(live.run, live.source_path): chart_color(len(results) + index)
+                        for index, live in enumerate(lives)})
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
         for row in self.matrix:
@@ -1130,12 +1134,14 @@ class AnalyzeWorkflowView:
             result, live = by_key.get(key), self._live_qc(row)
             if result is None and live is None:
                 continue
-            color = chart_color(shown[key]) if key in shown else "var(--text-disabled)"
+            grey = "var(--text-disabled)"
             if result is not None:
-                rows.append({"uid": row.uid, "active": row.active, **results_cells(result, color, active=row.active)})
+                rows.append({"uid": row.uid, "active": row.active,
+                             **results_cells(result, colours.get(key, grey), active=row.active)})
             if live is not None:
+                colour = colours.get((live.run, live.source_path), grey)
                 rows.append({"uid": f"{row.uid}:live", "active": row.active,
-                             **live_cells(live, "" if result is not None else row.sample_id, color, active=row.active)})
+                             **live_cells(live, "" if result is not None else row.sample_id, colour, active=row.active)})
         return rows
 
     def _live_qc(self, row: MatrixRow):
@@ -1148,17 +1154,27 @@ class AnalyzeWorkflowView:
             return None
         return _live_qc_of(row.run, str(Path(row.source_path)), mtime)
 
+    def _lives(self) -> list[LiveQC]:
+        """The live QC of every ticked video that has one, named as the file is: data to view like a result."""
+        lives = []
+        for row in self.matrix:
+            live = self._live_qc(row) if row.active else None
+            if live is not None:
+                lives.append(replace(live, sample_id=row.sample_id))
+        return lives
+
     def _render_results_plots(self) -> None:
         from nicegui import ui
 
-        results = self._results()
+        results, lives = self._results(), self._lives()
         with ui.column().classes("panel w-full gap-2 p-3"):
             ui.label("Plots").classes("section-title")
-            if not results:
-                ui.label("Plots appear here once a ticked file is analysed.").classes("muted text-xs")
+            if not results and not lives:
+                ui.label("Plots appear here once a ticked file is analysed or has the rig's live QC.").classes(
+                    "muted text-xs")
                 return
             with ui.element("div").classes("results-grid w-full"):
-                for name, options in result_charts(results):
+                for name, options in result_charts(results, lives):
                     with ui.column().classes("plot-card"):
                         chart = ui.echart(options).classes("w-full h-full")
                     self._chart_refs.append((name, chart))
@@ -1699,8 +1715,10 @@ class AnalyzeWorkflowView:
                 return "No files ticked."
             analysed = sum(1 for row in ticked if self._analyzed_at(row))
             return f"{len(ticked)} ticked, {analysed} analysed."
-        results = self._results()
-        return f"{_count(len(results), 'result')} for the ticked files." if results else "Nothing analysed yet."
+        results, lives = self._results(), self._lives()
+        live_note = f", {_count(len(lives), 'live line')}" if lives else ""
+        return (f"{_count(len(results), 'result')}{live_note} for the ticked files." if results
+                else f"Nothing analysed yet{live_note}.")
 
     def _stage_id(self) -> str:
         return self._stage().id

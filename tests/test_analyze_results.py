@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+from dataclasses import replace
 import unittest
 import zipfile
 from pathlib import Path
@@ -19,10 +20,12 @@ from admet.ui.analyze_results import (
     bin_labels,
     cv_chart,
     diameter_chart,
+    diameter_time_chart,
     export_csv_zip,
     file_results,
     histogram_edges,
     inclusions_chart,
+    rate_time_chart,
     result_charts,
     results_table_html,
     scatter_chart,
@@ -75,6 +78,7 @@ class FileResultTests(unittest.TestCase):
 
         self.assertEqual(result.droplets, 3)
         self.assertEqual(result.diameters, (40.0, 42.0, 44.0))           # medians per droplet, in µm
+        self.assertEqual(result.timed_diameters, ((0.0, 40.0), (0.05, 42.0), (0.1, 44.0)))   # when each arrived
         self.assertEqual(len(result.areas), 3)
         self.assertAlmostEqual(result.periods_s[0], 0.05)
         self.assertAlmostEqual(result.rate_hz, 20.0)
@@ -231,8 +235,13 @@ class ChartTests(unittest.TestCase):
                           detections=((1, 10.0, 20.0, 15000.0),))
 
         self.assertEqual([name for name, _ in result_charts([video])],
-                         ["diameter_distribution", "cv_per_sample", "droplet_timeline", "droplet_positions",
-                          "area_along_x"])
+                         ["diameter_distribution", "cv_per_sample", "droplet_timeline", "rate_over_time",
+                          "droplet_positions", "area_along_x"])
+        timed = _result(sample_id="t", diameters=(10.0, 11.0, 12.0), arrivals_s=(0.0, 0.4, 1.2),
+                        timed_diameters=((0.0, 10.0), (0.4, 11.0), (1.2, 12.0)))
+        self.assertIn("diameter_over_time", [name for name, _ in result_charts([timed])])
+        self.assertEqual(diameter_time_chart([timed])["series"][0]["data"], [[0.5, 10.5], [1.5, 12.0]])
+        self.assertEqual(rate_time_chart([timed])["series"][0]["data"], [[0.5, 2.0], [1.5, 1.0]])
         self.assertEqual([name for name, _ in result_charts([imaging])],
                          ["diameter_distribution", "cv_per_sample", "droplet_positions", "area_along_x",
                           "inclusions_per_droplet"])
@@ -362,6 +371,37 @@ class LiveQCTests(unittest.TestCase):
             self.assertIn("STABLE", cells["analysed"])
             self.assertIn("↳", cells["sample"])
             self.assertIn("oil", live_cells(live, "oil", "#000")["sample"])
+            self.assertEqual((live.run, Path(live.source_path).name), (run.name, "oil_step01_x.avi"))
+            self.assertEqual(live.points[0], (0.0, 1400.0, 1400.0, 124.0, 3.0))   # s from its first burst
+            self.assertEqual([point[0] for point in live.points], [0.0, 1.0, 2.0, 3.0, 4.0])
+
+    def test_a_live_line_is_plotted_as_its_own_series_beside_the_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "20261119_100000_oil"
+            run.mkdir()
+            _run_csv(run)
+            live = replace(live_qc(run, run / "oil_step01_x.avi"), sample_id="oil")
+        result = _result(sample_id="oil", run=run.name, diameters=(120.0, 124.0, 128.0), arrivals_s=(0.0, 0.5, 1.0),
+                         timed_diameters=((0.0, 120.0), (0.5, 124.0), (1.0, 128.0)))
+
+        charts = dict(result_charts([result], [live]))
+
+        self.assertEqual(list(charts), ["diameter_distribution", "cv_per_sample", "droplet_timeline",
+                                        "diameter_over_time", "rate_over_time"])
+        timeline = charts["droplet_timeline"]["series"]
+        self.assertEqual([series["name"] for series in timeline], ["oil", "oil live"])
+        self.assertEqual(timeline[1]["data"], [[0.0, 1400.0], [1.0, 2800.0], [2.0, 4200.0], [3.0, 5600.0], [4.0, 7000.0]])
+        self.assertEqual(timeline[1]["lineStyle"]["type"], "dashed")
+        self.assertNotEqual(timeline[0]["lineStyle"]["color"], timeline[1]["lineStyle"]["color"])
+        self.assertEqual(charts["cv_per_sample"]["xAxis"]["data"], ["oil", "oil live"])
+        self.assertEqual(charts["cv_per_sample"]["series"][0]["data"][1]["value"], 3.4)
+        self.assertEqual(charts["diameter_over_time"]["series"][1]["data"][0], [0.0, 124.0])
+        self.assertEqual(charts["rate_over_time"]["series"][1]["data"][-1], [4.0, 1440.0])
+        self.assertEqual([series["name"] for series in charts["diameter_distribution"]["series"]], ["oil"])
+        self.assertEqual(list(dict(result_charts([], [live]))),
+                         ["cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time"])
+        in_px = replace(live, diameter_unit="px")
+        self.assertEqual(diameter_time_chart([], [in_px])["series"], [])
 
     def test_the_summary_csv_carries_the_live_columns(self):
         result = _result(run="oil", source_path="/v.avi")

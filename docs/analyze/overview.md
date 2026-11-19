@@ -113,10 +113,12 @@ from a run gets a second line, **live**: the rate, size and CV the rig measured
 while recording it, from the run's timeline, with how many droplets it counted and
 the state it ended in. It is there before the analysis runs, so the rig's numbers
 and the analysis can be set against each other. The plots show the diameter
-distribution, the droplet timeline, positions and area along the channel, with the
-files overlaid. **Export CSV** downloads a zip with a summary (the live numbers in
-its last columns) and every droplet row per file; **Export plots** downloads the
-plots as PNG.
+distribution, CV per sample, droplets, diameter and rate over time, positions and
+area along the channel, with the files overlaid. A live line is data too: it joins
+the plots over time (dashed) and the CV bars as its own series, named `… live`.
+**Export CSV** downloads a zip with a summary (the live numbers in its last
+columns) and every droplet row per file; **Export plots** downloads the plots as
+PNG.
 
 ## Where results go
 
