@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from importlib.util import find_spec
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -244,6 +245,7 @@ class ImagingCorrectionTests(unittest.TestCase):
 
 
 class PathLabelTests(unittest.TestCase):
+    @unittest.skipUnless(find_spec("nicegui"), "NiceGUI is not installed")
     def test_a_windows_path_is_shown_whole_on_hover(self):
         from nicegui import Client
         from nicegui.page import page
