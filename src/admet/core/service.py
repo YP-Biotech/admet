@@ -228,6 +228,25 @@ class Admet:
         return [{"run_id": run["run_id"], "name": run["name"], "at": run["at"]}
                 for run in self.runs.list() if run["measurements"]]
 
+    # -- export ----------------------------------------------------------------
+    def export_path(self) -> str:
+        """The server folder runs are exported to, as the rig remembers it; empty until set."""
+        export = self.rig().get("export")
+        return str(export.get("path") or "") if isinstance(export, dict) else ""
+
+    def set_export_path(self, path: str) -> None:
+        text = str(path or "").strip()
+        self.update_rig(export={"path": text} if text else None)
+
+    def export_runs(self, progress=None) -> list[dict[str, Any]]:
+        """Every finished run to the export folder, checked, the local videos then let go."""
+        from admet.core.export import export_runs
+
+        path = self.export_path()
+        if not path:
+            raise ValueError("Choose the export folder first")
+        return export_runs(self.runs, path, progress=progress)
+
     def plan_protocol_file(self, path: str):
         from admet.workflows.json_protocol import load
 
