@@ -82,6 +82,20 @@ lost. Frames the disk cannot keep up with are counted, never a reason to stop: a
 recording with gaps is still listed, marked incomplete. No side file is left once
 the video is whole.
 
+## Export
+
+**Export data** copies the finished runs to the server. Type or browse the server
+folder as it is mounted on this computer (the rig remembers it), then **Export**:
+each run's folder is copied whole under that folder, every file is read back and
+compared with the original, and only then do the run's videos leave this computer.
+The record and the timeline stay, so Review and Calculations still work here, and
+the record says where the run went, when, and the digest of every file sent.
+
+Export again whenever you like: a record that changed since (a result calculated
+later) is copied again, a video already on the server is not touched. A run still
+going, or still encoding a video, is left for next time. If the server is not
+mounted, nothing moves.
+
 ## Live QC
 
 While a step records, once a second the next eight consecutive frames are

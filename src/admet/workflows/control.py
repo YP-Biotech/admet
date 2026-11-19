@@ -298,6 +298,14 @@ def create_control_workflow() -> Workflow:
                 actions=(StageAction("Continue", completes=True),),
                 show_settings=False,
             ),
+            Stage(
+                "export", "Export data",
+                instructions=("Copy the finished runs to the server folder. Each file is read back after the copy; "
+                              "the videos then leave this computer, the record and the timeline stay.",),
+                features=("export",),
+                actions=(StageAction("Continue", completes=True),),
+                show_settings=False,
+            ),
             protocol_stage("wash", "Wash", builtin="wash"),
             Stage(
                 "cleanup",

@@ -25,6 +25,8 @@ The left-hand list (TOC) is the session, top to bottom:
 | **5. Preflight** | Plan flow and phase ratios, the tubing map and liquid consumption. Nothing moves. |
 | **Experiments** | One stage per protocol step you add with **+ Protocol step**; its **×** removes it. See [Running protocols](./running). |
 | **Calculations** | Calculate results from finished runs. See [Calculations](./calculations). |
+| **Review runs** | Plot recorded runs: pressure, flow, droplet rate and CV. See [Review](./review). |
+| **Export data** | Copy finished runs to the server folder; checked, then the videos leave this computer. See [Export](./running#export). |
 | **Wash** | Flush the lines afterwards. |
 | **Cleanup** | Reset safety if needed, then **Disconnect Devices**. |
 
@@ -61,7 +63,7 @@ which one is in use. There is nothing to create or open before a session.
 ~/.admet/
   control/rig.json   the rig's settings: acquisition mode, each channel's calibration,
                      the profiles and liquids you added, the camera's µm per pixel,
-                     the preflight set-up
+                     the preflight set-up, the export folder
   data/protocols/    the saved protocol definitions
   data/runs/         one folder per run, named by date, time and the run's name; the
                      folder analyze is pointed at

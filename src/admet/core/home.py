@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 ENV_HOME = "ADMET_HOME"
-RIG_KEYS = ("acquisition_mode", "calibration", "profiles", "liquids", "optics", "qt_checkup")
+RIG_KEYS = ("acquisition_mode", "calibration", "profiles", "liquids", "optics", "qt_checkup", "export")
 
 
 class AdmetHome:
