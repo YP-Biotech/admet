@@ -199,6 +199,17 @@ class Registry:
                         added.append(entry)
         return added
 
+    # -- what the screen remembers -------------------------------------------------------
+    def view_setting(self, key: str, default: Any = None) -> Any:
+        view = self.read().get("view")
+        return view.get(key, default) if isinstance(view, dict) else default
+
+    def set_view_setting(self, key: str, value: Any) -> None:
+        record = self.read()
+        view = record.get("view") if isinstance(record.get("view"), dict) else {}
+        record["view"] = {**view, key: value}
+        self.write(record)
+
     # -- results ------------------------------------------------------------------------
     def result_dir(self, source: str | Path, settings: dict[str, Any] | None = None) -> Path:
         return self.results_dir / content_key(source, settings)

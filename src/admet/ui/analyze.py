@@ -19,22 +19,25 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from admet.core.engine import EngineRegistry, ParamKind
+from admet.core.engine import EngineRegistry
 from admet.core.home import AdmetHome
 from admet.core.registry import Registry, infer_engine
 from admet.engines.cellpose.detection import CellposeDetection, read_image_8bit
 from admet.engines.opencv.settings import OPENCV_SETTINGS
 from admet.ui import theme
 from admet.ui.analyze_matrix import (
+    ANALYSE_COLUMN_LABELS,
+    DEFAULT_ANALYSE_FIELDS,
     analyse_columns,
+    analyse_fields,
     analyse_row,
     apply_setting,
     cast_matrix_value,
     files_columns,
     files_row,
-    mass_edit_fields,
     matrix_field_kind,
     results_columns,
+    setting_key,
     wire_analyse_table,
     wire_files_table,
     wire_results_table,
@@ -121,6 +124,9 @@ class AnalyzeWorkflowView:
         self.selected_uid = ""
         self._saved_matrix: list[dict[str, Any]] | None = None
         self.matrix: list[MatrixRow] = self._load_matrix()
+        # The setting columns the Analyse table shows, as chosen last time.
+        self.analyse_fields: list[str] = analyse_fields(
+            self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
@@ -204,6 +210,7 @@ class AnalyzeWorkflowView:
 
     def _structure_signature(self) -> tuple[Any, ...]:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
+                                   tuple(self.analyse_fields),
                                    tuple(row.uid for row in self.matrix), self._running)
 
     def _mount_stage(self) -> None:
@@ -344,6 +351,8 @@ class AnalyzeWorkflowView:
             rows = source()
             for table in tables:
                 table.rows = rows
+                if key == "analyse":
+                    table.columns = analyse_columns(self.analyse_fields, self._use_state())
                 table.update()
         hint = self._refs.get("files_hint")
         if hint is not None:
@@ -543,60 +552,69 @@ class AnalyzeWorkflowView:
         from nicegui import ui
 
         with ui.column().classes("panel w-full gap-2 p-3"):
-            if self.matrix:
-                self._render_mass_edit()
-            table = ui.table(columns=analyse_columns(), rows=self._analyse_rows(), row_key="uid").classes(
-                "slim-table matrix-table w-full").props("dense flat hide-bottom")
+            with ui.row().classes("items-center gap-2 no-wrap w-full"):
+                ui.label("Columns").classes("text-xs muted")
+                ui.select(dict(ANALYSE_COLUMN_LABELS), multiple=True, value=list(self.analyse_fields),
+                          on_change=self._columns_changed).props(
+                    "dense outlined options-dense use-chips").classes("columns-select grow")
+                ui.label("A value in a column's header goes to every ticked file.").classes("text-xs muted")
+            table = ui.table(columns=analyse_columns(self.analyse_fields, self._use_state()), rows=self._analyse_rows(),
+                             row_key="uid").classes("slim-table matrix-table w-full").props("dense flat hide-bottom")
             self._register_table("analyse", table)
-            wire_analyse_table(table, self._handle_matrix_change)
+            wire_analyse_table(table, self._handle_matrix_change, self._handle_header_set, self._handle_use_all,
+                               self.analyse_fields)
             table.on("rowClick", self._select_row_event)
             if not self.matrix:
                 ui.label("No files. Add them on 1. Files.").classes("muted text-xs")
 
-    def _render_mass_edit(self) -> None:
-        """One setting for every ticked file at once: pick it, give the value, apply."""
-        from nicegui import ui
-
-        fields = mass_edit_fields({row.engine for row in self.matrix})
-        if not fields:
+    def _columns_changed(self, event: Any) -> None:
+        """The setting columns to show, as ticked in the dropdown; remembered for next time."""
+        chosen = analyse_fields(getattr(event, "value", None) or [])
+        if chosen == self.analyse_fields:
             return
-        kinds = {field: kind for field, _label, kind in fields}
-        with ui.row().classes("items-center gap-2 no-wrap mass-edit"):
-            ui.label("Apply to ticked files").classes("text-xs muted")
-            select = ui.select({field: label for field, label, _kind in fields}, value=fields[0][0]).props(
-                "dense outlined options-dense").classes("mass-edit-field")
-            number = ui.number(value=None).props("dense outlined step=any").classes("mass-edit-value")
-            number.bind_visibility_from(select, "value", backward=lambda v: kinds.get(v) is not ParamKind.BOOLEAN)
-            switch = ui.switch("on").props("dense")
-            switch.bind_visibility_from(select, "value", backward=lambda v: kinds.get(v) is ParamKind.BOOLEAN)
+        self.analyse_fields = chosen or list(DEFAULT_ANALYSE_FIELDS)
+        self.store.set_view_setting("analyse_columns", list(self.analyse_fields))
+        self._refresh(force_mount=True)
 
-            def apply() -> None:
-                field = select.value
-                value = switch.value if kinds.get(field) is ParamKind.BOOLEAN else number.value
-                if value is None and kinds.get(field) is not ParamKind.BOOLEAN:
-                    self._notify("Give the value first.", "warning")
-                    return
-                self._apply_to_ticked(field, value)
+    def _use_state(self) -> bool | None:
+        """What the Use header shows: True when every file is ticked, False when none, None for some."""
+        ticked = [row.active for row in self.matrix]
+        if not ticked or all(ticked):
+            return bool(ticked)
+        return False if not any(ticked) else None
 
-            ui.button("Apply", on_click=apply).props("dense no-caps unelevated size=sm")
-            ticked = sum(1 for row in self.matrix if row.active)
-            ui.label(f"{ticked} ticked").classes("text-xs muted")
+    def _handle_use_all(self, event: Any) -> None:
+        payload = getattr(event, "args", {})
+        value = bool(payload.get("value")) if isinstance(payload, dict) else False
+        for row in self.matrix:
+            row.active = value
+        self._save_matrix()
+        self._sync_tables()
+        self._sync_action_box()
+        self._notify(self._stage_summary(), "primary")
+        self._mount_sidebar()
 
-    def _apply_to_ticked(self, field: str, value: Any) -> list[MatrixRow]:
-        """The value onto every ticked file the setting applies to; the files it changed."""
+    def _handle_header_set(self, event: Any) -> None:
+        """A value entered in a setting column's header: onto every ticked file the setting applies to."""
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        field, value = str(payload.get("field") or ""), payload.get("value")
+        if value is None or value == "":
+            return
         changed = apply_setting(self.matrix, field, value)
-        label = next((label for name, label, _kind in mass_edit_fields({"opencv", "cellpose"}) if name == field), field)
+        label = ANALYSE_COLUMN_LABELS.get(field, field)
         if not changed:
             self._notify(f"{label}: no ticked file takes it, or every one has it already.", "secondary")
-            return []
+            self._mount_sidebar()
+            return
         shown = ("on" if value else "off") if isinstance(value, bool) else f"{value}"
         self._sync_previews()
         self._sync_tables()
         self._sync_action_box()
-        self._mount_sidebar()
         self._save_matrix()
         self._notify(f"{label} = {shown} on {len(changed)} ticked file(s).", "positive")
-        return changed
+        self._mount_sidebar()
 
     def _analyse_rows(self) -> list[dict[str, Any]]:
         rows = []
@@ -1369,8 +1387,7 @@ class AnalyzeWorkflowView:
         kind = matrix_field_kind(field_name)
         if kind is None:
             return
-        key = "px_to_um" if field_name == "microns_per_pixel" and row.engine == "cellpose" else field_name
-        row.settings[key] = cast_matrix_value(kind, value)
+        row.settings[setting_key(field_name, row.engine)] = cast_matrix_value(kind, value)
         self._settings_edited(row)
 
     def _select_row_event(self, event: Any) -> None:
@@ -2225,6 +2242,12 @@ def _style() -> str:
     .matrix-table .q-field__control { min-height: 28px; }
     .matrix-table .q-field { max-width: 104px; }
     .matrix-missing .q-field__control { outline: 2px solid var(--danger-hover); outline-offset: -2px; border-radius: 8px; }
+    .matrix-table th .col-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
+    .matrix-table th .col-label { font-weight: 600; }
+    .matrix-table th .q-field { max-width: 104px; }
+    .matrix-table th .q-field__control { min-height: 26px; }
+    .matrix-table th .col-actions { display: flex; gap: 2px; }
+    .columns-select { max-width: 760px; }
     .matrix-num { text-align: right; }
     .results-wrap { overflow-x: auto; }
     table.results { border-collapse: collapse; width: 100%; font-size: 12px; }
