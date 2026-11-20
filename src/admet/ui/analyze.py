@@ -2429,6 +2429,8 @@ def _style() -> str:
     .matrix-table .q-table td { height: 38px; }
     .matrix-table .q-field__control { min-height: 28px; }
     .matrix-table .q-field { max-width: 104px; }
+    .matrix-table .q-field.matrix-text { max-width: none; min-width: 260px; width: 100%; }   /* a sample name is read whole */
+    .matrix-table .q-table td:nth-child(2) { min-width: 272px; }
     .matrix-missing .q-field__control { outline: 2px solid var(--danger-hover); outline-offset: -2px; border-radius: 8px; }
     .matrix-table th .col-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
     .matrix-table th .col-label { font-weight: 600; }
