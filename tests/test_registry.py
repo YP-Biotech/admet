@@ -40,7 +40,8 @@ class RegistryTests(unittest.TestCase):
             video = Path(tmp) / "clip.avi"
             video.write_bytes(b"x")
             entry = registry.add_source(video, sample_id="clip one")
-            self.assertEqual((entry["engine"], entry["sample_id"], entry["active"]), ("opencv", "clip one", True))
+            self.assertEqual((entry["engine"], entry["sample_id"], entry["active"], entry["set"]),
+                             ("opencv", "clip one", True, ""))
             self.assertIsNone(registry.add_source(video))                            # known already
             registry.update_source(video, active=False, settings={"fps": 24.0})
             again = Registry(Path(tmp) / "analyze")
@@ -101,25 +102,6 @@ class RegistryTests(unittest.TestCase):
             for video in ("oil_3_r1.avi", "oil_3_r2.avi"):
                 (run.path / video).write_bytes(b"v")
             self.assertEqual([e["step"] for e in registry.scan()], ["set01_rep01", "set01_rep02"])   # a step's own name
-
-    def test_a_named_set_is_kept_and_forgotten(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            registry = Registry(Path(tmp) / "analyze")
-            registry.save_set("oil", [{"path": Path(tmp) / "a.avi", "sample_id": "oil rep 1"},
-                                      {"path": Path(tmp) / "b.avi", "sample_id": "oil rep 2"}, {"path": ""}])
-            registry.save_set("water", [{"path": Path(tmp) / "c.avi"}])
-
-            sets = Registry(Path(tmp) / "analyze").sets()
-
-            self.assertEqual(list(sets), ["oil", "water"])
-            self.assertEqual([f["sample_id"] for f in sets["oil"]["files"]], ["oil rep 1", "oil rep 2"])
-            self.assertEqual(sets["water"]["files"][0]["path"], str((Path(tmp) / "c.avi").resolve()))
-            self.assertTrue(sets["oil"]["created_at"])
-            registry.save_set("oil", [{"path": Path(tmp) / "a.avi", "sample_id": "oil"}])         # written over
-            self.assertEqual(len(registry.sets()["oil"]["files"]), 1)
-            self.assertTrue(registry.delete_set("water"))
-            self.assertFalse(registry.delete_set("water"))
-            self.assertEqual(list(registry.sets()), ["oil"])
 
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:

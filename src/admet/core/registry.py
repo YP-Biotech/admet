@@ -143,7 +143,7 @@ class Registry:
         entry = {"path": str(source), "engine": engine or infer_engine(source), "sample_id": sample_id or source.stem,
                  "cache_policy": "use", "active": True, "settings": dict(settings or {}),
                  "run": str(Path(run).resolve()) if run else "", "protocol": protocol, "run_time": run_time,
-                 "step": step, "added_at": _now()}
+                 "step": step, "set": "", "added_at": _now()}
         record["sources"].append(entry)
         self.write(record)
         return dict(entry)
@@ -207,32 +207,6 @@ class Registry:
                     if entry is not None:
                         added.append(entry)
         return added
-
-    # -- named sets: a pick of files with their sample names, to come back to ---------------------
-    def sets(self) -> dict[str, dict[str, Any]]:
-        sets = self.read().get("sets")
-        return {str(name): dict(entry) for name, entry in sets.items() if isinstance(entry, dict)} \
-            if isinstance(sets, dict) else {}
-
-    def save_set(self, name: str, files: list[dict[str, Any]]) -> None:
-        """Keep a pick of files with their sample names under NAME; the same name is written over."""
-        record = self.read()
-        sets = record.get("sets") if isinstance(record.get("sets"), dict) else {}
-        sets[str(name)] = {"created_at": _now(),
-                           "files": [{"path": _canonical(f["path"]), "sample_id": str(f.get("sample_id") or "")}
-                                     for f in files if f.get("path")]}
-        record["sets"] = sets
-        self.write(record)
-
-    def delete_set(self, name: str) -> bool:
-        record = self.read()
-        sets = record.get("sets") if isinstance(record.get("sets"), dict) else {}
-        if str(name) not in sets:
-            return False
-        del sets[str(name)]
-        record["sets"] = sets
-        self.write(record)
-        return True
 
     # -- what the screen remembers -------------------------------------------------------
     def view_setting(self, key: str, default: Any = None) -> Any:

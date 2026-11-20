@@ -79,6 +79,7 @@ VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 # Per-file detection settings a video row starts with and "Reset file settings" goes back to.
 RESULT_DATA = {"opencv": "OpenCV", "cellpose": "Cellpose", "live": "Live QC"}
+NO_SET = "(no set)"
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
@@ -100,6 +101,7 @@ class MatrixRow:
     protocol: str = ""                 # the run's tag or protocol
     run_time: str = ""                 # when the run began, "2026-11-17 19:30"
     step: str = ""                     # the step of the run the file is of
+    set: str = ""                      # the set the file is in: the group it belongs to, the user's to give
 
     @property
     def origin(self) -> str:
@@ -145,7 +147,9 @@ class AnalyzeWorkflowView:
         # The setting columns the Analyse table shows, as chosen last time.
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
-        self.current_set = str(self.store.view_setting("current_set", "") or "")   # the named set in use
+        self.current_set = str(self.store.view_setting("current_set", "") or "")   # the set in use
+        chosen_sets = self.store.view_setting("results_sets", None)                 # the sets 3. Results takes
+        self.results_sets: list[str] | None = [str(n) for n in chosen_sets] if isinstance(chosen_sets, list) else None
         self._last_tick = ""                            # the Use box clicked last, for shift-click ranges
         # The kinds of data 3. Results uses, as chosen last time: the engines' analyses and the rig's live QC.
         chosen = self.store.view_setting("results_data", list(RESULT_DATA))
@@ -236,7 +240,8 @@ class AnalyzeWorkflowView:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(self.analyse_fields),
                                    tuple(row.uid for row in self.matrix), self._running,
-                                   tuple(sorted(self.results_data)), self.current_set)
+                                   tuple(sorted(self.results_data)), self.current_set,
+                                   tuple(self.results_sets or ()))
 
     def _mount_stage(self) -> None:
         for key in ("action_box_body", "action_panel_body", "main_body", "log_body"):
@@ -520,49 +525,64 @@ class AnalyzeWorkflowView:
             self._refs["files_hint"] = ui.label("No files yet. Add files… to list videos or image folders."
                                                 ).classes("muted text-xs")
 
-    # -- named sets: a pick of files with their sample names, to come back to ------------------
+    # -- sets: the group a file is in ---------------------------------------------------------
+
+    def _set_names(self) -> list[str]:
+        """Every set a listed file is in, in the list's order."""
+        return list(dict.fromkeys(row.set for row in self.matrix if row.set))
 
     def _render_sets_bar(self) -> None:
-        """Set: the saved picks; choosing one ticks its files and gives them their names. Save… keeps the
-        ticked files and their names under a name; Delete forgets the set chosen."""
+        """Set: choosing one ticks exactly its files. Assign… puts the ticked files into a set, named
+        anew or chosen; Clear takes the ticked files out of theirs."""
         from nicegui import ui
 
-        names = list(self.store.sets())
+        names = self._set_names()
         with ui.row().classes("items-center gap-2 no-wrap w-full"):
             ui.label("Set").classes("text-xs muted")
-            select = ui.select(names, value=self.current_set if self.current_set in names else None,
-                               on_change=self._choose_set).props("dense outlined options-dense clearable").classes(
-                "sets-select")
-            self._refs["sets_select"] = select
-            ui.button("Save…", on_click=self._ask_set_name).props("dense flat no-caps")
-            ui.button("Delete", on_click=self._delete_set).props("dense flat no-caps").set_enabled(
-                self.current_set in names)
+            ui.select(names, value=self.current_set if self.current_set in names else None,
+                      on_change=self._choose_set).props("dense outlined options-dense clearable").classes("sets-select")
+            ui.button("Assign…", on_click=self._ask_set_name).props("dense flat no-caps").set_enabled(
+                bool(self._listed()))
+            ui.button("Clear", on_click=self._clear_set).props("dense flat no-caps").set_enabled(
+                any(row.set for row in self._listed()))
 
     def _ask_set_name(self) -> None:
         from nicegui import ui
 
         with ui.dialog() as dialog, ui.card().classes("gap-2"):
-            ui.label(f"Save the {len(self._listed())} ticked file(s) and their sample names as").classes("text-sm")
-            name = ui.input("Set name", value=self.current_set).props("dense outlined autofocus").classes("w-64")
-            name.on("keydown.enter", lambda _e: (dialog.close(), self._save_set(name.value)))
+            ui.label(f"Put the {len(self._listed())} ticked file(s) into the set").classes("text-sm")
+            name = ui.input("Set", value=self.current_set).props("dense outlined autofocus").classes("w-64")
+            name.on("keydown.enter", lambda _e: (dialog.close(), self._assign_set(name.value)))
             with ui.row().classes("gap-2"):
-                ui.button("Save", on_click=lambda: (dialog.close(), self._save_set(name.value))).props("dense no-caps")
+                ui.button("Assign", on_click=lambda: (dialog.close(), self._assign_set(name.value))).props("dense no-caps")
                 ui.button("Cancel", on_click=dialog.close).props("dense flat no-caps")
         dialog.open()
 
-    def _save_set(self, name: Any) -> None:
+    def _assign_set(self, name: Any) -> None:
+        """The ticked files go into the set NAME, made on the spot when new."""
         name = str(name or "").strip()
         if not name:
             self._notify("A set needs a name.", "warning")
             return
-        files = [{"path": row.source_path, "sample_id": row.sample_id} for row in self._listed()]
-        if not files:
-            self._notify("Tick the files to keep in the set first.", "warning")
+        rows = self._listed()
+        if not rows:
+            self._notify("Tick the files to put into the set first.", "warning")
             return
-        self.store.save_set(name, files)
+        for row in rows:
+            row.set = name
         self._set_current_set(name)
-        self._log(f"set: saved '{name}' with {len(files)} file(s)")
-        self._notify(f"Set '{name}' saved: {_count(len(files), 'file')}.", "success")
+        self._save_matrix()
+        self._log(f"set: {len(rows)} file(s) put into '{name}'")
+        self._notify(f"{_count(len(rows), 'file')} in the set '{name}'.", "success")
+        self._refresh(force_mount=True)
+
+    def _clear_set(self) -> None:
+        rows = [row for row in self._listed() if row.set]
+        for row in rows:
+            row.set = ""
+        self._save_matrix()
+        self._log(f"set: {len(rows)} file(s) taken out of their sets")
+        self._notify(f"{_count(len(rows), 'file')} out of their sets.", "secondary")
         self._refresh(force_mount=True)
 
     def _choose_set(self, event: Any) -> None:
@@ -571,42 +591,52 @@ class AnalyzeWorkflowView:
             self._set_current_set("")
             self._refresh(force_mount=True)
             return
-        self._load_set(str(name))
+        self._use_set(str(name))
 
-    def _load_set(self, name: str) -> None:
-        """Tick exactly the set's files and give them the set's sample names; a file of the set that is not
-        listed any more is said so."""
-        chosen = self.store.sets().get(name)
-        if chosen is None:
-            self._notify(f"No set '{name}'.", "warning")
+    def _use_set(self, name: str) -> None:
+        """Tick exactly the files of the set."""
+        members = [row for row in self.matrix if row.set == name]
+        if not members:
+            self._notify(f"No file is in the set '{name}'.", "warning")
             return
-        wanted = {str(Path(f["path"]).resolve()): str(f.get("sample_id") or "") for f in chosen.get("files", [])}
-        found = 0
         for row in self.matrix:
-            sample = wanted.get(str(Path(row.source_path).resolve()))
-            row.active = sample is not None
-            if sample is not None:
-                row.sample_id = sample or row.sample_id
-                found += 1
-        missing = len(wanted) - found
+            row.active = row.set == name
         self._set_current_set(name)
-        self._log(f"set: '{name}' loaded, {found} file(s) ticked" + (f", {missing} not listed" if missing else ""))
-        self._notify(f"Set '{name}': {_count(found, 'file')} ticked" + (f", {missing} of its files not listed." if missing
-                                                                       else "."), "warning" if missing else "success")
-        self._refresh(force_mount=True)
-
-    def _delete_set(self) -> None:
-        name = self.current_set
-        if not name or not self.store.delete_set(name):
-            return
-        self._set_current_set("")
-        self._log(f"set: '{name}' deleted")
-        self._notify(f"Set '{name}' deleted; the files stay as they are.", "secondary")
+        self._save_matrix()
+        self._log(f"set: '{name}' in use, {len(members)} file(s) ticked")
+        self._notify(f"Set '{name}': {_count(len(members), 'file')} ticked.", "success")
         self._refresh(force_mount=True)
 
     def _set_current_set(self, name: str) -> None:
         self.current_set = name
         self.store.set_view_setting("current_set", name)
+
+    def _in_results_sets(self, row: MatrixRow) -> bool:
+        """Whether 3. Results takes the file's set: every set unless some are chosen there."""
+        return self.results_sets is None or (row.set or NO_SET) in self.results_sets
+
+    def _for_results(self) -> list[MatrixRow]:
+        """The files 3. Results lists: listed past 1. Files and of the sets chosen, grouped by set."""
+        rows = [row for row in self._listed() if self._in_results_sets(row)]
+        order = list(dict.fromkeys(row.set for row in rows))
+        return sorted(rows, key=lambda row: order.index(row.set))
+
+    def _set_results_sets(self, event: Any) -> None:
+        chosen = getattr(event, "value", None)
+        names = [str(name) for name in chosen] if isinstance(chosen, list) else []
+        wanted = None if not names or set(names) >= set(self._results_set_choices()) else names
+        if wanted == self.results_sets:
+            return
+        self.results_sets = wanted
+        self.store.set_view_setting("results_sets", wanted)
+        self._refresh(force_mount=True)
+
+    def _results_set_choices(self) -> list[str]:
+        """The sets to choose from on 3. Results, with "(no set)" for the files in none; nothing without sets."""
+        names = self._set_names()
+        if names and any(not row.set for row in self._listed()):
+            names.append(NO_SET)
+        return names
 
     def _files_rows(self) -> list[dict[str, Any]]:
         return [files_row(row, count=self._count_text(row), analyzed=self._analyzed_at(row),
@@ -1250,6 +1280,13 @@ class AnalyzeWorkflowView:
                     box = ui.checkbox(label, value=kind in self.results_data).props("dense")
                     box.on("update:model-value", lambda event, kind=kind: self._set_results_data(kind, bool(event.args)),
                            [None])
+                choices = self._results_set_choices()
+                if choices:
+                    ui.label("Sets").classes("text-xs muted")
+                    ui.select(choices, multiple=True,
+                              value=[n for n in (self.results_sets or choices) if n in choices],
+                              on_change=self._set_results_sets).props(
+                        "dense outlined options-dense use-chips").classes("sets-select")
             if not rows:
                 ui.label("No ticked file is analysed yet or has the rig's live QC." if self.results_data
                          else "No data chosen.").classes("muted text-xs")
@@ -1274,7 +1311,7 @@ class AnalyzeWorkflowView:
         """The sections with something to show, in their order: aggregated, then the engines' own, then
         the rig's live QC with the fluidics; a section without data is not there."""
         results = self._results(ticked_only=False)
-        lives = any(self._live_qc(row) is not None for row in self._listed())
+        lives = any(self._live_qc(row) is not None for row in self._for_results())
         present = {"aggregated": bool(results) or lives,
                    "opencv": any(r.engine == "opencv" for r in results),
                    "cellpose": any(r.engine == "cellpose" for r in results), "live": lives}
@@ -1283,7 +1320,7 @@ class AnalyzeWorkflowView:
     def _styles(self) -> dict[tuple[str, str], Any]:
         """A style per file, its sample's hue and shade, over the ticked results and live lines; the
         hues follow the whole list's order, so a file keeps its colour whichever are ticked."""
-        return plot_styles([*self._results(), *self._lives()], listed=[row.sample_id for row in self.matrix])
+        return plot_styles([*self._results(), *self._lives()], listed=[row.set or row.sample_id for row in self.matrix])
 
     def _results_rows(self, engine: str | None = None) -> list[dict[str, Any]]:
         """One row per listed file with a stored result (of the engine), ticked or not; the ticked ones
@@ -1291,7 +1328,7 @@ class AnalyzeWorkflowView:
         styles = self._styles()
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
-        for row in self._listed():
+        for row in self._for_results():
             result = by_key.get(self._row_key(row))
             if result is None or (engine and result.engine != engine):
                 continue
@@ -1304,7 +1341,7 @@ class AnalyzeWorkflowView:
         """One row per listed video the rig measured while recording, named as the file is."""
         styles = self._styles()
         rows = []
-        for row in self._listed():
+        for row in self._for_results():
             live = self._live_qc(row)
             if live is None:
                 continue
@@ -1319,7 +1356,7 @@ class AnalyzeWorkflowView:
         styles = self._styles()
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
-        for row in self._listed():
+        for row in self._for_results():
             result, live = by_key.get(self._row_key(row)), self._live_qc(row)
             if result is None and live is None:
                 continue
@@ -1346,7 +1383,7 @@ class AnalyzeWorkflowView:
         for row in self._shown():
             live = self._live_qc(row)
             if live is not None:
-                lives.append(replace(live, sample_id=row.sample_id, step=row.step))
+                lives.append(replace(live, sample_id=row.sample_id, step=row.step, set=row.set))
         return lives
 
     def _render_results_plots(self) -> None:
@@ -1361,7 +1398,7 @@ class AnalyzeWorkflowView:
                 ui.label("Plots appear here once a ticked file is analysed or has the rig's live QC.").classes(
                     "muted text-xs")
             return
-        listed = [row.sample_id for row in self.matrix]
+        listed = [row.set or row.sample_id for row in self.matrix]
         results, lives = self._results(), self._lives()
         labels = dict(RESULT_SECTIONS)
         for section in sections:
@@ -1422,7 +1459,8 @@ class AnalyzeWorkflowView:
 
         A file is known by its path, never by its sample name: two files may be given the same name.
         """
-        listed = {self._row_key(row) for row in self.matrix if row.active and (row.plotted or not ticked_only)}
+        listed = {self._row_key(row) for row in self.matrix
+                  if row.active and (row.plotted or not ticked_only) and self._in_results_sets(row)}
         corrections = self._corrections()
         results = []
         for row in self.matrix:
@@ -1515,11 +1553,11 @@ class AnalyzeWorkflowView:
         settings = self._engine_settings(row)
         source = Path(row.source_path)
         stored = load_stored_result(self.store.result_dir(source, settings), source_path=source, engine=row.engine,
-                                    sample_id=row.sample_id, run=row.run, step=row.step)
+                                    sample_id=row.sample_id, run=row.run, step=row.step, group=row.set)
         if stored is None and row.engine == "cellpose" and settings.get("frame_limit"):
             stored = load_stored_result(self.store.result_dir(source, {**settings, "frame_limit": None}),
                                         source_path=source, engine=row.engine, sample_id=row.sample_id, run=row.run,
-                                        step=row.step)
+                                        step=row.step, group=row.set)
         if stored is not None and row.engine == "opencv" and stale_window(stored.metadata):
             return None
         return stored
@@ -1727,6 +1765,11 @@ class AnalyzeWorkflowView:
             row.sample_id = str(value or "")
             self._save_matrix()
             return
+        if field_name == "set":
+            row.set = str(value or "").strip()
+            self._save_matrix()
+            self._refresh(force_mount=True)              # the Set choices follow
+            return
         kind = matrix_field_kind(field_name)
         if kind is None:
             return
@@ -1766,8 +1809,8 @@ class AnalyzeWorkflowView:
         return [row for row in self.matrix if row.active and row.to_run and (engine is None or row.engine == engine)]
 
     def _shown(self) -> list[MatrixRow]:
-        """The files in the plots and the export: listed past 1. Files and ticked on 3. Results."""
-        return [row for row in self.matrix if row.active and row.plotted]
+        """The files in the plots and the export: listed past 1. Files, of the sets chosen, ticked on 3. Results."""
+        return [row for row in self.matrix if row.active and row.plotted and self._in_results_sets(row)]
 
     def _row_ready(self, row: MatrixRow) -> bool:
         """Whether the file has what a run cannot do without."""
@@ -1815,7 +1858,8 @@ class AnalyzeWorkflowView:
                                   cache_policy=str(entry.get("cache_policy") or "use"),
                                   active=bool(entry.get("active", True)), to_run=bool(entry.get("to_run", True)),
                                   plotted=bool(entry.get("plotted", True)),
-                                  settings=dict(entry.get("settings") or {}), run=run, **origin))
+                                  settings=dict(entry.get("settings") or {}), run=run,
+                                  set=str(entry.get("set") or ""), **origin))
         for row in rows:
             self._prefill_settings(row)
         self._saved_matrix = self._matrix_record(rows)
@@ -1826,7 +1870,7 @@ class AnalyzeWorkflowView:
         return [{"path": row.source_path, "engine": row.engine, "sample_id": row.sample_id,
                  "cache_policy": row.cache_policy, "active": row.active, "to_run": row.to_run, "plotted": row.plotted,
                  "settings": dict(row.settings), "run": row.run, "protocol": row.protocol, "run_time": row.run_time,
-                 "step": row.step}
+                 "step": row.step, "set": row.set}
                 for row in rows]
 
     def _save_matrix(self) -> None:

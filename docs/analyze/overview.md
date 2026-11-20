@@ -34,7 +34,7 @@ The file list comes back as you left it.
 
 | Stage | What you do there |
 |---|---|
-| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's protocol, time and step; **Add files…** takes single videos and image folders. Tick **Use** on the ones to take on and name the samples: the sample is the grouping, yours to name, and starts as the run's tag or protocol. **Save…** keeps the ticked files and their names as a named set; **Set** brings one back. The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here. Each later stage has a Use of its own: on 2. Analyse it says which files to run, on 3. Results which are in the plots and the export; an unticked file stays in the table, greyed, and a file not run still shows its live QC on 3. Results. Use all in a table's header ticks or clears every file of that stage. |
+| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's protocol, time and step; **Add files…** takes single videos and image folders. Tick **Use** on the ones to take on, name the samples and put them into sets; the sample starts as the run's tag or protocol, and the set is the group a file belongs to, see [Sets](#sets). The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here. Each later stage has a Use of its own: on 2. Analyse it says which files to run, on 3. Results which are in the plots and the export; an unticked file stays in the table, greyed, and a file not run still shows its live QC on 3. Results. Use all in a table's header ticks or clears every file of that stage. |
 | **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. **Stop** ends a run at its next step: the files already finished keep their results, the one in hand is left unfinished and runs again next time. |
 | **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 
@@ -43,25 +43,30 @@ same three stages.
 
 ## The file list
 
-Each row is one file with its sample name, the run's protocol, time and step, its
-engine and when it was last analysed. The **sample** is the grouping: files given
-one name are replicates of it, and a name ending in a replicate marker (`rep 2`,
-`#2`) says which; it starts as the run's tag or protocol, and the protocol, the time
-and the step stay in columns of their own however the sample is named. **Use**
+Each row is one file with its sample name, its set, the run's protocol, time and
+step, its engine and when it was last analysed. The **sample** names the file; it
+starts as the run's tag or protocol, and files given one name are replicates of it,
+a name ending in a replicate marker (`rep 2`, `#2`) saying which. The **set** is the
+group the file belongs to, see below. The protocol, the time and the step stay in
+columns of their own however the file is named. **Use**
 decides which files go on, and a shift-click on a Use box ticks or clears every file
 between it and the box clicked last, on any stage; **✕** takes a file off the list (its
 stored results stay). **Rescan** at the top lists videos that arrived in the watched folders since.
 The list and every file's settings are kept in the registry, so the screen comes
 back as you left it.
 
-## Named sets
+## Sets
 
-A set is a pick of files with their sample names, kept under a name to come back
-to: one experiment's grouping, say, or the controls. **Save…** above the list keeps
-the ticked files and their names under the name you type; choosing a set from
-**Set** ticks exactly its files and gives them its names, and says if one of its
-files is not listed any more; **Delete** forgets the set and leaves the files as
-they are. The set in use is remembered.
+A set is the group a file belongs to, a field of its own beside the sample: one
+condition, one experiment, the controls. Type it in the **Set** column, or tick the
+files and **Assign…** them to a set, named anew or chosen; **Clear** takes the ticked
+files out of theirs. Choosing a set from **Set** above the list ticks exactly its
+files. The set is kept with the file list.
+
+Sets carry through to 3. Results: **Sets** beside the Data choice says which sets the
+stage takes, the table groups its lines by set with the set in a column, every file
+of a set shares the set's hue in the plots with a shade per file, and the summary
+CSV has a set column. A file in no set is grouped by its sample name alone.
 
 ## Setting a video up
 
@@ -125,8 +130,8 @@ the stored rows stay as found, and *Clear corrections* drops them.
 ## Results
 
 The stage is one page with one table, in the Action Panel. **Data** above it
-chooses what the stage takes in, OpenCV, Cellpose and Live QC, for every table,
-plot and export; the choice is remembered. The table has one line per file
+chooses what the stage takes in, OpenCV, Cellpose and Live QC, and **Sets** which
+sets, for every table, plot and export; both choices are remembered. The table has one line per file
 with droplets, diameter, CV and rate, the rig's live number under the
 analysis's, the recording's state in the rig's colour, and Use. Below it come
 the plots, in sections that are there when they have data; the table's ticks

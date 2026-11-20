@@ -82,27 +82,32 @@ LIVE_DECAL = {"symbol": "rect", "dashArrayX": [1, 0], "dashArrayY": [2, 4], "rot
               "color": "rgba(255,255,255,0.6)"}
 
 
-def series_styles(names: list[str], *, listed: list[str] | None = None) -> dict[str, SeriesStyle]:
+def series_styles(names: list[str], *, listed: list[str] | None = None,
+                  groups: dict[str, str] | None = None) -> dict[str, SeriesStyle]:
     """A style per sample name, by its group and replicate.
 
-    LISTED, when given, is every name on the screen in order: hues go to groups in that order, so a
-    group keeps its hue whichever files are ticked. NAMES are the ones to style.
+    A name's group is the one GROUPS gives it (a file's set), else what its replicate marker leaves.
+    LISTED, when given, is every name or group on the screen in order: hues go to groups in that
+    order, so a group keeps its hue whichever files are ticked. NAMES are the ones to style.
     """
+    def group_of(name: str) -> str:
+        return (groups or {}).get(name) or sample_identity(name)[0]
+
     order: list[str] = []
     for name in [*(listed or []), *names]:
-        group, _rep = sample_identity(name)
+        group = group_of(name)
         if group not in order:
             order.append(group)
     hues = len(theme.CHART_COLORS)
     replicates: dict[str, list[str]] = {}
     for name in names:
-        group, _rep = sample_identity(name)
+        group = group_of(name)
         replicates.setdefault(group, [])
         if name not in replicates[group]:
             replicates[group].append(name)
     styles: dict[str, SeriesStyle] = {}
     for name in names:
-        group, _rep = sample_identity(name)
+        group = group_of(name)
         index = order.index(group)
         hue, group_round = index % hues, index // hues
         position = replicates[group].index(name)

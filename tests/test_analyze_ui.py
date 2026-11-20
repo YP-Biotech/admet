@@ -131,8 +131,8 @@ class MatrixChangeTests(unittest.TestCase):
             self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
             self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
             names = [column["name"] for column in analyse_columns(view.analyse_fields)]
-            self.assertEqual(names, ["active", "sample_id", "protocol", "run_time", "step", "source", "engine", "fps",
-                                     "k_sigma", "analyzed"])
+            self.assertEqual(names, ["active", "sample_id", "set", "protocol", "run_time", "step", "source", "engine",
+                                     "fps", "k_sigma", "analyzed"])
             row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
                               crop_text="full", analyzed="")
             self.assertEqual((row["k_sigma"], row["microns_per_pixel"], row["fps"]), (4.0, 1.1, None))
@@ -356,8 +356,10 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
 
 
-class NamedSetTests(unittest.TestCase):
-    def test_a_set_keeps_the_ticked_files_and_their_names_and_brings_them_back(self):
+class SetTests(unittest.TestCase):
+    def test_the_ticked_files_go_into_a_set_which_can_be_used_cleared_and_chosen_for_results(self):
+        from dataclasses import replace
+
         with tempfile.TemporaryDirectory() as tmp:
             store = Registry(Path(tmp) / "analyze")
             data = Path(tmp) / "data"
@@ -366,47 +368,47 @@ class NamedSetTests(unittest.TestCase):
             view._add_root(data)
             view._notify = lambda *a, **k: None
             a, b, c = view.matrix
-            a.sample_id, b.sample_id = "oil A rep 1", "oil A rep 2"
             c.active = False
 
-            view._save_set("Oil A")
+            view._assign_set("Oil A")
 
-            self.assertEqual(view.current_set, "Oil A")
-            self.assertEqual(list(store.sets()), ["Oil A"])
-            self.assertEqual([f["sample_id"] for f in store.sets()["Oil A"]["files"]], ["oil A rep 1", "oil A rep 2"])
-            a.sample_id, c.active = "renamed", True
-            a.active = False
-            view._load_set("Oil A")
-            self.assertEqual([(row.sample_id, row.active) for row in view.matrix],
-                             [("oil A rep 1", True), ("oil A rep 2", True), ("Oil 3", False)])
-            self.assertEqual(_make_view(store).current_set, "Oil A")                   # remembered
-            view._save_set("")                                                           # a name is needed
-            self.assertEqual(list(store.sets()), ["Oil A"])
-            view._choose_set(SimpleNamespace(value=None))
-            self.assertEqual(view.current_set, "")
-            view._set_current_set("Oil A")
-            view._delete_set()
-            self.assertEqual((store.sets(), view.current_set), ({}, ""))
-            self.assertEqual([row.active for row in view.matrix], [True, True, False])  # the files stay as they are
+            self.assertEqual([row.set for row in view.matrix], ["Oil A", "Oil A", ""])
+            self.assertEqual((view.current_set, view._set_names()), ("Oil A", ["Oil A"]))
+            self.assertEqual(_make_view(store).matrix[0].set, "Oil A")                  # kept with the list
+            view._assign_set("")                                                          # a name is needed
+            self.assertEqual(b.set, "Oil A")
+            view._handle_matrix_change(SimpleNamespace(args={"uid": c.uid, "field": "set", "value": " Water "}))
+            self.assertEqual((c.set, view._set_names()), ("Water", ["Oil A", "Water"]))   # typed in the column
+            c.active = True
+            view._use_set("Oil A")                                                        # ticks exactly its files
+            self.assertEqual([row.active for row in view.matrix], [True, True, False])
+            view._use_set("nothing")
+            self.assertEqual([row.active for row in view.matrix], [True, True, False])
+            self.assertEqual(view._results_set_choices(), ["Oil A", "Water"])
+            c.active = True
+            view.state = replace(view.state, index=2)                                    # 3. Results
+            self.assertEqual([row.sample_id for row in view._for_results()], ["Oil 3", "Oil 3", "Oil 3"])
+            view._set_results_sets(SimpleNamespace(value=["Water"]))
+            self.assertEqual(view.results_sets, ["Water"])
+            self.assertEqual([row.set for row in view._for_results()], ["Water"])
+            self.assertEqual([row.set for row in view._shown()], ["Water"])
+            self.assertEqual(_make_view(store).results_sets, ["Water"])                   # remembered
+            view._set_results_sets(SimpleNamespace(value=["Water", "Oil A"]))
+            self.assertIsNone(view.results_sets)                                          # every set: no choice kept
+            view._clear_set()
+            self.assertEqual([row.set for row in view.matrix], ["", "", ""])
+            self.assertEqual(view._results_set_choices(), [])
 
-    def test_a_set_says_when_one_of_its_files_is_not_listed_any_more(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Registry(Path(tmp) / "analyze")
-            data = Path(tmp) / "data"
-            run_with_videos(data, "oil", videos=2)
-            view = _make_view(store)
-            view._add_root(data)
-            notices = []
-            view._notify = lambda text, kind: notices.append((kind, text))
-            view._save_set("both")
-            view.matrix.pop()
+    def test_results_group_the_files_by_set_in_the_sets_order(self):
+        view = _make_view()
+        view.matrix = [_row(sample="a"), _row(sample="b"), _row(sample="c"), _row(sample="d")]
+        view.matrix[0].set, view.matrix[1].set, view.matrix[2].set = "two", "one", "two"
+        view.results_sets = None
 
-            view._load_set("both")
-
-            self.assertEqual(notices[-1][0], "warning")
-            self.assertIn("1 of its files not listed", notices[-1][1])
-            view._load_set("nothing")
-            self.assertIn("No set", notices[-1][1])
+        self.assertEqual([row.sample_id for row in view._for_results()], ["a", "c", "b", "d"])
+        self.assertEqual(view._results_set_choices(), ["two", "one", "(no set)"])
+        view.results_sets = ["(no set)"]
+        self.assertEqual([row.sample_id for row in view._for_results()], ["d"])
 
 
 class StoredResultTests(unittest.TestCase):
