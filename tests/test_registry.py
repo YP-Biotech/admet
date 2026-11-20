@@ -117,10 +117,13 @@ class RegistryTests(unittest.TestCase):
             copy = Path(tmp) / "elsewhere" / "b.avi"
             copy.parent.mkdir()
             shutil.copy(video, copy)
-            settings = {"min_area": 800, "fps": 24.0, "microns_per_pixel": 1.1}
+            settings = {"min_area": 800, "fps": 24.0, "microns_per_pixel": 1.1, "skip_left_pct": 0.0,
+                        "skip_right_pct": 0.0, "gate_pct": 50.0}
             key = content_key(video, settings)
             self.assertEqual(content_key(copy, settings), key)                        # a copy finds its result
             self.assertEqual(content_key(copy, {**settings, "fps": 30.0, "microns_per_pixel": 2.0}), key)   # read-time values
+            self.assertEqual(content_key(copy, {**settings, "skip_left_pct": 10.0, "skip_right_pct": 5.0,
+                                                "gate_pct": 60.0}), key)             # the window and the gate too
             self.assertNotEqual(content_key(copy, {**settings, "min_area": 600}), key)                      # detection
             video.write_bytes(bytes(range(256)) * 20000 + b"x")
             self.assertNotEqual(content_key(video, settings), key)

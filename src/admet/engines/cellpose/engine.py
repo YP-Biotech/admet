@@ -68,7 +68,7 @@ class CellposeAnalysisEngine:
         detector = CellposeDetection(
             config,
             use_cache=settings.get("use_cache", True),
-            detect_inclusions=settings["detect_inclusions"],
+            detect_inclusions=True,                       # always counted; shown or not when the rows are read
             cache_dir=cache_dir,
         )
         rows = detector.run(

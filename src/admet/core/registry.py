@@ -25,9 +25,12 @@ from admet.core.session import write_atomic
 REGISTRY = "registry.json"
 RESULTS_DIR = "results"
 # The settings that change what is detected, and so what a result is of. Scale and fps are
-# applied when a result is read, so they are not part of the key.
+# applied when a result is read, so they are not part of the key; so are the window (skip left
+# and right) and the gate, which only choose among the droplets found: the key carries them at
+# their defaults whatever a file says, so a result made with the whole width serves every window.
 KEY_FIELDS = ("start_frame", "end_frame", "max_frames", "frame_limit", "roi_x", "roi_y", "roi_width", "roi_height",
               "k_sigma", "satellite_px", "min_area", "skip_left_pct", "skip_right_pct", "gate_pct")
+READ_TIME_DEFAULTS = {"skip_left_pct": 0.0, "skip_right_pct": 0.0, "gate_pct": 50.0}
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
 
@@ -68,6 +71,7 @@ def content_key(source: str | Path, settings: dict[str, Any] | None = None) -> s
     else:
         digest.update(str(path).encode("utf-8"))
     kept = {key: settings[key] for key in KEY_FIELDS if settings and key in settings}
+    kept.update({key: value for key, value in READ_TIME_DEFAULTS.items() if key in kept})
     digest.update(json.dumps(kept, sort_keys=True, default=str).encode("utf-8"))
     return digest.hexdigest()[:24]
 

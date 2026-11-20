@@ -66,6 +66,7 @@ from admet.ui.analyze_results import (
     result_charts,
     results_cells,
     run_label,
+    stale_window,
     runs_charts,
     zip_bytes,
 )
@@ -1333,10 +1334,21 @@ class AnalyzeWorkflowView:
             # Each file's rows are read with its own scale, fps, flow and corrections, so a change to one
             # file leaves the others' parsed results in the cache.
             fixes = json.dumps(corrections.get((row.engine, self._row_key(row)[2]), {}), sort_keys=True)
-            scales = json.dumps([*self._row_scale(row), self._row_flow(row)])
+            scales = json.dumps({"scale": [*self._row_scale(row), self._row_flow(row)],
+                                 "read": self._read_settings(row)}, sort_keys=True)
             results.extend(result for result in _cached_results(stored, fixes, scales)
                            if _result_key(result) in listed and result.engine in self.results_data)
         return results
+
+    def _read_settings(self, row: MatrixRow) -> dict[str, Any]:
+        """The settings applied when the file's rows are read, not by a run: the window and the gate
+        of a video, the frame limit and the inclusions of an image folder."""
+        if row.engine == "cellpose":
+            return {"frame_limit": _row_int(row, "frame_limit", 0) or None,
+                    "detect_inclusions": _row_bool(row, "detect_inclusions", True)}
+        return {"skip_left_pct": _row_float(row, "skip_left_pct", 0.0),
+                "skip_right_pct": _row_float(row, "skip_right_pct", 0.0),
+                "gate_pct": _row_float(row, "gate_pct", 50.0)}
 
     def _row_scale(self, row: MatrixRow) -> tuple[float, float]:
         """The µm per px and fps the file's rows are read with now: the table's values, not the run's."""
@@ -1394,10 +1406,22 @@ class AnalyzeWorkflowView:
     # -- stored data ----------------------------------------------------------------------
 
     def _stored_result(self, row: MatrixRow) -> StoredResult | None:
-        """This file's stored analysis for the settings it has now, if there is one."""
-        return load_stored_result(self.store.result_dir(Path(row.source_path), self._engine_settings(row)),
-                                  source_path=Path(row.source_path), engine=row.engine, sample_id=row.sample_id,
-                                  run=row.run)
+        """This file's stored analysis for the settings it has now, if there is one.
+
+        An image folder's run over all its frames serves any frame limit, the limit being applied
+        when read. A video result made before the window was read-time, with a window baked in,
+        does not serve: the file reads as not analysed and is run again over the whole width.
+        """
+        settings = self._engine_settings(row)
+        source = Path(row.source_path)
+        stored = load_stored_result(self.store.result_dir(source, settings), source_path=source, engine=row.engine,
+                                    sample_id=row.sample_id, run=row.run)
+        if stored is None and row.engine == "cellpose" and settings.get("frame_limit"):
+            stored = load_stored_result(self.store.result_dir(source, {**settings, "frame_limit": None}),
+                                        source_path=source, engine=row.engine, sample_id=row.sample_id, run=row.run)
+        if stored is not None and row.engine == "opencv" and stale_window(stored.metadata):
+            return None
+        return stored
 
     def _stored_results(self) -> list[StoredResult]:
         return [stored for stored in (self._stored_result(row) for row in self.matrix) if stored is not None]
@@ -1945,8 +1969,10 @@ def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, s
     key = (engine, str(stored.source_path))
     own_fixes = json.loads(fixes) if fixes else {}
     corrections = {key: own_fixes} if own_fixes else {}
-    scale_of = {key: tuple(json.loads(scales))} if scales else {}
-    return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of))
+    reading = json.loads(scales) if scales else {}
+    scale_of = {key: tuple(reading["scale"])} if reading.get("scale") else {}
+    settings_of = {key: dict(reading["read"])} if reading.get("read") else {}
+    return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of, settings_of))
 
 
 @lru_cache(maxsize=64)

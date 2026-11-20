@@ -78,8 +78,8 @@ class OpenCVEngineTests(unittest.TestCase):
         self.assertEqual(config["video"]["end_frame"], 90)
         self.assertEqual(config["video"]["roi"], (12, 18, 320, 80))
         self.assertEqual(config["analysis"]["fps"], 100.0)
-        self.assertEqual(config["detection"], {"k_sigma": 5.0, "satellite": 9, "min_area": 80.0, "skip_left_pct": 20.0,
-                                               "skip_right_pct": 5.0, "gate_pct": 60.0})
+        self.assertEqual(config["detection"], {"k_sigma": 5.0, "satellite": 9, "min_area": 80.0, "skip_left_pct": 0.0,
+                                               "skip_right_pct": 0.0, "gate_pct": 60.0})   # the window is read-time
 
     def test_engine_writes_raw_rows_to_job_sink(self):
         from admet.engines.opencv import create_engine
@@ -105,7 +105,10 @@ class OpenCVEngineTests(unittest.TestCase):
             self.assertEqual(result.metadata["row_count"], len(rows))
             self.assertEqual(rows[0]["job_id"], "job-opencv")
             self.assertEqual(rows[0]["file_id"], "video-1")
-            self.assertEqual((rows[0]["engine"], rows[0]["kind"]), ("opencv", "frame"))
+            self.assertEqual((rows[0]["engine"], rows[0]["kind"]), ("opencv", "run_context"))   # the context first
+            self.assertEqual(rows[1]["kind"], "frame")
+            self.assertGreater(rows[0]["values"]["frame_width"], 0)
+            self.assertEqual(result.metadata["window"], "whole")
             self.assertTrue(result.metadata["cache_dir"])
             detections = [row["values"] for row in rows if row["kind"] == "detection"]
             self.assertTrue(detections)

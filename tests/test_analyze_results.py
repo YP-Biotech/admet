@@ -26,6 +26,7 @@ from admet.ui.analyze_results import (
     diameter_time_chart,
     export_csv_zip,
     file_results,
+    gate_crossings,
     histogram_edges,
     inclusions_chart,
     rate_time_chart,
@@ -38,6 +39,7 @@ from admet.ui.analyze_results import (
     scatter_chart,
     settings_summary,
     short_names,
+    stale_window,
     spark,
     timeline_chart,
 )
@@ -69,13 +71,15 @@ def _imaging(**metadata) -> StoredResult:
 def _rows() -> list[dict]:
     """Three droplets, each seen for three frames moving 10 px a frame, one every five frames."""
     rows = [{"engine": "opencv", "item_id": "s", "file_id": "f1", "kind": "run_context",
-             "values": {"analysis": {"fps": 100.0, "microns_per_pixel": 2.0}, "detection": {"gate_pct": 50}}}]
+             "values": {"analysis": {"fps": 100.0, "microns_per_pixel": 2.0}, "detection": {"gate_pct": 50},
+                        "frame_width": 200, "frame_height": 60}}]
     for droplet in range(3):
         for step in range(3):
             frame = droplet * 5 + step
             rows.append({"engine": "opencv", "item_id": "s", "file_id": "f1", "kind": "detection",
                          "values": {"frame": frame, "droplet_id": droplet + 1, "centroid_x": 100 + 10 * step,
-                                    "centroid_y": 50, "equivalent_diameter": 20 + droplet, "area": 314 + step}})
+                                    "centroid_y": 50, "bbox_x": 95 + 10 * step, "bbox_width": 10,
+                                    "equivalent_diameter": 20 + droplet, "area": 314 + step}})
     return rows
 
 
@@ -206,6 +210,56 @@ class FileResultTests(unittest.TestCase):
         self.assertIn("<rect", spark([1.0, 1.1, 1.2, 5.0]))
 
 
+class ReadTimeSettingTests(unittest.TestCase):
+    """The window, the gate, the frame limit and the inclusions are applied to the stored rows, not by a run."""
+
+    def test_the_window_leaves_out_the_droplets_near_the_ends(self):
+        key = ("opencv", str(_stored().source_path))
+
+        whole, = file_results(_stored(), _rows())
+        windowed, = file_results(_stored(), _rows(), settings={key: {"skip_left_pct": 50.0, "skip_right_pct": 0.0}})
+        shut, = file_results(_stored(), _rows(), settings={key: {"skip_left_pct": 90.0}})
+
+        self.assertEqual((whole.frames, len(whole.detections)), (9, 9))
+        self.assertEqual((windowed.frames, len(windowed.detections)), (6, 6))      # the first step of each, at x 95, out
+        self.assertEqual(windowed.diameters, (40.0, 42.0, 44.0))                     # the droplets themselves stay
+        self.assertEqual(windowed.droplets, 3)
+        self.assertEqual((shut.droplets, shut.diameters), (0, ()))                  # a window past every droplet
+
+    def test_the_gate_is_counted_over_the_stored_tracks(self):
+        key = ("opencv", str(_stored().source_path))
+
+        at_55, = file_results(_stored(), _rows(), settings={key: {"gate_pct": 55.0}})     # x 110: every droplet crosses
+        at_95, = file_results(_stored(), _rows(), settings={key: {"gate_pct": 95.0}})     # x 190: none does
+
+        self.assertAlmostEqual(at_55.rate_hz, 20.0)
+        self.assertEqual(at_55.rate_note, "")                                        # from the gate
+        self.assertAlmostEqual(at_95.rate_hz, 20.0)
+        self.assertEqual(at_95.rate_note, "from arrivals")                           # the gate saw nothing: the arrivals
+        self.assertEqual(gate_crossings({1: {"f": [0, 1, 2], "x": [100.0, 110.0, 120.0]}}, 115.0), [1.5])
+
+    def test_an_image_folders_frame_limit_and_inclusions_are_applied_when_read(self):
+        rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
+                 "values": {"frame": frame, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
+                            "diameter_um": 140.0, "area_um2": 15000.0, "inclusions": frame}}
+                for frame in (1, 2, 3) for droplet in (0, 1)]
+        key = ("cellpose", str(_imaging().source_path))
+
+        whole, = file_results(_imaging(), rows)
+        two, = file_results(_imaging(), list(rows), settings={key: {"frame_limit": 2}})
+        plain, = file_results(_imaging(), list(rows), settings={key: {"detect_inclusions": False}})
+
+        self.assertEqual((whole.droplets, whole.frames, whole.inclusion_counts), (6, 3, (1, 1, 2, 2, 3, 3)))
+        self.assertEqual((two.droplets, two.frames, two.inclusion_counts), (4, 2, (1, 1, 2, 2)))   # the first two frames
+        self.assertEqual((plain.droplets, plain.inclusion_counts), (6, ()))
+
+    def test_a_result_with_a_window_baked_in_is_stale(self):
+        self.assertTrue(stale_window({"settings": {"skip_left_pct": 10.0}}))
+        self.assertFalse(stale_window({"settings": {"skip_left_pct": 10.0}, "window": "whole"}))
+        self.assertFalse(stale_window({"settings": {"skip_left_pct": 0.0, "skip_right_pct": 0.0}}))
+        self.assertFalse(stale_window({}))
+
+
 class ChartTests(unittest.TestCase):
     def test_histogram_bins_follow_a_tight_distribution(self):
         values = [49.9 + 0.01 * (i % 20) for i in range(400)]
@@ -315,7 +369,7 @@ class ExportTests(unittest.TestCase):
             self.assertTrue(summary[0].startswith("run,sample,engine"))
             self.assertIn("study,s,opencv", summary[1])
             droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
-            self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,equivalent_diameter,area")
+            self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,bbox_x,bbox_width,equivalent_diameter,area")
             self.assertEqual(len(droplets), 10)
 
     def test_csv_export_leaves_out_droplets_switched_off_and_keeps_the_raw_count(self):

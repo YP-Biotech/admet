@@ -53,6 +53,9 @@ class OpenCVAnalysisEngine:
                 "frequency_hz": data.get("frequency_hz"),
                 "generation": data.get("generation", {}),
                 "speed_px_frame": data.get("speed_px_frame"),
+                "frame_width": data.get("frame_width"),
+                "frame_height": data.get("frame_height"),
+                "window": "whole",                       # every droplet kept; the window is applied when read
             },
         )
 
@@ -89,6 +92,18 @@ class OpenCVAnalysisEngine:
         if job is None or job.sink is None:
             return 0
         row_count = 0
+        # The context first: a reader applying the window needs the frame's width before the droplets.
+        job.sink.write(
+            {
+                "job_id": job.id,
+                "item_id": job.metadata.get("item_id", job.id),
+                "file_id": job.metadata.get("file_id", ""),
+                "engine": self.id,
+                "kind": "run_context",
+                "values": _opencv_context(result),
+            }
+        )
+        row_count += 1
         for frame in result.get("frame_data", []):
             frame_index = frame.get("frame")
             job.sink.write(
@@ -134,17 +149,6 @@ class OpenCVAnalysisEngine:
                 }
             )
             row_count += 1
-        job.sink.write(
-            {
-                "job_id": job.id,
-                "item_id": job.metadata.get("item_id", job.id),
-                "file_id": job.metadata.get("file_id", ""),
-                "engine": self.id,
-                "kind": "run_context",
-                "values": _opencv_context(result),
-            }
-        )
-        row_count += 1
         for droplet_id, geometry in result.get("droplet_geometry", {}).items():
             job.sink.write(
                 {
@@ -199,6 +203,8 @@ def _opencv_context(result: dict[str, Any]) -> dict[str, Any]:
         "frequency_hz": result.get("frequency_hz"),
         "trajectory": result.get("trajectory", {}),
         "true_stats": result.get("true_stats", {}),
+        "frame_width": result.get("frame_width"),
+        "frame_height": result.get("frame_height"),
     }
 
 
@@ -210,8 +216,10 @@ def pipeline_config(settings: dict[str, Any], *, cache_dir: Path | None = None) 
             "k_sigma": float(settings.get("k_sigma") or 4.0),
             "satellite": int(settings.get("satellite_px") or 13),
             "min_area": float(settings.get("min_area") or 800.0),
-            "skip_left_pct": float(settings.get("skip_left_pct") or 0.0),
-            "skip_right_pct": float(settings.get("skip_right_pct") or 0.0),
+            # The whole width is searched and every droplet kept: the window (skip left and right) and
+            # the gate are applied when the rows are read, so changing them needs no new run.
+            "skip_left_pct": 0.0,
+            "skip_right_pct": 0.0,
             "gate_pct": float(settings.get("gate_pct") if settings.get("gate_pct") is not None else 50.0),
         },
         "tracking": {"min_count": 3, "max_miss": 2},
