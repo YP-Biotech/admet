@@ -79,6 +79,9 @@ CHART_COLORS = (
     "#e34948",   # red
 )
 
+# The droplet QC states the rig reports, in their colours, in both apps.
+QC_STATE_COLORS = {"STABLE": PALETTE.success_hover, "UNSTABLE": PALETTE.danger_hover, "SETTLING": PALETTE.warning}
+
 STATUS_COLORS = {
     "done": PALETTE.success,
     "processing": PALETTE.warning,

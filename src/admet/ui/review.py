@@ -32,7 +32,7 @@ from admet.workflows.calculations import recorded_runs
 CHANNEL_DASHES = (None, (5.0, 2.5), (5.0, 2.0, 0.01, 2.0))
 LINE_WIDTH = 2.5
 # The droplet QC a recording wrote beside its video: the CV in the colour of its state.
-QC_STATE_COLORS = {"STABLE": Theme.SUCCESS_HOVER, "UNSTABLE": Theme.DANGER_HOVER, "SETTLING": Theme.WARNING}
+QC_STATE_COLORS = ui.QC_STATE_COLORS
 QC_LIMIT_PERCENT = timeline.QC_LIMIT_PERCENT
 
 

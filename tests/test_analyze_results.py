@@ -8,6 +8,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from admet.ui import theme
 from admet.ui.analyze_results import (
     FileResult,
     AGGREGATED_FIELDS,
@@ -375,7 +376,9 @@ class LiveQCTests(unittest.TestCase):
             self.assertIn("1420", cells["rate"])
             self.assertIn("124.0 ± 0.5", cells["diameter"])
             self.assertIn("STABLE", cells["analysed"])
+            self.assertIn(theme.QC_STATE_COLORS["STABLE"], cells["analysed"])
             self.assertIn("↳", cells["sample"])
+            self.assertIn("live-badge", cells["sample"])
             self.assertIn("oil", live_cells(live, "oil", "#000")["sample"])
             self.assertEqual((live.run, Path(live.source_path).name), (run.name, "oil_step01_x.avi"))
             self.assertEqual(live.points[0], (0.0, 1400.0, 1400.0, 124.0, 3.0))   # s from its first burst
@@ -464,12 +467,15 @@ class LiveQCTests(unittest.TestCase):
 
         self.assertEqual(set(both), set(AGGREGATED_FIELDS))
         self.assertIn("124.0 ± 3.3", both["diameter"])
-        self.assertIn("124.0 um live", both["diameter"])
-        self.assertIn("1420 live", both["rate"])
+        self.assertIn("124.0 um", both["diameter"])
+        self.assertIn("live-badge", both["diameter"])                                    # the live number, marked
+        self.assertIn("1420", both["rate"])
         self.assertIn(style.color, both["sample"])
         self.assertIn("not analysed", alone["sample"])
         self.assertIn("results-off", alone["droplets"])
-        self.assertIn("7 000 live", alone["droplets"])
+        self.assertIn("7 000", alone["droplets"])
+        self.assertIn(theme.QC_STATE_COLORS["STABLE"], alone["analysed"])               # the state in its colour
+        self.assertNotIn("live-badge", aggregated_cells("oil", style, result, None)["sample"])
 
     def test_the_summary_csv_carries_the_live_columns(self):
         result = _result(run="oil", source_path="/v.avi")

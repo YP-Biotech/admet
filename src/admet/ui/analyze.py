@@ -239,7 +239,7 @@ class AnalyzeWorkflowView:
         # writes to a deleted element. Stages that need them create them again below.
         for key in ("action_progress", "action_progress_text", "log", "frame_image", "frame_caption",
                     "stages", "crop_label", "editor_warnings", "image_preview", "image_image", "image_caption",
-                    "corrections_table", "files_hint"):
+                    "corrections_table", "files_hint", "use_all_boxes"):
             self._refs.pop(key, None)
         self._table_refs = {}
         self._button_refs = []
@@ -379,9 +379,22 @@ class AnalyzeWorkflowView:
         self._sync_use_all()
 
     def _sync_use_all(self) -> None:
-        box = self._refs.get("use_all")
-        if box is not None and not box.is_deleted:
+        boxes = [box for box in self._refs.get("use_all_boxes", []) if not box.is_deleted]
+        self._refs["use_all_boxes"] = boxes
+        for box in boxes:
             box.value = self._use_state()
+
+    def _render_use_all_header(self, table: Any) -> None:
+        """A box in the table's Use header that ticks or clears every file; it reads indeterminate for some.
+        A NiceGUI element in the header slot, as a slot template cannot reach Python; a plain th, as
+        Quasar's q-th looks its column up by the vnode key, which NiceGUI uses for the element id."""
+        from nicegui import ui
+
+        with table.add_slot("header-cell-active"), ui.element("th").classes("text-center"):
+            # update:model-value is the browser's click; setting the value from Python stays quiet
+            box = ui.checkbox(value=self._use_state()).props("dense")
+            box.on("update:model-value", lambda event: self._handle_use_all(bool(event.args)), [None])
+            self._refs.setdefault("use_all_boxes", []).append(box)
 
     def _sync_previews(self) -> None:
         target = self._selected_row()
@@ -492,6 +505,7 @@ class AnalyzeWorkflowView:
                 "slim-table matrix-table w-full").props("dense flat hide-bottom")
             self._register_table("files", table)
             wire_files_table(table, self._handle_matrix_change, self._handle_matrix_remove)
+            self._render_use_all_header(table)
             table.on("rowClick", self._select_row_event)
             self._refs["files_hint"] = ui.label("No files yet. Add files… to list videos or image folders."
                                                 ).classes("muted text-xs")
@@ -596,12 +610,7 @@ class AnalyzeWorkflowView:
         ticked file. They are NiceGUI elements in the header slots: a slot template cannot reach Python."""
         from nicegui import ui
 
-        # plain cells: Quasar's q-th looks its column up by the vnode key, which NiceGUI uses for the element id
-        with table.add_slot("header-cell-active"), ui.element("th").classes("text-center"):
-            # update:model-value is the browser's click; setting the value from Python stays quiet
-            box = ui.checkbox(value=self._use_state()).props("dense")
-            box.on("update:model-value", lambda event: self._handle_use_all(bool(event.args)), [None])
-            self._refs["use_all"] = box
+        self._render_use_all_header(table)
         for name in self.analyse_fields:
             kind = matrix_field_kind(name)
             if kind is None:
@@ -652,6 +661,8 @@ class AnalyzeWorkflowView:
         self._sync_action_box()
         self._notify(self._stage_summary(), "primary")
         self._mount_sidebar()
+        if self._stage_id() == "results":
+            self._remount_main()                      # the plots follow the ticked files
 
     def _handle_header_set(self, field: str, value: Any) -> None:
         """A value entered in a setting column's header: onto every ticked file the setting applies to."""
@@ -1123,6 +1134,7 @@ class AnalyzeWorkflowView:
         """The four views of the results; the one open is remembered."""
         from nicegui import ui
 
+        counts = self._view_counts()
         with ui.row().classes("admet-transport results-tabs w-full items-stretch gap-0"):
             for index, (view_id, label) in enumerate(RESULT_VIEWS):
                 if index:
@@ -1130,8 +1142,23 @@ class AnalyzeWorkflowView:
                 classes = "admet-transport-btn grow"
                 if view_id == self.results_view:
                     classes += " admet-transport-btn-active"
-                ui.button(label, on_click=lambda _e, view=view_id: self._set_results_view(view)).props(
+                if not counts[view_id]:
+                    classes += " admet-transport-btn-empty"
+                ui.button(f"{label} ({counts[view_id]})",
+                          on_click=lambda _e, view=view_id: self._set_results_view(view)).props(
                     "unelevated dense no-caps flat").classes(classes)
+
+    def _view_counts(self) -> dict[str, int]:
+        """How many listed files each view has something for, ticked or not."""
+        results = self._results(ticked_only=False)
+        lives = [row for row in self.matrix if self._live_qc(row) is not None]
+        with_result = {_result_key(result) for result in results}
+        return {
+            "aggregated": sum(1 for row in self.matrix if self._row_key(row) in with_result or self._live_qc(row)),
+            "opencv": sum(1 for result in results if result.engine == "opencv"),
+            "cellpose": sum(1 for result in results if result.engine == "cellpose"),
+            "live": len(lives),
+        }
 
     def _set_results_view(self, view: str) -> None:
         if view == self.results_view or view not in dict(RESULT_VIEWS):
@@ -1160,6 +1187,7 @@ class AnalyzeWorkflowView:
                 "slim-table matrix-table results-table w-full").props("dense flat hide-bottom")
             self._register_table("results", table)
             wire_results_table(table, self._handle_matrix_change, fields)
+            self._render_use_all_header(table)
 
     def _results_table_rows(self) -> list[dict[str, Any]]:
         if self.results_view == "aggregated":
@@ -2457,6 +2485,10 @@ def _style() -> str:
     .results-cell .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
     .results-off { opacity: 0.45; }
     .results-tabs { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 6px; }
+    .admet-transport-btn-empty { opacity: 0.55; }
+    .live-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 10px;
+      font-weight: 700; line-height: 15px; color: #fff; background: var(--success-hover); vertical-align: middle; }
+    .qc-state { font-weight: 700; }
     .results-grid, .results-grid-2 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .results-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .results-grid-2 .plot-card { aspect-ratio: 16 / 9; min-height: 0; }

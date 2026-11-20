@@ -318,7 +318,8 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual(view._results_rows(), [])                                   # nothing analysed: no result row
             aggregated = view._aggregated_rows()
             self.assertEqual(len(aggregated), 1)
-            self.assertIn("7 000 live", aggregated[0]["droplets"])
+            self.assertIn("7 000", aggregated[0]["droplets"])
+            self.assertEqual(view._view_counts(), {"aggregated": 1, "opencv": 0, "cellpose": 0, "live": 1})
             self.assertIn("not analysed", aggregated[0]["sample"])
             lives = view._lives()
             self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])

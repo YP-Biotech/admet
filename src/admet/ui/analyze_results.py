@@ -450,6 +450,15 @@ def live_qc(run_dir: str | Path, video_path: str | Path) -> LiveQC | None:
     )
 
 
+LIVE_BADGE = '<span class="live-badge">live</span>'
+
+
+def state_html(state: str) -> str:
+    """The rig's state of a recording in its colour: STABLE green, UNSTABLE red, SETTLING amber."""
+    colour = theme.QC_STATE_COLORS.get(str(state).upper(), theme.PALETTE.text_muted)
+    return f'<span class="qc-state" style="color:{colour}">{html.escape(str(state))}</span>'
+
+
 def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True) -> dict[str, str]:
     """The live QC as a row of the results table, under the analysis of the same video."""
     off = "" if active else " results-off"
@@ -463,7 +472,7 @@ def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True)
 
     swatch = f'<span class="swatch" style="background:{color}"></span>' if sample_id else "↳ "
     return {
-        "sample": cell(f'{swatch}{html.escape(sample_id) if sample_id else "live"}'
+        "sample": cell(f'{swatch}{html.escape(sample_id)}{LIVE_BADGE}'
                        f'<div class="sub">on the rig, {live.bursts} bursts</div>'),
         "droplets": cell(f'{live.count:,.0f}'.replace(",", " ") + '<div class="sub">counted live</div>'),
         "inclusions": cell("—"),
@@ -473,7 +482,7 @@ def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True)
         "cv": cell(pm(live.cv_percent, live.cv_half, 1) if live.cv_percent else "—"),
         "rate": cell(pm(live.rate_hz, live.rate_half, 0) if live.rate_hz else "—"),
         "speed": cell("—"),
-        "analysed": cell(f'{html.escape(live.state)}<div class="sub">while recording</div>'),
+        "analysed": cell(f'{state_html(live.state)}<div class="sub">while recording</div>'),
     }
 
 
@@ -1013,19 +1022,21 @@ def aggregated_cells(name: str, style: SeriesStyle | None, result: FileResult | 
 
     unit = live.diameter_unit if live is not None else "um"
     return {
-        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}',
+        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}'
+                       + (LIVE_BADGE if live is not None else ""),
                        html.escape(result.engine if result is not None else "not analysed")),
         "droplets": cell(f"{result.droplets}" if result is not None else "—",
-                         f"{live.count:,.0f} live".replace(",", " ") if live is not None else ""),
+                         f"{live.count:,.0f}".replace(",", " ") + LIVE_BADGE if live is not None else ""),
         "diameter": cell(f"{result.mean_diameter:.1f} ± {result.std_diameter:.1f}"
                          if result is not None and result.diameters else "—",
-                         f"{live.diameter:.1f} {html.escape(unit)} live" if live is not None and live.diameter else ""),
+                         f"{live.diameter:.1f} {html.escape(unit)}" + LIVE_BADGE if live is not None and live.diameter
+                         else ""),
         "cv": cell(f"{result.cv_percent:.1f}" if result is not None and result.diameters else "—",
-                   f"{live.cv_percent:.1f} live" if live is not None and live.cv_percent else ""),
+                   f"{live.cv_percent:.1f}" + LIVE_BADGE if live is not None and live.cv_percent else ""),
         "rate": cell(f"{result.rate_hz:.0f}" if result is not None and result.rate_hz else "—",
-                     f"{live.rate_hz:.0f} live" if live is not None and live.rate_hz else ""),
+                     f"{live.rate_hz:.0f}" + LIVE_BADGE if live is not None and live.rate_hz else ""),
         "analysed": cell(html.escape(result.analyzed_at or "earlier") if result is not None else "—",
-                         html.escape(f"{live.state} while recording") if live is not None else ""),
+                         f"{state_html(live.state)} while recording" if live is not None else ""),
     }
 
 
