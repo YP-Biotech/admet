@@ -72,18 +72,19 @@ line instead. When the recording's record carries the set flows, the rate cell a
 shows the rate those flows must make at the measured droplet size, every flow but
 the oil over the volume of a sphere of the median diameter.
 
-**µm/px** and **FPS** are applied when results are read, not by the run: the engine
-measures in pixels and frames, so changing either updates Results and the export at
-once. Both are filled from the recording's own record when control measured them,
-the FPS as the frames arrived and the µm/px from the walls clicked on the preview;
-a typed value wins. Crop, frame range and the detection settings change what is detected and need
-a new run.
-
-Detection settings, per file: **skip left / right** (% of the width left out, where
-droplets form and where they leave); **gate** (% of the width, where every droplet
-passes once); **satellite size**, **min droplet area** and **threshold × noise**.
-Tick *Show detection stages* to see each step on the preview frame. *Reset file
-settings* puts the selected file back to the defaults, keeping its µm/px and FPS.
+Two kinds of settings. **Frame range, crop, threshold × noise, satellite size and
+min droplet area** change what the pipeline finds in the frames; change one and the
+video is read again. Everything else is applied when the stored rows are read, in
+under a second, so changing it updates Results and the export at once: **µm/px** and
+**FPS** (the engine measures in pixels and frames), and **skip left / right** (% of
+the width left out, where droplets form and where they leave) and the **gate** (% of
+the width, where droplets are counted as they pass). The run always searches the
+whole width and keeps every droplet; the window and the gate choose among them.
+µm/px and FPS are filled from the recording's own record when control measured
+them, the FPS as the frames arrived and the µm/px from the walls clicked on the
+preview; a typed value wins. Tick *Show detection stages* to see each detection
+step on the preview frame. *Reset file settings* puts the selected file back to
+the defaults and to the recording's µm/px and FPS.
 
 To set one thing on many files, type it in the column's header: every ticked file
 whose engine has that setting takes it as soon as the value is entered. The
@@ -97,7 +98,10 @@ one µm/px on every video. Unticked files are left alone.
 ## Setting an image folder up
 
 Image folders are grouped into frames by name (`…_z01_…a01f001d4.tif`: z-slice and
-frame), min-projected over z and segmented with Cellpose. The editor shows each
+frame), min-projected over z and segmented with Cellpose. Cellpose is the slow part
+and runs once per folder: inclusions are always counted after it, and *Detect
+inclusions* only says whether they are shown; a *Frame limit* lower than the frames
+already segmented is applied when read, a higher one segments the new frames. The editor shows each
 image with the stored droplets drawn over it: a circle per droplet with its
 inclusion count. Corrections are made on the image: **click** a droplet to switch
 it off (or back on), **shift-click** to add an inclusion, **alt-click** to remove

@@ -131,6 +131,13 @@ def load_stored_result(result_dir: Path, *, source_path: Path, engine: str, samp
                         metadata=metadata, run=run)
 
 
+def stale_window(metadata: dict[str, Any]) -> bool:
+    """A video result made before the window was applied when read, with a window baked in: its
+    droplets near the ends were never written, so it serves no other window and is run again."""
+    settings = metadata.get("settings") if isinstance(metadata.get("settings"), dict) else {}
+    return metadata.get("window") != "whole" and bool(settings.get("skip_left_pct") or settings.get("skip_right_pct"))
+
+
 def iter_rows(path: Path, *, limit: int | None = None):
     """The rows of a rows file one at a time: a recording's rows run into the hundreds of thousands."""
     path = Path(path)
@@ -161,14 +168,19 @@ PLOT_POINTS = 6000      # detections kept per file for the plots: a uniform samp
 
 
 def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], dict[str, Any]] | None = None,
-                 scales: dict[tuple[str, str], tuple[float, float]] | None = None) -> list[FileResult]:
+                 scales: dict[tuple[str, str], tuple[float, float]] | None = None,
+                 settings: dict[tuple[str, str], dict[str, Any]] | None = None) -> list[FileResult]:
     """The source's result from its stored rows, in one pass: distributions per droplet, rate and speed.
 
     CORRECTIONS, by (engine, source path), are what the user changed by hand on imaging droplets:
     a droplet switched off is left out, an inclusion count is taken as corrected. SCALES, by the
     same key, are the µm per px and fps to read the rows with: the engine measures in pixels and
-    frames, so changing either needs no new run. Rows are grouped by the file id they carry, so a
-    rows file holding more than one file (as none written now does) still gives one result each.
+    frames, so changing either needs no new run. SETTINGS, by the same key, are the file's
+    read-time settings: for a video the window (skip left and right, % of the width) and the gate
+    (% of the width), which choose among the droplets the whole-width run found and where they are
+    counted; for an image folder the frame limit (the first frames only) and whether inclusions
+    are shown. Rows are grouped by the file id they carry, so a rows file holding more than one
+    file (as none written now does) still gives one result each.
     """
     source = str(stored.source_path)
     files: dict[tuple[str, str], dict[str, Any]] = {}
@@ -181,14 +193,19 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
                                 "seen": 0, "inclusions": [], "frames": set(), "um": False,
                                 "job": stored.metadata, "source": source, "rng": random.Random(0),
                                 "fixes": (corrections or {}).get((stored.engine, source), {}),
-                                "scale": tuple((scales or {}).get((stored.engine, source), (0.0, 0.0)))}
+                                "scale": tuple((scales or {}).get((stored.engine, source), (0.0, 0.0))),
+                                "read": dict((settings or {}).get((stored.engine, source), {})),
+                                "width": None, "frames_kept": []}
         if kind == "run_context":
             acc["context"] = _values(row)
+            acc["width"] = _num(acc["context"].get("frame_width"))
             continue
         if kind not in {"detection", "droplet", "track"}:
             continue
         values = _values(row)
         frame = _num(values.get("frame"))
+        if not _within_read_settings(acc, kind, values, frame):
+            continue
         if frame is not None:
             acc["frames"].add(int(frame))
         fix = acc["fixes"].get(correction_key(frame, values.get("droplet_id"))) if kind == "droplet" and acc["fixes"] \
@@ -227,6 +244,44 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
             entry["f"].append(frame)
             entry["x"].append(cx or 0.0)
     return [_finish(stored, key, acc) for key, acc in sorted(files.items())]
+
+
+def _within_read_settings(acc: dict[str, Any], kind: str, values: dict[str, Any], frame: float | None) -> bool:
+    """Whether a row is taken under the file's read-time settings: inside the window, within the frame limit."""
+    read = acc["read"]
+    if kind == "detection" and acc["width"]:
+        left, right = float(read.get("skip_left_pct") or 0.0), float(read.get("skip_right_pct") or 0.0)
+        if left or right:
+            width = acc["width"]
+            low, high = round(width * left / 100), width - round(width * right / 100)
+            if low >= high:
+                low, high = 0, width
+            x, w = _num(values.get("bbox_x")), _num(values.get("bbox_width"))
+            if x is not None and w is not None and not (x > low and x + w < high):
+                return False
+    if kind == "droplet" and frame is not None:
+        limit = int(read.get("frame_limit") or 0)
+        if limit:
+            kept = acc["frames_kept"]                     # the rows come frame by frame, in order
+            if int(frame) not in kept:
+                if len(kept) >= limit:
+                    return False
+                kept.append(int(frame))
+    return True
+
+
+def gate_crossings(per_droplet: dict[int, dict[str, list]], gate_x: float) -> list[float]:
+    """When each followed droplet passed the gate, in frames to a fraction, as the tracker counts them."""
+    crossings = []
+    for entry in per_droplet.values():
+        order = sorted(range(len(entry["f"])), key=lambda i: entry["f"][i])
+        previous: tuple[float, float] | None = None
+        for i in order:
+            frame, x = entry["f"][i], entry["x"][i]
+            if previous is not None and (previous[1] < gate_x) != (x < gate_x) and x != previous[1]:
+                crossings.append(frame - (x - gate_x) / (x - previous[1]) * (frame - previous[0]))
+            previous = (frame, x)
+    return sorted(crossings)
 
 
 def _reservoir(acc: dict[str, Any], point: tuple[float, float, float, float]) -> None:
@@ -275,6 +330,16 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
     generation = _as_dict(context.get("generation"))
     crossings = int(_num(generation.get("crossings")) or 0)
     period_frames = _num(generation.get("period_frames")) or 0.0
+    # Read with a window or a frame limit, the droplets are the ones kept, not the run's total.
+    filtered = any(acc["read"].get(key) for key in ("skip_left_pct", "skip_right_pct", "frame_limit"))
+    gate_pct = _num(acc["read"].get("gate_pct"))
+    if acc["width"] and gate_pct is not None and 0 < gate_pct < 100:
+        # The gate of the day, counted over the stored tracks: no new run for a moved gate.
+        passed = gate_crossings(acc["per_droplet"], acc["width"] * gate_pct / 100)
+        gaps = [b - a for a, b in zip(passed, passed[1:])]
+        crossings, period_frames = len(passed), (mean(gaps) if gaps else 0.0)
+        if generation.get("method") != "spacing":
+            generation = {**generation, "rate_hz": None}
     gate_rate = (fps / period_frames if fps and period_frames else
                  _num(generation.get("rate_hz")) or _num(meta.get("frequency_hz")) or _num(context.get("frequency_hz")))
     rate_note = ""
@@ -309,6 +374,7 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
         scale=scale,
         frames=len(acc["frames"]),
         droplets=(len(acc["loose_d"]) if acc["fixes"] else
+                  (len(acc["per_droplet"]) or len(acc["loose_d"])) if filtered else
                   int(_num(meta.get("total_droplets") or meta.get("droplet_count")) or 0)
                   or len(acc["per_droplet"]) or len(acc["loose_d"])),
         rate_hz=float(rate or 0.0),
@@ -324,7 +390,7 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
         detections=tuple((f, x, y, round(a * to_um * to_um, 2)) for f, x, y, a in points),
         timed_diameters=tuple(sorted(((f - arrivals[0]) / fps, d) for f, d in timed)) if arrivals and fps else (),
         spans=tuple(spans),
-        inclusion_counts=tuple(acc["inclusions"]),
+        inclusion_counts=() if acc["read"].get("detect_inclusions") is False else tuple(acc["inclusions"]),
     )
 
 

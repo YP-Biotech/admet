@@ -438,7 +438,11 @@ class DropletPipeline:
         else:
             frequency = 0.0
         true_stats, droplet_geometry = self._compute_true_statistics(tracks)
+        roi = self.config.get("video", {}).get("roi")
+        shape = self.video_reader.get_properties() if self.video_reader else {}
         return {
+            "frame_width": int(roi[2]) if roi else int(shape.get("width") or 0),      # as the rows measure, cropped
+            "frame_height": int(roi[3]) if roi else int(shape.get("height") or 0),
             "total_droplets": len(tracks),
             "total_detections": total_detections,
             "frames_processed": self.frame_count,

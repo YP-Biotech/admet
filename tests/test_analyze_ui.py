@@ -351,6 +351,40 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
 
 
+class StoredResultTests(unittest.TestCase):
+    def test_a_whole_run_serves_a_frame_limit_and_a_baked_window_does_not_serve(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            view = _make_view(store)
+            images = Path(tmp) / "imgs"
+            images.mkdir()
+            (images / "a.png").write_bytes(b"png")
+            video = Path(tmp) / "v.avi"
+            video.write_bytes(b"video")
+            folder = MatrixRow(uid=_uid(), source_path=str(images), engine="cellpose", sample_id="imgs",
+                               settings={"px_to_um": 1.0, "frame_limit": 3})
+            clip = MatrixRow(uid=_uid(), source_path=str(video), engine="opencv", sample_id="v",
+                             settings={"microns_per_pixel": 2.0, "fps": 100.0, "skip_left_pct": 10.0})
+            view.matrix = [folder, clip]
+            whole = store.result_dir(images, {**view._engine_settings(folder), "frame_limit": None})
+            whole.mkdir(parents=True)
+            (whole / "result.json").write_text(json.dumps({"analyzed_at": "2026-11-20T10:00:00+00:00"}))
+            (whole / "rows.jsonl").write_text("")
+            baked = store.result_dir(video, view._engine_settings(clip))
+            baked.mkdir(parents=True)
+            (baked / "result.json").write_text(json.dumps({"settings": {"skip_left_pct": 10.0}}))
+            (baked / "rows.jsonl").write_text("")
+
+            self.assertEqual(view._stored_result(folder).result_dir, whole)          # the limit is applied when read
+            self.assertIsNone(view._stored_result(clip))                              # made before: run again
+            (baked / "result.json").write_text(json.dumps({"settings": {"skip_left_pct": 10.0}, "window": "whole"}))
+            self.assertEqual(view._stored_result(clip).result_dir, baked)
+            self.assertEqual(view._read_settings(clip), {"skip_left_pct": 10.0, "skip_right_pct": 0.0, "gate_pct": 50.0})
+            self.assertEqual(view._read_settings(folder), {"frame_limit": 3, "detect_inclusions": True})
+
+
 class StopTests(unittest.TestCase):
     def test_stop_asks_the_run_in_hand_to_stop_now_and_only_works_while_running(self):
         from admet.workflows.analyze_runner import AnalysisStop

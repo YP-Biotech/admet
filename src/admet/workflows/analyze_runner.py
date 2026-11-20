@@ -169,8 +169,14 @@ class AnalyzeBatchRunner:
             result_dir = self.results_dir / key
             if cache_policy == "discard" and result_dir.exists():
                 shutil.rmtree(result_dir)
+            if cache_policy == "use" and engine_id == "cellpose" and action_settings.get("frame_limit") \
+                    and not _serves(result_dir, engine_id):
+                # A run over every frame serves a frame limit: the limit is applied when the rows are read.
+                whole = self.results_dir / content_key(source, {**action_settings, "frame_limit": None})
+                if _serves(whole, engine_id):
+                    result_dir = whole
             rows_path, result_path = result_dir / ROWS, result_dir / RESULT
-            if cache_policy == "use" and result_path.is_file() and rows_path.is_file():
+            if cache_policy == "use" and _serves(result_dir, engine_id):
                 metadata = dict(_read_json(result_path))
                 metadata["cached"] = True
                 result = RunResult(job_id=job_id, engine=engine_id, action="run_analysis", status="cached",
@@ -202,6 +208,18 @@ class AnalyzeBatchRunner:
         if on_progress is not None:
             on_progress(100.0)
         return AnalyzeBatchReport(jobs=tuple(reports))
+
+
+def _serves(result_dir: Path, engine_id: str) -> bool:
+    """Whether a results folder holds a finished result that can be read with today's settings."""
+    if not (result_dir / RESULT).is_file() or not (result_dir / ROWS).is_file():
+        return False
+    metadata = _read_json(result_dir / RESULT)
+    if engine_id == "opencv":
+        from admet.ui.analyze_results import stale_window
+
+        return not stale_window(metadata)
+    return True
 
 
 def _cache_policy(value: str) -> str:

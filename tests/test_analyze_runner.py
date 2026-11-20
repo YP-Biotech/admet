@@ -124,6 +124,51 @@ class AnalyzeBatchRunnerTests(unittest.TestCase):
         self.assertEqual(kept, 1)                                                      # nothing kept for a skip
 
 
+class ReadTimeCacheTests(unittest.TestCase):
+    def test_a_video_result_with_a_window_baked_in_is_run_again(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "a.avi"
+            source.write_bytes(b"video")
+            engine = FakeAnalyzeEngine("opencv")
+            runner = AnalyzeBatchRunner(_registry(engine), results_dir=root / "results")
+            target = AnalyzeTarget(source_path=source, engine="opencv", sample_id="a",
+                                   settings={"skip_left_pct": 10.0, "skip_right_pct": 0.0, "gate_pct": 50.0})
+
+            first = runner.run((target,))
+            summary = Path(first.jobs[0].result_dir) / "result.json"
+            stale = json.loads(summary.read_text())
+            stale.pop("window", None)                                                # as a result made before
+            summary.write_text(json.dumps(stale))
+            again = runner.run((target,))
+            moved = runner.run((AnalyzeTarget(source_path=source, engine="opencv", sample_id="a",
+                                              settings={"skip_left_pct": 25.0, "gate_pct": 70.0}),))
+
+            self.assertEqual([job.status for job in (*first.jobs, *again.jobs, *moved.jobs)],
+                             ["complete", "complete", "cached"])                    # stale: run again; then any window
+            self.assertEqual(len(engine.calls), 2)
+
+    def test_an_image_folder_run_over_every_frame_serves_a_frame_limit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            images = root / "imgs"
+            images.mkdir()
+            (images / "a.png").write_bytes(b"png")
+            engine = FakeImagingEngine()
+            registry = EngineRegistry()
+            registry.register("cellpose", lambda: engine)
+            runner = AnalyzeBatchRunner(registry, results_dir=root / "results")
+
+            whole = runner.run((AnalyzeTarget(source_path=images, engine="cellpose", sample_id="i",
+                                              settings={"frame_limit": None, "px_to_um": 1.0}),))
+            limited = runner.run((AnalyzeTarget(source_path=images, engine="cellpose", sample_id="i",
+                                                settings={"frame_limit": 2, "px_to_um": 1.0}),))
+
+            self.assertEqual([job.status for job in (*whole.jobs, *limited.jobs)], ["complete", "cached"])
+            self.assertEqual(limited.jobs[0].result_dir, whole.jobs[0].result_dir)
+            self.assertEqual(len(engine.calls), 1)
+
+
 class StopTests(unittest.TestCase):
     """Ctrl+C on the server: finish the file in hand, or stop now, and keep finished work."""
 
@@ -220,4 +265,20 @@ class FakeAnalyzeEngine:
         if job.progress is not None:
             job.progress(50, "half")
         return RunResult(job_id=job.id, engine=self.id, action=job.action, status="complete",
-                         metadata={"total_droplets": 1, "frames": 3})
+                         metadata={"total_droplets": 1, "frames": 3, "window": "whole"})   # as the video engine marks
+
+
+class FakeImagingEngine(FakeAnalyzeEngine):
+    settings = ParamSchema(
+        (
+            Param("input_dir", "Input Directory", ParamKind.PATH, default="", required=True),
+            Param("px_to_um", "Pixels To Microns", ParamKind.FLOAT, default=1.0),
+            Param("frame_limit", "Frame Limit", ParamKind.INTEGER, default=None),
+            Param("detect_inclusions", "Detect Inclusions", ParamKind.BOOLEAN, default=True),
+        )
+    )
+    actions = (ActionSpec("run_analysis", "Analyze", "analysis",
+                          params=("input_dir", "px_to_um", "frame_limit", "detect_inclusions")),)
+
+    def __init__(self):
+        super().__init__("cellpose")
