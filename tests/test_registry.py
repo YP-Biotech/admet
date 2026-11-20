@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from admet.core.registry import Registry, content_key, infer_engine
+from admet.core.registry import Registry, content_key, infer_engine, replicate_of
 from admet.core.runs import RunStore
 
 
@@ -86,22 +86,24 @@ class RegistryTests(unittest.TestCase):
 
             def at(run_id):
                 return f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]} {run_id[9:11]}:{run_id[11:13]}"
-            self.assertEqual([entry["sample_id"] for entry in added], ["cap", "Oil 3", "Oil 3"])   # the grouping
-            self.assertEqual([(entry["protocol"], entry["run_time"], entry["step"]) for entry in added],
-                             [("cap", at(by_hand.run_id), ""), ("Oil 3", at(run.run_id), "step 1"),
-                              ("Oil 3", at(run.run_id), "step 2")])                     # fields of their own
+            self.assertEqual([entry["sample_id"] for entry in added], ["", "", ""])      # nothing written over
+            self.assertEqual([(entry["protocol"], entry["run_time"], entry["replicate"]) for entry in added],
+                             [("cap", at(by_hand.run_id), None), ("Oil 3", at(run.run_id), 1),
+                              ("Oil 3", at(run.run_id), 2)])                            # fields of their own
             self.assertEqual({entry["run"] for entry in added}, {str(run.path.resolve()), str(by_hand.path.resolve())})
             self.assertTrue(all(entry["engine"] == "opencv" for entry in added))
             self.assertEqual(registry.scan(), [])                                     # nothing new the second time
             (run.path / "oil_3_step03_x.avi").write_bytes(b"new")
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n} for i, n in enumerate(
                 [*names, "oil_3_step03_x.avi"])]})
-            self.assertEqual([(e["sample_id"], e["step"]) for e in registry.scan()], [("Oil 3", "step 3")])
+            self.assertEqual([e["replicate"] for e in registry.scan()], [3])
             run.update(artifacts={"videos": [{"step": 1, "step_name": "set01_rep01", "video_path": "oil_3_r1.avi"},
                                              {"step": 2, "step_name": "set01_rep02", "video_path": "oil_3_r2.avi"}]})
             for video in ("oil_3_r1.avi", "oil_3_r2.avi"):
                 (run.path / video).write_bytes(b"v")
-            self.assertEqual([e["step"] for e in registry.scan()], ["set01_rep01", "set01_rep02"])   # a step's own name
+            self.assertEqual([e["replicate"] for e in registry.scan()], [1, 2])          # set01_rep02: the second
+            self.assertEqual(replicate_of({"step": 1, "step_name": "Record"}, 1), None)   # a lone video
+            self.assertEqual(replicate_of({"step": 2, "step_name": "collect"}, 3), 2)
 
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:

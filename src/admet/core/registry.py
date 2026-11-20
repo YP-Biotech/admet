@@ -134,16 +134,16 @@ class Registry:
 
     def add_source(self, path: str | Path, *, engine: str = "", sample_id: str = "", run: str | Path | None = None,
                    settings: dict[str, Any] | None = None, protocol: str = "", run_time: str = "",
-                   step: str = "") -> dict[str, Any] | None:
-        """Know a file; None when it was known already."""
+                   replicate: int | None = None) -> dict[str, Any] | None:
+        """Know a file; None when it was known already. SAMPLE_ID empty means the name is built."""
         source = Path(path).expanduser().resolve()
         record = self.read()
         if any(_canonical(entry.get("path")) == str(source) for entry in record["sources"] if isinstance(entry, dict)):
             return None
-        entry = {"path": str(source), "engine": engine or infer_engine(source), "sample_id": sample_id or source.stem,
+        entry = {"path": str(source), "engine": engine or infer_engine(source), "sample_id": sample_id,
                  "cache_policy": "use", "active": True, "settings": dict(settings or {}),
                  "run": str(Path(run).resolve()) if run else "", "protocol": protocol, "run_time": run_time,
-                 "step": step, "set": "", "added_at": _now()}
+                 "replicate": replicate, "set": "", "added_at": _now()}
         record["sources"].append(entry)
         self.write(record)
         return dict(entry)
@@ -199,11 +199,11 @@ class Registry:
                     path = run_dir / Path(str(video["video_path"])).name
                     if not path.is_file():
                         continue
-                    # The sample is the grouping, the user's to name: it starts as the run's tag or protocol.
-                    # The protocol, the run's time and the step are fields of their own.
-                    entry = self.add_source(path, engine="opencv", sample_id=protocol, run=run_dir,
+                    # The protocol, the run's time and the replicate are fields of their own; the sample name
+                    # is built from them and the file's set unless the user writes one over it.
+                    entry = self.add_source(path, engine="opencv", sample_id="", run=run_dir,
                                             protocol=protocol, run_time=run_time(run_dir),
-                                            step=step_label(video, len(videos)))
+                                            replicate=replicate_of(video, len(videos)))
                     if entry is not None:
                         added.append(entry)
         return added
@@ -232,13 +232,21 @@ def run_time(run_dir: str | Path) -> str:
     return ""
 
 
-def step_label(video: dict[str, Any], videos: int) -> str:
-    """The step a video is of, by its name when the protocol gave one, else by number; empty for a lone video."""
-    name = str(video.get("step_name") or "").strip()
-    if name:
-        return name
+REPLICATE = re.compile(r"rep(?:licate)?[ _-]*0*(\d+)", re.IGNORECASE)
+
+
+def replicate_of(video: dict[str, Any], videos: int) -> int | None:
+    """Which replicate of its run a video is: the number its step's name carries ("set01_rep02" is
+    the second; a protocol runs one set, its steps are replicates), else the step's number when the
+    run made several videos; None for a lone video."""
+    match = REPLICATE.search(str(video.get("step_name") or ""))
+    if match:
+        return int(match.group(1))
     step = video.get("step")
-    return f"step {step}" if step is not None and videos > 1 else ""
+    try:
+        return int(step) if step is not None and videos > 1 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _canonical(path: Any) -> str:

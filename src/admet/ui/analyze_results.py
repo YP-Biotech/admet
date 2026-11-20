@@ -33,7 +33,7 @@ class StoredResult:
     result_dir: Path
     metadata: dict[str, Any]           # result.json: the summary, when it was analysed, the settings it ran with
     run: str = ""                      # the run folder the source came from, if any
-    step: str = ""                     # the step of the run the source is of, if any
+    replicate: int | None = None       # which replicate of its run the source is, if any
     set: str = ""                      # the set the source is in, if any
 
     @property
@@ -79,7 +79,7 @@ class FileResult:
     droplets: int
     rate_hz: float
     speed_mm_s: float
-    step: str = ""                                         # the step of the run the file is of, if any
+    replicate: int | None = None                           # which replicate of its run the file is, if any
     set: str = ""                                          # the set the file is in, if any
     rate_note: str = ""                                    # how the rate was had, when not from the gate
     expected_hz: float = 0.0                               # from the dispersed flow and the droplet size
@@ -133,7 +133,7 @@ class FileResult:
 
 
 def load_stored_result(result_dir: Path, *, source_path: Path, engine: str, sample_id: str,
-                       run: str = "", step: str = "", group: str = "") -> StoredResult | None:
+                       run: str = "", replicate: int | None = None, group: str = "") -> StoredResult | None:
     """The stored analysis in a results folder, if the folder holds a finished one."""
     result_dir = Path(result_dir)
     if not (result_dir / "result.json").is_file() or not (result_dir / "rows.jsonl").is_file():
@@ -145,7 +145,7 @@ def load_stored_result(result_dir: Path, *, source_path: Path, engine: str, samp
     if not isinstance(metadata, dict):
         return None
     return StoredResult(source_path=Path(source_path), engine=engine, sample_id=sample_id, result_dir=result_dir,
-                        metadata=metadata, run=run, step=step, set=group)
+                        metadata=metadata, run=run, replicate=replicate, set=group)
 
 
 def stale_window(metadata: dict[str, Any]) -> bool:
@@ -383,7 +383,7 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
         run=stored.run_name,
         sample_id=stored.sample_id or str(job.get("sample_id") or key[1]),
         engine=engine,
-        step=stored.step,
+        replicate=stored.replicate,
         set=stored.set,
         source_path=acc["source"],
         file_id=key[1] if key[1] != "sample" else stored.file_id,
@@ -491,7 +491,7 @@ class LiveQC:
     run: str = ""                    # the run folder's name
     source_path: str = ""
     sample_id: str = ""              # the file's, given by the view
-    step: str = ""                   # the step of the run the file is of, given by the view
+    replicate: int | None = None     # which replicate of its run the file is, given by the view
     set: str = ""                    # the set the file is in, given by the view
     # Burst by burst: s since the first burst, droplets counted, rate /s, diameter, CV %.
     points: tuple[tuple[float, float, float, float, float], ...] = ()
@@ -665,8 +665,7 @@ def _names(results: list[Any]) -> dict[tuple[str, str, str, str], str]:
     names: dict[tuple[str, str, str, str], str] = {}
     taken: dict[str, int] = {}
     for result in results:
-        name = short[result.sample_id] + (f" {result.step}" if getattr(result, "step", "") else "") \
-            + (" live" if isinstance(result, LiveQC) else "")
+        name = short[result.sample_id] + (" live" if isinstance(result, LiveQC) else "")
         if name in taken.values() or name in taken:
             stamp = result.run[:15]
             if len(stamp) == 15 and stamp[8] == "_" and stamp[9:11].isdigit() and f"{stamp[9:11]}:{stamp[11:13]}" not in name:
@@ -1210,14 +1209,14 @@ def _summary_csv(results: list[FileResult], live: dict[tuple[str, str, str], Liv
     """One line per result; the live QC of the same video, when the rig measured one, in the last columns."""
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["run", "protocol", "time", "step", "sample", "set", "engine", "source", "analysed_at", "frames",
+    writer.writerow(["run", "protocol", "time", "replicate", "sample", "set", "engine", "source", "analysed_at", "frames",
                      "droplets", "inclusions",
                      "mean_diameter_um", "sd_diameter_um", "cv_percent", "mean_area_um2", "sd_area_um2",
                      "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings",
                      "live_rate_hz", "live_diameter", "live_diameter_unit", "live_cv_percent", "live_state"])
     for result in results:
         measured = (live or {}).get((result.run, result.engine, result.source_path))
-        writer.writerow([result.run, result.protocol, result.run_time, result.step, result.sample_id, result.set,
+        writer.writerow([result.run, result.protocol, result.run_time, result.replicate or "", result.sample_id, result.set,
                          result.engine, result.source_path, result.analyzed_at,
                          result.frames, result.droplets, result.inclusions,
                          _fmt(result.mean_diameter, 3), _fmt(result.std_diameter, 3), _fmt(result.cv_percent, 3),
