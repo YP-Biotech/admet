@@ -196,8 +196,13 @@ class Registry:
                     path = run_dir / Path(str(video["video_path"])).name
                     if not path.is_file():
                         continue
-                    step = video.get("step")
-                    sample = f"{name} step {step}" if step is not None and len(videos) > 1 else name
+                    step, step_name = video.get("step"), str(video.get("step_name") or "").strip()
+                    if step_name and len(videos) > 1:
+                        sample = f"{name} {step_name}"                      # "oil 19:30 set01_rep01": its replicate
+                    elif step is not None and len(videos) > 1:
+                        sample = f"{name} step {step}"
+                    else:
+                        sample = name
                     entry = self.add_source(path, engine="opencv", sample_id=sample, run=run_dir)
                     if entry is not None:
                         added.append(entry)
