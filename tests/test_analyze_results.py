@@ -29,8 +29,11 @@ from admet.ui.analyze_results import (
     histogram_edges,
     inclusions_chart,
     rate_time_chart,
+    RunPlot,
     result_charts,
     run_charts,
+    run_label,
+    runs_charts,
     results_table_html,
     scatter_chart,
     settings_summary,
@@ -378,7 +381,6 @@ class LiveQCTests(unittest.TestCase):
             self.assertIn("STABLE", cells["analysed"])
             self.assertIn(theme.QC_STATE_COLORS["STABLE"], cells["analysed"])
             self.assertIn("↳", cells["sample"])
-            self.assertIn("live-badge", cells["sample"])
             self.assertIn("oil", live_cells(live, "oil", "#000")["sample"])
             self.assertEqual((live.run, Path(live.source_path).name), (run.name, "oil_step01_x.avi"))
             self.assertEqual(live.points[0], (0.0, 1400.0, 1400.0, 124.0, 3.0))   # s from its first burst
@@ -454,6 +456,32 @@ class LiveQCTests(unittest.TestCase):
         self.assertEqual(charts["droplet_cv"]["series"][0]["markLine"]["data"], [{"yAxis": 5.0}])
         self.assertEqual(run_charts(Path(tmp) / "nowhere"), [])
 
+    def test_several_runs_overlay_each_in_its_colour_the_channels_by_pattern(self):
+        from admet.ui.series_style import series_styles
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = []
+            for name in ("20261119_100000_oil", "20261119_110000_water"):
+                run = Path(tmp) / name
+                run.mkdir()
+                _run_csv(run)
+                runs.append(run)
+            styles = series_styles(["oil", "water"])
+            plots = [RunPlot(str(runs[0]), run_label(runs[0]), styles["oil"].color, {"oil_step01_x": ("oil", styles["oil"])}),
+                     RunPlot(str(runs[1]), run_label(runs[1]), styles["water"].color,
+                             {"oil_step01_x": ("water", styles["water"])})]
+
+            charts = dict(runs_charts(plots))
+
+        self.assertEqual(run_label(runs[0]), "oil 10:00")
+        pressure = charts["pressure"]["series"]
+        self.assertEqual([s["name"] for s in pressure], ["oil 10:00 · Oil L", "water 11:00 · Oil L"])
+        self.assertEqual([s["lineStyle"]["color"] for s in pressure], [styles["oil"].color, styles["water"].color])
+        self.assertEqual(pressure[0]["lineStyle"]["type"], "solid")                      # the channel's pattern
+        self.assertNotIn("markArea", pressure[0])                                          # spans only for a lone run
+        self.assertEqual([s["name"] for s in charts["droplets"]["series"]],
+                         ["oil", "other_step02_x", "water", "other_step02_x"])
+
     def test_the_aggregated_line_sets_the_live_number_under_the_analysis(self):
         from admet.ui.series_style import series_styles
 
@@ -467,15 +495,13 @@ class LiveQCTests(unittest.TestCase):
 
         self.assertEqual(set(both), set(AGGREGATED_FIELDS))
         self.assertIn("124.0 ± 3.3", both["diameter"])
-        self.assertIn("124.0 um", both["diameter"])
-        self.assertIn("live-badge", both["diameter"])                                    # the live number, marked
-        self.assertIn("1420", both["rate"])
+        self.assertIn("124.0 um live", both["diameter"])
+        self.assertIn("1420 live", both["rate"])
         self.assertIn(style.color, both["sample"])
         self.assertIn("not analysed", alone["sample"])
         self.assertIn("results-off", alone["droplets"])
         self.assertIn("7 000", alone["droplets"])
         self.assertIn(theme.QC_STATE_COLORS["STABLE"], alone["analysed"])               # the state in its colour
-        self.assertNotIn("live-badge", aggregated_cells("oil", style, result, None)["sample"])
 
     def test_the_summary_csv_carries_the_live_columns(self):
         result = _result(run="oil", source_path="/v.avi")

@@ -319,7 +319,7 @@ class LiveRowTests(unittest.TestCase):
             aggregated = view._aggregated_rows()
             self.assertEqual(len(aggregated), 1)
             self.assertIn("7 000", aggregated[0]["droplets"])
-            self.assertEqual(view._view_counts(), {"aggregated": 1, "opencv": 0, "cellpose": 0, "live": 1})
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])             # no engine's section yet
             self.assertIn("not analysed", aggregated[0]["sample"])
             lives = view._lives()
             self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])
@@ -331,35 +331,37 @@ class LiveRowTests(unittest.TestCase):
             self.assertFalse(view._live_rows()[0]["active"])
             self.assertEqual(view._live_runs(), [])                                      # unticked: not in the live view
             view.matrix[0].active = True
-            self.assertEqual(view._live_runs(), [(view.matrix[0].run, run.run_id)])
+            self.assertEqual([folder for folder, _label in view._live_runs()], [view.matrix[0].run])
             view.matrix[0].run = ""
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
 
 
-class ResultsViewTests(unittest.TestCase):
-    def test_the_open_view_is_remembered_and_picks_the_rows_shown(self):
+class ResultsSectionTests(unittest.TestCase):
+    def test_every_ticked_run_is_drawn_on_the_live_plots_in_its_videos_colour(self):
         from tests.test_analyze_results import _run_csv
 
         with tempfile.TemporaryDirectory() as tmp:
-            store = Registry(Path(tmp) / "analyze")
             data = Path(tmp) / "data"
-            run, names = run_with_videos(data, "oil", videos=1)
-            _run_csv(run.path, Path(names[0]).stem)
-            view = _make_view(store)
+            first, names = run_with_videos(data, "oil", videos=1)
+            _run_csv(first.path, Path(names[0]).stem)
+            second, names = run_with_videos(data, "water", videos=2)
+            _run_csv(second.path, Path(names[0]).stem)
+            view = _make_view(Registry(Path(tmp) / "analyze"))
             view._add_root(data)
-            view.matrix.append(_row(engine="cellpose", sample="imgs"))
             view._notify = lambda *a, **k: None
 
-            self.assertEqual(view.results_view, "aggregated")
-            self.assertEqual(len(view._results_table_rows()), 1)                        # the video's aggregated line
-            view._set_results_view("live")
-            self.assertEqual(_make_view(store).results_view, "live")                     # remembered
-            self.assertEqual([row["uid"].endswith(":live") for row in view._results_table_rows()], [True])
-            view._set_results_view("opencv")
-            self.assertEqual(view._results_table_rows(), [])                             # no video analysed
-            view._set_results_view("nonsense")
-            self.assertEqual(view.results_view, "opencv")
-            self.assertIn(view.results_view, view._structure_signature())
+            plots = view._run_plots()
+
+            self.assertEqual([plot.run_dir for plot in plots], [str(first.path.resolve()), str(second.path.resolve())])
+            self.assertEqual([plot.label[:3] for plot in plots], ["oil", "wat"])
+            self.assertEqual(list(plots[1].files), [Path(names[0]).stem])               # the step the rig measured
+            self.assertNotEqual(plots[0].color, plots[1].color)
+            self.assertEqual(plots[1].files[Path(names[0]).stem][0], view.matrix[1].sample_id)
+            view.matrix[0].active = False
+            self.assertEqual([plot.label[:3] for plot in view._run_plots()], ["wat"])      # unticked: not drawn
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])
+            view.matrix.append(_row(engine="cellpose", sample="imgs"))
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])             # listed, not analysed
 
 
 if __name__ == "__main__":

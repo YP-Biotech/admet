@@ -9,7 +9,7 @@ import json
 import math
 import random
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, median, pstdev
@@ -450,9 +450,6 @@ def live_qc(run_dir: str | Path, video_path: str | Path) -> LiveQC | None:
     )
 
 
-LIVE_BADGE = '<span class="live-badge">live</span>'
-
-
 def state_html(state: str) -> str:
     """The rig's state of a recording in its colour: STABLE green, UNSTABLE red, SETTLING amber."""
     colour = theme.QC_STATE_COLORS.get(str(state).upper(), theme.PALETTE.text_muted)
@@ -472,7 +469,7 @@ def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True)
 
     swatch = f'<span class="swatch" style="background:{color}"></span>' if sample_id else "↳ "
     return {
-        "sample": cell(f'{swatch}{html.escape(sample_id)}{LIVE_BADGE}'
+        "sample": cell(f'{swatch}{html.escape(sample_id) if sample_id else "live"}'
                        f'<div class="sub">on the rig, {live.bursts} bursts</div>'),
         "droplets": cell(f'{live.count:,.0f}'.replace(",", " ") + '<div class="sub">counted live</div>'),
         "inclusions": cell("—"),
@@ -876,8 +873,8 @@ def has_inclusions(results: list[FileResult]) -> bool:
     return any(result.inclusion_counts for result in results)
 
 
-RESULT_VIEWS = (("aggregated", "Aggregated"), ("opencv", "OpenCV"), ("cellpose", "Cellpose"),
-                ("live", "Live QC + Fluidics"))
+RESULT_SECTIONS = (("aggregated", "Aggregated"), ("opencv", "OpenCV"), ("cellpose", "Cellpose"),
+                   ("live", "Live QC + Fluidics"))
 _CHARTS = {
     "diameter_distribution": diameter_chart, "cv_per_sample": cv_chart, "droplet_timeline": timeline_chart,
     "diameter_over_time": diameter_time_chart, "rate_over_time": rate_time_chart,
@@ -897,12 +894,12 @@ _VIEW_CHARTS = {
 
 def result_charts(results: list[FileResult], lives: Sequence[LiveQC] = (), *, view: str = "all",
                   listed: Sequence[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
-    """The plots of a Results view, named for export: only those the ticked files have data for.
+    """The plots of a Results section, named for export: only those the ticked files have data for.
 
     aggregated sets every file side by side, one number each, the rig's live number beside the
     analysis's; opencv has the video analyses' distributions and time series; cellpose the image
-    folders' diameters and inclusions. The live view is per run: see run_charts. A plot with nothing
-    to show is not shown.
+    folders' diameters and inclusions. The live section is per run: see runs_charts. A plot with
+    nothing to show is not shown.
     """
     if view == "opencv":
         results, lives = [r for r in results if r.engine == "opencv"], ()
@@ -919,81 +916,110 @@ def result_charts(results: list[FileResult], lives: Sequence[LiveQC] = (), *, vi
 CHANNEL_DASHES: tuple[Any, ...] = ("solid", "dashed", [12, 4, 3, 4])     # Oil L, Cells M, Beads M, as on the rig's plots
 
 
-def run_charts(run_dir: str | Path, files: dict[str, tuple[str, SeriesStyle]] | None = None
-               ) -> list[tuple[str, dict[str, Any]]]:
-    """A run's timeline as the rig's Review stage shows it: pressure and flow per channel, then the
-    droplet rate and CV of each recording, on one clock from the run's first reading. FILES names and
-    styles the recordings by their id; the recordings' spans are shaded on the readings.
+@dataclass(frozen=True)
+class RunPlot:
+    """One run to draw on the live plots: its folder, its name, its colour, and its recordings by id,
+    each with its sample's name and style."""
+    run_dir: str
+    label: str = ""
+    color: str = ""
+    files: dict[str, tuple[str, SeriesStyle]] = field(default_factory=dict)
+
+
+def run_label(run_dir: str | Path) -> str:
+    """A run folder's name as the screen says it: the name with the run's time, "dropseq_1n 16:43"."""
+    name = Path(run_dir).name
+    stamp, _sep, rest = name.partition("_")
+    if len(name) > 15 and name[8] == "_" and name[:8].isdigit() and name[9:15].isdigit():
+        return f"{name[16:]} {name[9:11]}:{name[11:13]}"
+    return name
+
+
+def run_charts(run_dir: str | Path, files: dict[str, tuple[str, SeriesStyle]] | None = None, *,
+               label: str = "", color: str = "") -> list[tuple[str, dict[str, Any]]]:
+    return runs_charts([RunPlot(str(run_dir), label or run_label(run_dir), color or chart_color(0), dict(files or {}))])
+
+
+def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
+    """The ticked runs' timelines as the rig's Review stage shows them: pressure and flow per channel,
+    then the droplet rate and CV of each recording, every run on its own clock from its first reading.
+    A run is a colour, a channel a line pattern; a lone run has its recordings' spans shaded on the
+    readings and its steps marked.
     """
     from admet.core.runs import Run
     from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics_csv, read_qc_csv, step_markers
 
-    path = Path(run_dir) / "run.csv"
-    if not path.is_file():
-        return []
-    try:
-        t, pressures, flows = read_fluidics_csv(path)
-        qc = read_qc_csv(path)
-    except (OSError, ValueError):
-        return []
-    files = files or {}
-    origin = float(t[0]) if len(t) else (float(qc.t[0]) if qc is not None and len(qc.t) else 0.0)
-    record = Run(run_dir).read()
-    polling = record.get("artifacts", {}).get("polling_origin_monotonic")
-    events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
-    marks = [{"xAxis": round(at - origin, 2), "name": label,
-              "lineStyle": {"color": theme.PALETTE.success_hover if kind == "start" else theme.PALETTE.text_muted,
-                            "type": "dashed", "width": 1},
-              "label": {"formatter": label, "position": "insideEndTop", "fontSize": 9}}
-             for at, label, kind in step_markers(events, polling or 0.0) if events]
-    spans = []
-    if qc is not None:
-        for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
-            recording = qc.recording[chunk[0]]
-            name = files.get(recording, (recording, None))[0]
-            spans.append([{"name": name, "xAxis": round(float(qc.t[chunk[0]]) - origin, 2),
-                           "label": {"fontSize": 9, "position": "insideTop"}},
-                          {"xAxis": round(float(qc.t[chunk[-1]]) - origin, 2)}])
     xname = "s since the run began"
-    charts = []
-    for key, title, unit, readings in (("pressure", "Pressure (mbar)", "mbar", pressures),
-                                       ("flow", "Flow (µL/min)", "µL/min", flows)):
-        series = []
-        for channel, values in enumerate(readings):
-            points = _thin([[round(float(a) - origin, 3), round(float(b), 3)] for a, b in zip(t, values)
-                            if math.isfinite(b)], 2000)
-            if points:
+    readings: dict[str, list[dict[str, Any]]] = {"pressure": [], "flow": []}
+    rate_series: list[dict[str, Any]] = []
+    cv_series: list[dict[str, Any]] = []
+    for run in runs:
+        path = Path(run.run_dir) / "run.csv"
+        if not path.is_file():
+            continue
+        try:
+            t, pressures, flows = read_fluidics_csv(path)
+            qc = read_qc_csv(path)
+        except (OSError, ValueError):
+            continue
+        origin = float(t[0]) if len(t) else (float(qc.t[0]) if qc is not None and len(qc.t) else 0.0)
+        spans, marks = [], []
+        if len(runs) == 1:
+            record = Run(run.run_dir).read()
+            polling = record.get("artifacts", {}).get("polling_origin_monotonic")
+            events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
+            marks = [{"xAxis": round(at - origin, 2), "name": label,
+                      "lineStyle": {"color": theme.PALETTE.success_hover if kind == "start" else theme.PALETTE.text_muted,
+                                    "type": "dashed", "width": 1},
+                      "label": {"formatter": label, "position": "insideEndTop", "fontSize": 9}}
+                     for at, label, kind in step_markers(events, polling or 0.0) if events]
+            if qc is not None:
+                for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
+                    recording = qc.recording[chunk[0]]
+                    spans.append([{"name": run.files.get(recording, (recording, None))[0],
+                                   "xAxis": round(float(qc.t[chunk[0]]) - origin, 2),
+                                   "label": {"fontSize": 9, "position": "insideTop"}},
+                                  {"xAxis": round(float(qc.t[chunk[-1]]) - origin, 2)}])
+        for key, values_by_channel in (("pressure", pressures), ("flow", flows)):
+            first = True
+            for channel, values in enumerate(values_by_channel):
+                points = _thin([[round(float(a) - origin, 3), round(float(b), 3)] for a, b in zip(t, values)
+                                if math.isfinite(b)], 2000)
+                if not points:
+                    continue
                 label = FLUIDIC_CHANNEL_LABELS[channel] if channel < len(FLUIDIC_CHANNEL_LABELS) else f"channel {channel}"
-                series.append({"name": label, "type": "line", "showSymbol": False, "silent": True, "data": points,
-                               "lineStyle": {"color": chart_color(channel), "width": 1.5,
-                                             "type": CHANNEL_DASHES[channel % len(CHANNEL_DASHES)]},
-                               "itemStyle": {"color": chart_color(channel)}})
-        if series:
-            series[0]["markArea"] = {"silent": True, "itemStyle": {"color": "rgba(34,93,130,0.08)"}, "data": spans}
-            if key == "flow" and marks:
-                series[0]["markLine"] = {"silent": True, "symbol": "none", "data": marks}
-        charts.append((key, _time_chart(title, unit, series, xname=xname)))
-    rate_series, cv_series = [], []
-    if qc is not None:
-        for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
-            recording = qc.recording[chunk[0]]
-            name, style = files.get(recording, (recording, None))
-            style = style or series_styles([name])[name]
-            times = [round(float(value) - origin, 3) for value in qc.t[chunk]]
-            rate = [[at, round(float(v), 1)] for at, v in zip(times, qc.rate[chunk]) if math.isfinite(v) and v > 0]
-            cv = [[at, round(float(v), 2)] for at, v in zip(times, qc.cv[chunk]) if math.isfinite(v) and v > 0]
-            if rate:
-                rate_series.append(_line(name, rate, style))
-            if cv:
-                cv_series.append(_line(name, cv, style))
-    limit = {"markLine": {"silent": True, "symbol": "none",
-                          "lineStyle": {"color": theme.PALETTE.danger_hover, "type": "dashed", "width": 1},
-                          "label": {"formatter": f"{QC_LIMIT_PERCENT:g} %", "fontSize": 9},
-                          "data": [{"yAxis": QC_LIMIT_PERCENT}]}}
+                series = {"name": f"{run.label} · {label}" if len(runs) > 1 else label, "type": "line",
+                          "showSymbol": False, "silent": True, "data": points,
+                          "lineStyle": {"color": run.color, "width": 1.5,
+                                        "type": CHANNEL_DASHES[channel % len(CHANNEL_DASHES)]},
+                          "itemStyle": {"color": run.color}}
+                if first and spans:
+                    series["markArea"] = {"silent": True, "itemStyle": {"color": "rgba(34,93,130,0.08)"}, "data": spans}
+                if first and key == "flow" and marks:
+                    series["markLine"] = {"silent": True, "symbol": "none", "data": marks}
+                first = False
+                readings[key].append(series)
+        if qc is not None:
+            for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
+                recording = qc.recording[chunk[0]]
+                name, style = run.files.get(recording, (recording, None))
+                style = style or series_styles([name])[name]
+                times = [round(float(value) - origin, 3) for value in qc.t[chunk]]
+                rate = [[at, round(float(v), 1)] for at, v in zip(times, qc.rate[chunk]) if math.isfinite(v) and v > 0]
+                cv = [[at, round(float(v), 2)] for at, v in zip(times, qc.cv[chunk]) if math.isfinite(v) and v > 0]
+                if rate:
+                    rate_series.append(_line(name, rate, style))
+                if cv:
+                    cv_series.append(_line(name, cv, style))
     if cv_series:
-        cv_series[0].update(limit)
-    charts.append(("droplets", _time_chart("Droplets (/s)", "/s", rate_series, xname=xname)))
-    charts.append(("droplet_cv", _time_chart("Droplet CV (%)", "%", cv_series, xname=xname)))
+        cv_series[0]["markLine"] = {"silent": True, "symbol": "none",
+                                    "lineStyle": {"color": theme.PALETTE.danger_hover, "type": "dashed", "width": 1},
+                                    "label": {"formatter": f"{QC_LIMIT_PERCENT:g} %", "fontSize": 9},
+                                    "data": [{"yAxis": QC_LIMIT_PERCENT}]}
+    charts = [("pressure", _time_chart("Pressure (mbar)", "mbar", readings["pressure"], xname=xname)),
+              ("flow", _time_chart("Flow (µL/min)", "µL/min", readings["flow"], xname=xname)),
+              ("droplets", _time_chart("Droplets (/s)", "/s", rate_series, xname=xname)),
+              ("droplet_cv", _time_chart("Droplet CV (%)", "%", cv_series, xname=xname))]
     ends = [point[0] for _name, chart in charts for series in chart["series"] for point in series["data"]]
     for _name, chart in charts:                                   # the four on one clock, as linked plots
         chart["xAxis"].update({"min": 0, "max": math.ceil(max(ends)) if ends else 1})
@@ -1022,19 +1048,17 @@ def aggregated_cells(name: str, style: SeriesStyle | None, result: FileResult | 
 
     unit = live.diameter_unit if live is not None else "um"
     return {
-        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}'
-                       + (LIVE_BADGE if live is not None else ""),
+        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}',
                        html.escape(result.engine if result is not None else "not analysed")),
         "droplets": cell(f"{result.droplets}" if result is not None else "—",
-                         f"{live.count:,.0f}".replace(",", " ") + LIVE_BADGE if live is not None else ""),
+                         f"{live.count:,.0f} live".replace(",", " ") if live is not None else ""),
         "diameter": cell(f"{result.mean_diameter:.1f} ± {result.std_diameter:.1f}"
                          if result is not None and result.diameters else "—",
-                         f"{live.diameter:.1f} {html.escape(unit)}" + LIVE_BADGE if live is not None and live.diameter
-                         else ""),
+                         f"{live.diameter:.1f} {html.escape(unit)} live" if live is not None and live.diameter else ""),
         "cv": cell(f"{result.cv_percent:.1f}" if result is not None and result.diameters else "—",
-                   f"{live.cv_percent:.1f}" + LIVE_BADGE if live is not None and live.cv_percent else ""),
+                   f"{live.cv_percent:.1f} live" if live is not None and live.cv_percent else ""),
         "rate": cell(f"{result.rate_hz:.0f}" if result is not None and result.rate_hz else "—",
-                     f"{live.rate_hz:.0f}" + LIVE_BADGE if live is not None and live.rate_hz else ""),
+                     f"{live.rate_hz:.0f} live" if live is not None and live.rate_hz else ""),
         "analysed": cell(html.escape(result.analyzed_at or "earlier") if result is not None else "—",
                          f"{state_html(live.state)} while recording" if live is not None else ""),
     }

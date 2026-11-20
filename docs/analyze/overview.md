@@ -106,20 +106,23 @@ the stored rows stay as found, and *Clear corrections* drops them.
 
 ## Results
 
-The stage has four views, tabs above the table; the one open is remembered.
+The stage is one page. The table in the Action Panel is the **Aggregated** one:
+one line per file with droplets, diameter, CV and rate, the rig's live number
+under the analysis's. Below it come the sections that have data, each with its
+own table and plots:
 
-- **Aggregated** sets every file side by side: one line per file with droplets,
-  diameter, CV and rate, the rig's live number under the analysis's, and three
-  bar plots, diameter, CV and rate per sample, a hatched bar for the live value.
-- **OpenCV** is the video analyses: one row per analysed video with each number's
-  small histogram, and the diameter distribution, droplets, diameter and rate over
-  time, positions and area along the channel.
-- **Cellpose** is the image folders: their rows, the diameter distribution and the
+- **Aggregated** plots: diameter, CV and rate per sample as bars, a hatched bar
+  for the live value beside the analysed one.
+- **OpenCV**: one row per analysed video with each number's small histogram, and
+  the diameter distribution, droplets, diameter and rate over time, positions and
+  area along the channel.
+- **Cellpose**: the image folders' rows, the diameter distribution and the
   inclusions per droplet.
-- **Live QC + Fluidics** is one run at a time, as the control app's Review stage
-  shows it: pressure and flow per channel on the run's clock with each recording's
-  span shaded and the steps marked, then the droplet rate and CV the rig measured
-  during each recording. A table above lists every video's live line.
+- **Live QC + Fluidics**: every video's live line, the state in the rig's colour,
+  and the four plots of the control app's Review stage: pressure and flow per
+  channel, droplet rate and CV, with every ticked run drawn on its own clock, a
+  colour per run and a line pattern per channel. A lone run has its recordings'
+  spans shaded and its steps marked.
 
 Every series has a colour and pattern of its own. Files whose sample names end in
 a replicate marker (`oil rep 2`, `oil_rep02`, `oil r2`, `oil #2`, `oil step 2`) are
@@ -127,8 +130,8 @@ replicates of one group and wear shades of one hue; a run's step videos are name
 by their steps (`dropseq_3n 19:30 set01_rep01`), so a protocol's replicates come
 out as such. Rename the samples on 1. Files to group them as you see fit.
 **Export CSV** downloads a zip with a summary (the live numbers in its last
-columns) and every droplet row per file; **Export plots** downloads the open
-view's plots as PNG.
+columns) and every droplet row per file; **Export plots** downloads every
+plot on the page as PNG.
 
 ## Where results go
 
