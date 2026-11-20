@@ -104,13 +104,18 @@ the stored rows stay as found, and *Clear corrections* drops them.
 
 The table has one row per ticked file: droplets, diameter, area, CV, generation
 rate and speed, each with a small histogram of its distribution (one value per
-droplet), and when the file was analysed with which settings. The plots show the
-diameter distribution, the droplet timeline, positions and area along the channel,
-with the files overlaid. **Export CSV** downloads a zip with a summary and every
-droplet row per file; **Export plots** downloads the plots as PNG.
+droplet), and when the file was analysed with which settings. A video that came
+from a run gets a second line, **live**: the rate, size and CV the rig measured
+while recording it, from the run's timeline, with how many droplets it counted and
+the state it ended in. It is there before the analysis runs, so the rig's numbers
+and the analysis can be set against each other. The plots show the diameter
+distribution, the droplet timeline, positions and area along the channel, with the
+files overlaid. **Export CSV** downloads a zip with a summary (the live numbers in
+its last columns) and every droplet row per file; **Export plots** downloads the
+plots as PNG.
 
 ## Where results go
 
-- `analysis/` inside the project: what was analysed, with which settings, and the
-  raw results.
-- `~/.admet-cache/` on the analysis machine: intermediate files such as contours.
+- `analyze/results/<key>/` in the home: one folder per file and detection settings,
+  with the detections (`rows.jsonl`) and the summary (`result.json`).
+- `analyze/registry.json`: the folders watched and the file list as left.

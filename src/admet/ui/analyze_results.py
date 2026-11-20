@@ -380,6 +380,78 @@ def spark(values, width: int = 72, height: int = 16, bins: int = 24) -> str:
     return f'<svg class="spark" width="{width}" height="{height}">{rects}</svg>'
 
 
+@dataclass(frozen=True)
+class LiveQC:
+    """What the rig measured while a video was recorded: the QC rows of its run's timeline for that video."""
+
+    rate_hz: float                   # the median over the bursts
+    rate_half: float                 # the last burst's half interval
+    diameter: float
+    diameter_half: float
+    diameter_unit: str
+    cv_percent: float                # the last burst's, the one over the whole recording
+    cv_half: float
+    count: float                     # droplets made, as counted live
+    bursts: int
+    state: str
+
+
+def live_qc(run_dir: str | Path, video_path: str | Path) -> LiveQC | None:
+    """The live QC of one video, from the rows of its run's timeline that carry its recording id."""
+    path = Path(run_dir) / "run.csv"
+    stem = Path(video_path).stem
+    if not path.is_file():
+        return None
+    rows = []
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if str(row.get("state") or "") and str(row.get("recording_id") or "") == stem:
+                    rows.append(row)
+    except OSError:
+        return None
+    if not rows:
+        return None
+    last = rows[-1]
+    rates = [value for value in (_num(row.get("rate_hz")) for row in rows) if value]
+    diameters = [value for value in (_num(row.get("diameter")) for row in rows) if value]
+    counts = [value for value in (_num(row.get("count")) for row in rows) if value is not None]
+    return LiveQC(
+        rate_hz=float(median(rates)) if rates else 0.0, rate_half=_num(last.get("rate_half")) or 0.0,
+        diameter=float(median(diameters)) if diameters else 0.0, diameter_half=_num(last.get("diameter_half")) or 0.0,
+        diameter_unit=str(last.get("diameter_unit") or "px"),
+        cv_percent=_num(last.get("cv_percent")) or 0.0, cv_half=_num(last.get("cv_half")) or 0.0,
+        count=max(counts) if counts else 0.0, bursts=len(rows), state=str(last.get("state") or ""),
+    )
+
+
+def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True) -> dict[str, str]:
+    """The live QC as a row of the results table, under the analysis of the same video."""
+    off = "" if active else " results-off"
+
+    def cell(inner: str) -> str:
+        return f'<div class="results-cell results-live{off}">{inner}</div>'
+
+    def pm(value: float, half: float, digits: int) -> str:
+        text = f"{value:.{digits}f}" + (f" ± {half:.{digits}f}" if half else "")
+        return f'<span class="n">{text}</span>'
+
+    swatch = f'<span class="swatch" style="background:{color}"></span>' if sample_id else "↳ "
+    return {
+        "sample": cell(f'{swatch}{html.escape(sample_id) if sample_id else "live"}'
+                       f'<div class="sub">on the rig, {live.bursts} bursts</div>'),
+        "droplets": cell(f'{live.count:,.0f}'.replace(",", " ") + '<div class="sub">counted live</div>'),
+        "inclusions": cell("—"),
+        "diameter": cell(pm(live.diameter, live.diameter_half, 1) + f'<div class="sub">{html.escape(live.diameter_unit)}</div>'
+                         if live.diameter else "—"),
+        "area": cell("—"),
+        "cv": cell(pm(live.cv_percent, live.cv_half, 1) if live.cv_percent else "—"),
+        "rate": cell(pm(live.rate_hz, live.rate_half, 0) if live.rate_hz else "—"),
+        "speed": cell("—"),
+        "analysed": cell(f'{html.escape(live.state)}<div class="sub">while recording</div>'),
+    }
+
+
 RESULT_FIELDS = ("sample", "droplets", "inclusions", "diameter", "area", "cv", "rate", "speed", "analysed")
 RESULT_LABELS = {"sample": "Sample", "droplets": "Droplets", "inclusions": "Inclusions", "diameter": "Diameter, µm",
                  "area": "Area, µm²", "cv": "CV, %", "rate": "Rate, /s", "speed": "Speed, mm/s",
@@ -668,14 +740,15 @@ def _empty_chart(title: str) -> dict[str, Any]:
 # -- export ----------------------------------------------------------------------------
 
 def export_csv_zip(stored: list[StoredResult], results: list[FileResult],
-                   corrections: dict[tuple[str, str], dict[str, Any]] | None = None) -> bytes:
+                   corrections: dict[tuple[str, str], dict[str, Any]] | None = None,
+                   live: dict[tuple[str, str, str], LiveQC] | None = None) -> bytes:
     """A zip: summary.csv over the results, and every droplet row of each file as its own CSV.
 
     Imaging droplets switched off by hand are left out; corrected inclusion counts are written
     with the raw count beside them.
     """
     wanted = {(result.run, result.engine, result.source_path): result.sample_id for result in results}
-    files: dict[str, bytes] = {"summary.csv": _summary_csv(results)}
+    files: dict[str, bytes] = {"summary.csv": _summary_csv(results, live)}
     for item in stored:
         source = str(item.source_path)
         sample_id = wanted.get((item.run_name, item.engine, source))
@@ -696,20 +769,25 @@ def zip_bytes(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _summary_csv(results: list[FileResult]) -> bytes:
+def _summary_csv(results: list[FileResult], live: dict[tuple[str, str, str], LiveQC] | None = None) -> bytes:
+    """One line per result; the live QC of the same video, when the rig measured one, in the last columns."""
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["run", "sample", "engine", "source", "analysed_at", "frames", "droplets", "inclusions",
                      "mean_diameter_um", "sd_diameter_um", "cv_percent", "mean_area_um2", "sd_area_um2",
-                     "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings"])
+                     "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings",
+                     "live_rate_hz", "live_diameter", "live_diameter_unit", "live_cv_percent", "live_state"])
     for result in results:
+        measured = (live or {}).get((result.run, result.engine, result.source_path))
         writer.writerow([result.run, result.sample_id, result.engine, result.source_path, result.analyzed_at,
                          result.frames, result.droplets, result.inclusions,
                          _fmt(result.mean_diameter, 3), _fmt(result.std_diameter, 3), _fmt(result.cv_percent, 3),
                          _fmt(result.mean_area, 2), _fmt(result.std_area, 2), _fmt(result.rate_hz, 3),
                          _fmt(result.expected_hz, 1), _fmt(result.dispersed_ul_min, 2),
                          _fmt(result.speed_mm_s, 3), _fmt(result.fps, 3), _fmt(result.scale, 4),
-                         settings_summary(result.settings)])
+                         settings_summary(result.settings),
+                         *((_fmt(measured.rate_hz, 3), _fmt(measured.diameter, 1), measured.diameter_unit,
+                            _fmt(measured.cv_percent, 1), measured.state) if measured else ("", "", "", "", ""))])
     return out.getvalue().encode("utf-8")
 
 

@@ -9,7 +9,10 @@ from pathlib import Path
 
 from admet.ui.analyze_results import (
     FileResult,
+    LiveQC,
     StoredResult,
+    live_cells,
+    live_qc,
     results_cells,
     expected_rate_hz,
     dispersed_flow_ul_min,
@@ -313,6 +316,65 @@ class ExportTests(unittest.TestCase):
 
             lines = archive.read("droplets/study_imgs_cellpose.csv").decode().splitlines()
             self.assertEqual(lines, ["kind,frame,droplet_id,inclusions,inclusions_raw", "droplet,1,1,2,1"])
+
+
+def _run_csv(directory: Path, stem: str = "oil_step01_x") -> Path:
+    """A run's timeline with readings and the live QC rows of two recordings."""
+    import csv
+
+    columns = ["timestamp", "elapsed_s", "pressure_0_mbar", "flow_0_ul_min", "recording_id", "step", "part", "rate_hz",
+               "rate_half", "count", "diameter", "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n",
+               "bursts", "speed_px_frame", "spacing_px", "state"]
+    rows = [["10:00:00.000", "0.000", "1300", "300", *[""] * 16]]
+    for k in range(5):
+        rows.append([f"10:00:0{k + 1}.100", f"{k + 1}.100", "", "", stem, "1", "1", str(1400 + 10 * k), "20",
+                     str(1400 * (k + 1)), "124.0", "um", "0.5", f"{3.0 + 0.1 * k:.1f}", "0.3", "200", str(k + 1),
+                     "48", "128", "SETTLING" if k < 2 else "STABLE"])
+    rows.append(["10:00:07.100", "7.100", "", "", "other_step02_x", "2", "1", "900", "20", "900", "100.0", "um",
+                 "0.5", "6.0", "0.3", "200", "1", "48", "128", "UNSTABLE"])
+    path = Path(directory) / "run.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        writer.writerows(rows)
+    return path
+
+
+class LiveQCTests(unittest.TestCase):
+    def test_the_live_qc_of_a_video_comes_from_its_own_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "20261119_100000_oil"
+            run.mkdir()
+            _run_csv(run)
+
+            live = live_qc(run, run / "oil_step01_x.avi")
+
+            self.assertEqual((live.bursts, live.state, live.diameter_unit), (5, "STABLE", "um"))
+            self.assertEqual(live.rate_hz, 1420.0)                                   # the median over the bursts
+            self.assertEqual((live.count, live.diameter), (7000.0, 124.0))
+            self.assertAlmostEqual(live.cv_percent, 3.4)                             # the last, over the whole recording
+            self.assertIsNone(live_qc(run, run / "unknown.avi"))
+            self.assertIsNone(live_qc(Path(tmp) / "nowhere", run / "oil_step01_x.avi"))
+            cells = live_cells(live, "", "#000")
+            self.assertEqual(set(cells), set(results_cells(_result(), "#000")))
+            self.assertIn("1420", cells["rate"])
+            self.assertIn("124.0 ± 0.5", cells["diameter"])
+            self.assertIn("STABLE", cells["analysed"])
+            self.assertIn("↳", cells["sample"])
+            self.assertIn("oil", live_cells(live, "oil", "#000")["sample"])
+
+    def test_the_summary_csv_carries_the_live_columns(self):
+        result = _result(run="oil", source_path="/v.avi")
+        live = LiveQC(rate_hz=1420.0, rate_half=20.0, diameter=124.0, diameter_half=0.5, diameter_unit="um",
+                      cv_percent=3.4, cv_half=0.3, count=7000.0, bursts=5, state="STABLE")
+
+        archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([], [result], live={("oil", "opencv", "/v.avi"): live})))
+
+        header, line = archive.read("summary.csv").decode().splitlines()[:2]
+        self.assertTrue(header.endswith("live_rate_hz,live_diameter,live_diameter_unit,live_cv_percent,live_state"))
+        self.assertTrue(line.endswith("1420,124,um,3.4,STABLE"))
+        plain = zipfile.ZipFile(io.BytesIO(export_csv_zip([], [result]))).read("summary.csv").decode().splitlines()[1]
+        self.assertTrue(plain.endswith(",,,,"))
 
 
 if __name__ == "__main__":
