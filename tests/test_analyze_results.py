@@ -10,8 +10,10 @@ from pathlib import Path
 
 from admet.ui.analyze_results import (
     FileResult,
+    AGGREGATED_FIELDS,
     LiveQC,
     StoredResult,
+    aggregated_cells,
     live_cells,
     live_qc,
     results_cells,
@@ -27,6 +29,7 @@ from admet.ui.analyze_results import (
     inclusions_chart,
     rate_time_chart,
     result_charts,
+    run_charts,
     results_table_html,
     scatter_chart,
     settings_summary,
@@ -210,7 +213,7 @@ class ChartTests(unittest.TestCase):
         self.assertGreaterEqual(len(labels), 8)
 
     def test_diameter_chart_colours_each_file(self):
-        chart = diameter_chart([_result(sample_id="a", diameters=(10.0, 11.0, 12.0)),
+        chart = diameter_chart([_result(sample_id="a", source_path="/a.avi", diameters=(10.0, 11.0, 12.0)),
                                 _result(sample_id="b", diameters=(20.0, 21.0, 22.0))])
 
         self.assertEqual([series["name"] for series in chart["series"]], ["a", "b"])
@@ -218,8 +221,9 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(sum(chart["series"][0]["data"]), 3)
 
     def test_cv_chart_has_one_bar_per_sample_in_its_colour(self):
-        chart = cv_chart([_result(sample_id="a", diameters=(10.0, 10.0, 12.0)),
-                          _result(sample_id="b", diameters=(20.0, 20.0)), _result(sample_id="none")])
+        chart = cv_chart([_result(sample_id="a", source_path="/a.avi", diameters=(10.0, 10.0, 12.0)),
+                          _result(sample_id="b", source_path="/b.avi", diameters=(20.0, 20.0)),
+                          _result(sample_id="none", source_path="/n.avi")])
 
         self.assertEqual(chart["xAxis"]["data"], ["a", "b"])
         values = [point["value"] for point in chart["series"][0]["data"]]
@@ -267,8 +271,8 @@ class ChartTests(unittest.TestCase):
         whole = ["dropseq_1n 16:43", "dropseq_3n 19:30 step 1"]                   # too short to cut at a word: kept whole
         self.assertEqual(short_names(whole), {name: name for name in whole})
         self.assertEqual(short_names(["only"]), {"only": "only"})
-        chart = cv_chart([_result(sample_id=names[0], diameters=(1.0, 2.0)),
-                          _result(sample_id=names[1], diameters=(1.0, 2.0))])
+        chart = cv_chart([_result(sample_id=names[0], source_path="/1.avi", diameters=(1.0, 2.0)),
+                          _result(sample_id=names[1], source_path="/2.avi", diameters=(1.0, 2.0))])
         self.assertEqual(chart["xAxis"]["data"], ["step01_20261113_183825", "step02_20261113_184149"])
 
     def test_the_rate_falls_back_to_arrivals_when_the_gate_saw_few_droplets(self):
@@ -383,7 +387,8 @@ class LiveQCTests(unittest.TestCase):
             run.mkdir()
             _run_csv(run)
             live = replace(live_qc(run, run / "oil_step01_x.avi"), sample_id="oil")
-        result = _result(sample_id="oil", run=run.name, diameters=(120.0, 124.0, 128.0), arrivals_s=(0.0, 0.5, 1.0),
+        result = _result(sample_id="oil", run=run.name, source_path=live.source_path,      # the same file
+                         diameters=(120.0, 124.0, 128.0), arrivals_s=(0.0, 0.5, 1.0),
                          timed_diameters=((0.0, 120.0), (0.5, 124.0), (1.0, 128.0)))
 
         charts = dict(result_charts([result], [live]))
@@ -393,10 +398,13 @@ class LiveQCTests(unittest.TestCase):
         timeline = charts["droplet_timeline"]["series"]
         self.assertEqual([series["name"] for series in timeline], ["oil", "oil live"])
         self.assertEqual(timeline[1]["data"], [[0.0, 1400.0], [1.0, 2800.0], [2.0, 4200.0], [3.0, 5600.0], [4.0, 7000.0]])
-        self.assertEqual(timeline[1]["lineStyle"]["type"], "dashed")
-        self.assertNotEqual(timeline[0]["lineStyle"]["color"], timeline[1]["lineStyle"]["color"])
-        self.assertEqual(charts["cv_per_sample"]["xAxis"]["data"], ["oil", "oil live"])
-        self.assertEqual(charts["cv_per_sample"]["series"][0]["data"][1]["value"], 3.4)
+        self.assertEqual(timeline[0]["lineStyle"]["color"], timeline[1]["lineStyle"]["color"])   # one file, one style
+        self.assertLess(timeline[1]["lineStyle"]["width"], timeline[0]["lineStyle"]["width"])   # the live line, thinner
+        per_sample = charts["cv_per_sample"]
+        self.assertEqual(per_sample["xAxis"]["data"], ["oil"])                                  # one place per file
+        self.assertEqual([series["name"] for series in per_sample["series"]], ["analysed", "live"])
+        self.assertEqual(per_sample["series"][1]["data"][0]["value"], 3.4)
+        self.assertIn("decal", per_sample["series"][1]["data"][0]["itemStyle"])                # the live bar, hatched
         self.assertEqual(charts["diameter_over_time"]["series"][1]["data"][0], [0.0, 124.0])
         self.assertEqual(charts["rate_over_time"]["series"][1]["data"][-1], [4.0, 1440.0])
         self.assertEqual([series["name"] for series in charts["diameter_distribution"]["series"]], ["oil"])
@@ -404,6 +412,64 @@ class LiveQCTests(unittest.TestCase):
                          ["cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time"])
         in_px = replace(live, diameter_unit="px")
         self.assertEqual(diameter_time_chart([], [in_px])["series"], [])
+        views = {view: [name for name, _ in result_charts([result], [live], view=view)]
+                 for view in ("aggregated", "opencv", "cellpose")}
+        self.assertEqual(views["aggregated"], ["diameter_per_sample", "cv_per_sample", "rate_per_sample"])
+        self.assertEqual(views["opencv"], ["diameter_distribution", "droplet_timeline", "diameter_over_time",
+                                           "rate_over_time"])
+        self.assertEqual(views["cellpose"], [])                                            # a video is not an image folder
+        opencv = dict(result_charts([result], [live], view="opencv"))
+        self.assertEqual([s["name"] for s in opencv["droplet_timeline"]["series"]], ["oil"])   # the live line stays out
+
+    def test_a_runs_timeline_is_plotted_as_the_rig_shows_it(self):
+        from admet.ui.series_style import series_styles
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "20261119_100000_oil"
+            run.mkdir()
+            _run_csv(run)
+            (run / "run.json").write_text(json.dumps({"artifacts": {"polling_origin_monotonic": 100.0}, "events": [
+                {"monotonic": 102.0, "step_index": 0, "step_name": "collect", "outcome": "running"},
+                {"monotonic": 105.0, "step_index": 0, "step_name": "collect", "outcome": "completed"}]}))
+            style = series_styles(["oil"])["oil"]
+
+            charts = dict(run_charts(run, {"oil_step01_x": ("oil", style)}))
+
+        self.assertEqual(list(charts), ["pressure", "flow", "droplets", "droplet_cv"])
+        self.assertEqual(charts["pressure"]["series"][0]["name"], "Oil L")
+        self.assertEqual(charts["pressure"]["series"][0]["data"], [[0.0, 1300.0]])
+        self.assertEqual(charts["flow"]["series"][0]["data"], [[0.0, 300.0]])
+        self.assertEqual(charts["flow"]["xAxis"]["name"], "s since the run began")
+        spans = charts["pressure"]["series"][0]["markArea"]["data"]
+        self.assertEqual([(a["name"], a["xAxis"], b["xAxis"]) for a, b in spans],
+                         [("oil", 1.1, 5.1), ("other_step02_x", 7.1, 7.1)])            # each recording's span
+        self.assertEqual([m["name"] for m in charts["flow"]["series"][0]["markLine"]["data"]], ["▶ 1", "■ 1"])
+        droplets = charts["droplets"]["series"]
+        self.assertEqual([s["name"] for s in droplets], ["oil", "other_step02_x"])
+        self.assertEqual(droplets[0]["data"][0], [1.1, 1400.0])
+        self.assertEqual(droplets[0]["lineStyle"]["color"], style.color)
+        self.assertEqual(charts["droplet_cv"]["series"][0]["markLine"]["data"], [{"yAxis": 5.0}])
+        self.assertEqual(run_charts(Path(tmp) / "nowhere"), [])
+
+    def test_the_aggregated_line_sets_the_live_number_under_the_analysis(self):
+        from admet.ui.series_style import series_styles
+
+        result = _result(sample_id="oil", diameters=(120.0, 124.0, 128.0))
+        live = LiveQC(rate_hz=1420.0, rate_half=20.0, diameter=124.0, diameter_half=0.5, diameter_unit="um",
+                      cv_percent=3.4, cv_half=0.3, count=7000.0, bursts=5, state="STABLE")
+        style = series_styles(["oil"])["oil"]
+
+        both = aggregated_cells("oil", style, result, live)
+        alone = aggregated_cells("oil", None, None, live, active=False)
+
+        self.assertEqual(set(both), set(AGGREGATED_FIELDS))
+        self.assertIn("124.0 ± 3.3", both["diameter"])
+        self.assertIn("124.0 um live", both["diameter"])
+        self.assertIn("1420 live", both["rate"])
+        self.assertIn(style.color, both["sample"])
+        self.assertIn("not analysed", alone["sample"])
+        self.assertIn("results-off", alone["droplets"])
+        self.assertIn("7 000 live", alone["droplets"])
 
     def test_the_summary_csv_carries_the_live_columns(self):
         result = _result(run="oil", source_path="/v.avi")

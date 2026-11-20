@@ -43,12 +43,14 @@ from admet.ui.analyze_matrix import (
     wire_results_table,
 )
 from admet.ui.analyze_results import (
+    AGGREGATED_FIELDS,
     FileResult,
     LiveQC,
     RESULT_FIELDS,
     RESULT_LABELS,
+    RESULT_VIEWS,
     StoredResult,
-    chart_color,
+    aggregated_cells,
     corrected_inclusions,
     correction_key,
     corrections_summary,
@@ -60,8 +62,10 @@ from admet.ui.analyze_results import (
     live_qc,
     load_stored_result,
     local_time,
+    plot_styles,
     result_charts,
     results_cells,
+    run_charts,
     zip_bytes,
 )
 from admet.ui.window import log_state, panel_specs, settings_panel_state, structure_signature
@@ -72,6 +76,12 @@ from admet.workflows.analyze_runner import AnalyzeBatchReport, AnalyzeBatchRunne
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 # Per-file detection settings a video row starts with and "Reset file settings" goes back to.
+_EMPTY_VIEW = {"aggregated": "Nothing analysed yet, and no live QC from a run.",
+               "opencv": "No video analysed yet.", "cellpose": "No image folder analysed yet.",
+               "live": "No video from a run: nothing the rig measured."}
+_EMPTY_PLOTS = {"aggregated": "Plots appear here once a ticked file is analysed or has the rig's live QC.",
+                "opencv": "Plots appear here once a ticked video is analysed.",
+                "cellpose": "Plots appear here once a ticked image folder is analysed.", "live": ""}
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
@@ -128,6 +138,11 @@ class AnalyzeWorkflowView:
         # The setting columns the Analyse table shows, as chosen last time.
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
+        # The Results view open last time, and the run whose timeline the live view shows.
+        self.results_view = str(self.store.view_setting("results_view", RESULT_VIEWS[0][0]))
+        if self.results_view not in dict(RESULT_VIEWS):
+            self.results_view = RESULT_VIEWS[0][0]
+        self.live_run = ""
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
@@ -212,7 +227,8 @@ class AnalyzeWorkflowView:
     def _structure_signature(self) -> tuple[Any, ...]:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(self.analyse_fields),
-                                   tuple(row.uid for row in self.matrix), self._running)
+                                   tuple(row.uid for row in self.matrix), self._running,
+                                   self.results_view, self.live_run)
 
     def _mount_stage(self) -> None:
         for key in ("action_box_body", "action_panel_body", "main_body", "log_body"):
@@ -300,8 +316,10 @@ class AnalyzeWorkflowView:
             if missing:
                 text += f" · {missing} missing µm/px or FPS"
             return analysed / len(ticked), text
-        results = self._results()
-        return (1.0 if results else 0.0), (f"{_count(len(results), 'result')}" if results else "nothing analysed yet")
+        results, lives = self._results(), self._lives()
+        if not results and not lives:
+            return 0.0, "nothing analysed yet"
+        return 1.0, f"{_count(len(results), 'result')}" + (f" · {len(lives)} live" if lives else "")
 
     def _mount_action_panel(self) -> None:
         body = self._refs["action_panel_body"]
@@ -343,7 +361,7 @@ class AnalyzeWorkflowView:
             self._refs["log"] = ui.html("").classes("log-text w-full")
 
     def _sync_tables(self) -> None:
-        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._results_rows}
+        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._results_table_rows}
         for key, tables in self._table_refs.items():
             tables[:] = [table for table in tables if not table.is_deleted]
             source = row_sources.get(key)
@@ -1101,47 +1119,101 @@ class AnalyzeWorkflowView:
 
     # -- 3. Results -----------------------------------------------------------------------
 
-    def _render_results_table(self) -> None:
-        """One row per analysed file, with Use: an unticked file stays here but leaves the plots and export."""
+    def _render_results_tabs(self) -> None:
+        """The four views of the results; the one open is remembered."""
         from nicegui import ui
 
-        rows = self._results_rows()
+        with ui.row().classes("admet-transport results-tabs w-full items-stretch gap-0"):
+            for index, (view_id, label) in enumerate(RESULT_VIEWS):
+                if index:
+                    ui.element("span").classes("admet-transport-separator")
+                classes = "admet-transport-btn grow"
+                if view_id == self.results_view:
+                    classes += " admet-transport-btn-active"
+                ui.button(label, on_click=lambda _e, view=view_id: self._set_results_view(view)).props(
+                    "unelevated dense no-caps flat").classes(classes)
+
+    def _set_results_view(self, view: str) -> None:
+        if view == self.results_view or view not in dict(RESULT_VIEWS):
+            return
+        self.results_view = view
+        self.store.set_view_setting("results_view", view)
+        self._refresh(force_mount=True)
+
+    def _render_results_table(self) -> None:
+        """The open view's table, one line per file, with Use: an unticked file stays here but leaves the
+        plots and export."""
+        from nicegui import ui
+
+        self._render_results_tabs()
+        rows = self._results_table_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
             if not rows:
-                ui.label("Nothing analysed yet, and no live QC from a run.").classes("muted text-xs")
+                ui.label(_EMPTY_VIEW[self.results_view]).classes("muted text-xs")
                 return
-            fields = tuple(f for f in RESULT_FIELDS
-                           if f != "inclusions" or any(r.inclusion_counts for r in self._results(ticked_only=False)))
+            if self.results_view == "aggregated":
+                fields: tuple[str, ...] = AGGREGATED_FIELDS
+            else:
+                fields = tuple(f for f in RESULT_FIELDS
+                               if f != "inclusions" or any(r.inclusion_counts for r in self._results(ticked_only=False)))
             table = ui.table(columns=results_columns(fields, RESULT_LABELS), rows=rows, row_key="uid").classes(
                 "slim-table matrix-table results-table w-full").props("dense flat hide-bottom")
             self._register_table("results", table)
             wire_results_table(table, self._handle_matrix_change, fields)
 
-    def _results_rows(self) -> list[dict[str, Any]]:
-        """Every listed file with a stored result or a live QC, ticked or not; the ticked ones in their plot colour.
+    def _results_table_rows(self) -> list[dict[str, Any]]:
+        if self.results_view == "aggregated":
+            return self._aggregated_rows()
+        if self.results_view == "live":
+            return self._live_rows()
+        return self._results_rows(engine=self.results_view)
 
-        A video recorded on the rig gets a second line: what the live QC measured while it was recorded,
-        to set against what the analysis found. Before the analysis runs, that line stands alone.
-        """
-        results, lives = self._results(), self._lives()
-        colours = {_result_key(result): chart_color(index) for index, result in enumerate(results)}
-        colours.update({(live.run, live.source_path): chart_color(len(results) + index)
-                        for index, live in enumerate(lives)})
+    def _styles(self) -> dict[tuple[str, str], Any]:
+        """A style per file, its sample's hue and shade, over the ticked results and live lines; the
+        hues follow the whole list's order, so a file keeps its colour whichever are ticked."""
+        return plot_styles([*self._results(), *self._lives()], listed=[row.sample_id for row in self.matrix])
+
+    def _results_rows(self, engine: str | None = None) -> list[dict[str, Any]]:
+        """One row per listed file with a stored result (of the engine), ticked or not; the ticked ones
+        in their plot colour."""
+        styles = self._styles()
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
         for row in self.matrix:
-            key = self._row_key(row)
-            result, live = by_key.get(key), self._live_qc(row)
+            result = by_key.get(self._row_key(row))
+            if result is None or (engine and result.engine != engine):
+                continue
+            style = styles.get((result.run, result.source_path))
+            colour = style.color if style is not None else "var(--text-disabled)"
+            rows.append({"uid": row.uid, "active": row.active, **results_cells(result, colour, active=row.active)})
+        return rows
+
+    def _live_rows(self) -> list[dict[str, Any]]:
+        """One row per listed video the rig measured while recording, named as the file is."""
+        styles = self._styles()
+        rows = []
+        for row in self.matrix:
+            live = self._live_qc(row)
+            if live is None:
+                continue
+            style = styles.get((live.run, live.source_path))
+            colour = style.color if style is not None else "var(--text-disabled)"
+            rows.append({"uid": f"{row.uid}:live", "active": row.active,
+                         **live_cells(live, row.sample_id, colour, active=row.active)})
+        return rows
+
+    def _aggregated_rows(self) -> list[dict[str, Any]]:
+        """One row per listed file with anything to show: the analysis's numbers, the rig's live ones under."""
+        styles = self._styles()
+        by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
+        rows = []
+        for row in self.matrix:
+            result, live = by_key.get(self._row_key(row)), self._live_qc(row)
             if result is None and live is None:
                 continue
-            grey = "var(--text-disabled)"
-            if result is not None:
-                rows.append({"uid": row.uid, "active": row.active,
-                             **results_cells(result, colours.get(key, grey), active=row.active)})
-            if live is not None:
-                colour = colours.get((live.run, live.source_path), grey)
-                rows.append({"uid": f"{row.uid}:live", "active": row.active,
-                             **live_cells(live, "" if result is not None else row.sample_id, colour, active=row.active)})
+            key = (result.run, result.source_path) if result is not None else (live.run, live.source_path)
+            rows.append({"uid": row.uid, "active": row.active,
+                         **aggregated_cells(row.sample_id, styles.get(key), result, live, active=row.active)})
         return rows
 
     def _live_qc(self, row: MatrixRow):
@@ -1166,18 +1238,65 @@ class AnalyzeWorkflowView:
     def _render_results_plots(self) -> None:
         from nicegui import ui
 
-        results, lives = self._results(), self._lives()
         with ui.column().classes("panel w-full gap-2 p-3"):
-            ui.label("Plots").classes("section-title")
-            if not results and not lives:
-                ui.label("Plots appear here once a ticked file is analysed or has the rig's live QC.").classes(
-                    "muted text-xs")
+            if self.results_view == "live":
+                self._render_live_plots()
                 return
-            with ui.element("div").classes("results-grid w-full"):
-                for name, options in result_charts(results, lives):
-                    with ui.column().classes("plot-card"):
-                        chart = ui.echart(options).classes("w-full h-full")
-                    self._chart_refs.append((name, chart))
+            ui.label("Plots").classes("section-title")
+            charts = result_charts(self._results(), self._lives(), view=self.results_view,
+                                   listed=[row.sample_id for row in self.matrix])
+            if not charts:
+                ui.label(_EMPTY_PLOTS[self.results_view]).classes("muted text-xs")
+                return
+            self._render_charts(charts, "results-grid")
+
+    def _render_charts(self, charts: list[tuple[str, dict[str, Any]]], grid: str) -> None:
+        from nicegui import ui
+
+        with ui.element("div").classes(f"{grid} w-full"):
+            for name, options in charts:
+                with ui.column().classes("plot-card"):
+                    chart = ui.echart(options).classes("w-full h-full")
+                self._chart_refs.append((name, chart))
+
+    def _live_runs(self) -> list[tuple[str, str]]:
+        """The runs of the ticked videos the rig measured, as (folder, name), in the list's order."""
+        runs: dict[str, str] = {}
+        for row in self.matrix:
+            if row.active and row.run and self._live_qc(row) is not None:
+                runs.setdefault(row.run, Path(row.run).name)
+        return list(runs.items())
+
+    def _render_live_plots(self) -> None:
+        """One run at a time, as the rig's Review stage shows it: pressure, flow, droplet rate and CV on
+        the run's clock, each ticked recording of the run in its own style."""
+        from nicegui import ui
+
+        runs = self._live_runs()
+        ui.label("Live QC + Fluidics").classes("section-title")
+        if not runs:
+            ui.label("No ticked video from a run: nothing the rig measured to show.").classes("muted text-xs")
+            return
+        if self.live_run not in dict(runs):
+            self.live_run = runs[0][0]
+        with ui.row().classes("items-center gap-2 no-wrap w-full"):
+            ui.label("Run").classes("text-xs muted")
+            ui.select(dict(runs), value=self.live_run, on_change=self._live_run_changed).props(
+                "dense outlined options-dense").classes("grow")
+        styles = self._styles()
+        files = {Path(row.source_path).stem: (row.sample_id, styles.get((Path(row.run).name, str(Path(row.source_path)))))
+                 for row in self.matrix if row.active and row.run == self.live_run}
+        charts = run_charts(self.live_run, files)
+        if not charts:
+            ui.label("This run's timeline has nothing to plot.").classes("muted text-xs")
+            return
+        self._render_charts(charts, "results-grid-2")
+
+    def _live_run_changed(self, event: Any) -> None:
+        value = getattr(event, "value", None)
+        if value and str(value) != self.live_run:
+            self.live_run = str(value)
+            self._remount_main()
 
     def _results(self, *, ticked_only: bool = True) -> list[FileResult]:
         """Stored results of the listed files -- the ticked ones unless asked otherwise -- with the hand corrections.
@@ -2335,10 +2454,13 @@ def _style() -> str:
     .results-cell .spark { fill: var(--accent); fill-opacity: 0.8; vertical-align: middle; }
     .results-cell .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
     .results-off { opacity: 0.45; }
-    .results-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .results-tabs { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 6px; }
+    .results-grid, .results-grid-2 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .results-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .results-grid-2 .plot-card { aspect-ratio: 16 / 9; min-height: 0; }
     .results-grid .plot-card { aspect-ratio: 4 / 3; min-height: 0; }
     @media (max-width: 1100px) { .results-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 760px) { .results-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 760px) { .results-grid, .results-grid-2 { grid-template-columns: 1fr; } }
     .plot-card { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-control); padding: 4px; }
     .muted { color: var(--text-muted); }
     .section-title { color: var(--text-muted); font-size: 12px; text-transform: uppercase; font-weight: 700; }

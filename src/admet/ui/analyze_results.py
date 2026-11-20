@@ -15,8 +15,12 @@ from pathlib import Path
 from statistics import mean, median, pstdev
 from typing import Any, Callable, Sequence
 
+import numpy as np
+
 from admet.core.droplets import dispersed_flow_ul_min, expected_rate_hz  # noqa: F401  (analyze's names for them)
+from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme
+from admet.ui.series_style import SeriesStyle, series_styles
 
 
 @dataclass(frozen=True)
@@ -555,6 +559,11 @@ def _name_key(result: Any) -> tuple[str, str, str, str]:
     return (result.run, result.source_path, result.sample_id, result.file_id)
 
 
+def _file_key(item: Any) -> tuple[str, str]:
+    """The file an analysed result or a live line is of: the two share one style."""
+    return (item.run, item.source_path)
+
+
 def _names(results: list[Any]) -> dict[tuple[str, str, str, str], str]:
     """A name per plotted series, analysed or live: the sample's, shortened to what differs, "live" added
     for the rig's line, and told apart by the run's time and then a number when two files share one."""
@@ -575,10 +584,27 @@ def _names(results: list[Any]) -> dict[tuple[str, str, str, str], str]:
     return names
 
 
-def histogram_edges(values: list[float], *, max_bins: int = 40, min_bins: int = 8) -> list[float]:
-    """Bin edges from the data's spread (Freedman–Diaconis), so a tight distribution still has shape."""
-    import numpy as np
+def plot_styles(items: Sequence[Any], listed: Sequence[str] | None = None) -> dict[tuple[str, str], SeriesStyle]:
+    """A style per file among the items: its sample's group hue and replicate shade (see series_style).
 
+    Two files given one sample name are replicates of it. LISTED is every sample name on the screen,
+    in order, so a group keeps its hue whichever files are ticked.
+    """
+    labels: dict[tuple[str, str], str] = {}
+    seen: dict[str, int] = {}
+    for item in items:
+        key = _file_key(item)
+        if key in labels:
+            continue
+        n = seen.get(item.sample_id, 0) + 1
+        seen[item.sample_id] = n
+        labels[key] = item.sample_id if n == 1 else f"{item.sample_id} #{n}"
+    styles = series_styles(list(labels.values()), listed=list(listed or []))
+    return {key: styles[label] for key, label in labels.items()}
+
+
+def histogram_edges(values: list[float], *, max_bins: int = 40, min_bins: int = 8) -> list[float]:
+    """Bin edges by the Freedman-Diaconis rule, between a sensible minimum and maximum of bins."""
     array = np.asarray(values, dtype=float)
     low, high = float(array.min()), float(array.max())
     if high <= low:
@@ -597,23 +623,30 @@ def bin_labels(edges: list[float]) -> list[str]:
     return [f"{(a + b) / 2:.{digits}f}" for a, b in zip(edges, edges[1:])]
 
 
-def diameter_chart(results: list[FileResult]) -> dict[str, Any]:
-    plotted = [result for result in results if result.diameters]
-    values = [value for result in plotted for value in result.diameters]
+def _plotted(results: Sequence[FileResult], lives: Sequence[LiveQC] = (),
+             listed: Sequence[str] | None = None) -> list[tuple[Any, SeriesStyle, str]]:
+    """Every series to draw with its style and its name: the analysed files first, then the live lines."""
+    items: list[Any] = [*results, *lives]
+    names, styles = _names(items), plot_styles(items, listed)
+    return [(item, styles[_file_key(item)], names[_name_key(item)]) for item in items]
+
+
+def diameter_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                   listed: Sequence[str] | None = None) -> dict[str, Any]:
+    plotted = [(item, style, name) for item, style, name in _plotted(results, (), listed) if item.diameters]
+    values = [value for item, _style, _name in plotted for value in item.diameters]
     if not values:
         return _empty_chart("Diameter distribution (µm)")
     edges = histogram_edges(values)
     labels = bin_labels(edges)
     width = edges[1] - edges[0]
-    names = _names(results)
     series = []
-    for index, result in enumerate(plotted):
+    for item, style, name in plotted:
         counts = [0] * len(labels)
-        for value in result.diameters:
+        for value in item.diameters:
             counts[min(len(labels) - 1, int((value - edges[0]) / width))] += 1
-        series.append({"name": names[_name_key(result)], "type": "bar", "data": counts, "barMaxWidth": 18,
-                       "itemStyle": {"color": chart_color(index), "opacity": 0.82},
-                       "emphasis": {"focus": "series"}})
+        series.append({"name": name, "type": "bar", "data": counts, "barMaxWidth": 18,
+                       "itemStyle": {**style.item(), "opacity": 0.82}, "emphasis": {"focus": "series"}})
     return {
         "title": _title("Diameter distribution (µm)"),
         "animation": False,
@@ -627,15 +660,16 @@ def diameter_chart(results: list[FileResult]) -> dict[str, Any]:
     }
 
 
-def timeline_chart(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> dict[str, Any]:
+def timeline_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                   listed: Sequence[str] | None = None) -> dict[str, Any]:
     """Droplets counted against time since each file's first frame: the slope is the rate.
 
     Files start at different frames of different recordings, so each is laid from its own
     start; a steady train is a straight line, a change of rate a bend, a stop a plateau.
-    The rig's live count runs over the whole recording, dashed, from its first burst.
+    The rig's live count runs over the whole recording, thinner, from its first burst.
     """
     series = []
-    for index, item, names in _plotted(results, lives):
+    for item, style, name in _plotted(results, lives, listed):
         if isinstance(item, LiveQC):
             points = [[t, count] for t, count, _rate, _d, _cv in item.points]
         else:
@@ -645,51 +679,44 @@ def timeline_chart(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> d
         if len(points) > 4000:
             step = len(points) // 4000 + 1
             points = points[::step] + [points[-1]]
-        series.append(_line(names[_name_key(item)], points, index, live=isinstance(item, LiveQC)))
+        series.append(_line(name, points, style, live=isinstance(item, LiveQC)))
     return _time_chart("Droplets over time", "droplets", series)
 
 
-def diameter_time_chart(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> dict[str, Any]:
+def diameter_time_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                        listed: Sequence[str] | None = None) -> dict[str, Any]:
     """The diameter as the recording went on: the analysis's median per second of video, the rig's
-    per burst (dashed); a live line in px, from a rig without a scale, is left out."""
+    per burst (thinner); a live line in px, from a rig without a scale, is left out."""
     series = []
-    for index, item, names in _plotted(results, lives):
+    for item, style, name in _plotted(results, lives, listed):
         if isinstance(item, LiveQC):
             points = [[t, d] for t, _count, _rate, d, _cv in item.points if d] if item.diameter_unit == "um" else []
         else:
             points = _per_second(item.timed_diameters)
         if points:
-            series.append(_line(names[_name_key(item)], points, index, live=isinstance(item, LiveQC)))
+            series.append(_line(name, points, style, live=isinstance(item, LiveQC)))
     return _time_chart("Diameter over time (µm)", "µm", series)
 
 
-def rate_time_chart(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> dict[str, Any]:
+def rate_time_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                    listed: Sequence[str] | None = None) -> dict[str, Any]:
     """The generation rate as the recording went on: droplets the analysis saw arrive per second of
-    video, and the rate the rig measured at each burst (dashed)."""
+    video, and the rate the rig measured at each burst (thinner)."""
     series = []
-    for index, item, names in _plotted(results, lives):
+    for item, style, name in _plotted(results, lives, listed):
         if isinstance(item, LiveQC):
             points = [[t, rate] for t, _count, rate, _d, _cv in item.points if rate]
         else:
             points = _per_second([(t, 1.0) for t in item.arrivals_s], reduce=len) if len(item.arrivals_s) > 1 else []
         if points:
-            series.append(_line(names[_name_key(item)], points, index, live=isinstance(item, LiveQC)))
+            series.append(_line(name, points, style, live=isinstance(item, LiveQC)))
     return _time_chart("Rate over time (/s)", "/s", series)
 
 
-def _plotted(results: list[FileResult], lives: Sequence[LiveQC]) -> list[tuple[int, Any, dict]]:
-    """Every series to draw with its colour index: the analysed files first, then the live lines."""
-    items: list[Any] = [*results, *lives]
-    names = _names(items)
-    return [(index, item, names) for index, item in enumerate(items)]
-
-
-def _line(name: str, points: list, index: int, *, live: bool) -> dict[str, Any]:
-    style = {"width": 2 if not live else 1.5, "color": chart_color(index)}
-    if live:
-        style["type"] = "dashed"
-    return {"name": name, "type": "line", "showSymbol": False, "silent": True, "data": points,
-            "lineStyle": style, "itemStyle": {"color": chart_color(index)}}
+def _line(name: str, points: list, style: SeriesStyle, *, live: bool = False) -> dict[str, Any]:
+    return {"name": name, "type": "line", "showSymbol": style.marked, "symbol": style.symbol, "symbolSize": 6,
+            "silent": True, "data": points, "lineStyle": style.line(live=live),
+            "itemStyle": {"color": style.color, **({"opacity": 0.8} if live else {})}}
 
 
 def _per_second(points: Sequence[tuple[float, float]], *, reduce: Callable = median) -> list[list[float]]:
@@ -700,37 +727,41 @@ def _per_second(points: Sequence[tuple[float, float]], *, reduce: Callable = med
     return [[second + 0.5, round(float(reduce(values)), 3)] for second, values in sorted(seconds.items())]
 
 
-def _time_chart(title: str, unit: str, series: list[dict[str, Any]]) -> dict[str, Any]:
+def _time_chart(title: str, unit: str, series: list[dict[str, Any]], *,
+                xname: str = "s since the first frame") -> dict[str, Any]:
     return {
         "title": _title(title),
         "animation": False,
         "tooltip": {"trigger": "axis"},
         "legend": _legend(),
         "grid": _grid(right=28),
-        "xAxis": _value_axis("s since the first frame"),
+        "xAxis": _value_axis(xname),
         "yAxis": _value_axis(unit),
         "series": series,
     }
 
 
-def positions_chart(results: list[FileResult]) -> dict[str, Any]:
-    return scatter_chart("Droplet positions (px)", "x", "y", results, lambda d: [d[1], d[2]], invert_y=True)
+def positions_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                    listed: Sequence[str] | None = None) -> dict[str, Any]:
+    return scatter_chart("Droplet positions (px)", "x", "y", results, lambda d: [d[1], d[2]], invert_y=True,
+                         listed=listed)
 
 
-def area_x_chart(results: list[FileResult]) -> dict[str, Any]:
-    return scatter_chart("Area along x (µm²)", "x px", "µm²", results, lambda d: [d[1], d[3]] if d[3] else None)
+def area_x_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                 listed: Sequence[str] | None = None) -> dict[str, Any]:
+    return scatter_chart("Area along x (µm²)", "x px", "µm²", results, lambda d: [d[1], d[3]] if d[3] else None,
+                         listed=listed)
 
 
 def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
                   project: Callable[[tuple[float, float, float, float]], list[float] | None],
-                  *, invert_y: bool = False) -> dict[str, Any]:
-    names = _names(results)
+                  *, invert_y: bool = False, listed: Sequence[str] | None = None) -> dict[str, Any]:
     series = []
-    for index, result in enumerate(results[:8]):
-        data = [point for point in (project(detection) for detection in result.detections) if point is not None]
+    for item, style, name in _plotted(results[:8], (), listed):
+        data = [point for point in (project(detection) for detection in item.detections) if point is not None]
         if data:
-            series.append({"name": names[_name_key(result)], "type": "scatter", "symbolSize": 3, "data": data,
-                           "itemStyle": {"color": chart_color(index)}})
+            series.append({"name": name, "type": "scatter", "symbol": style.symbol, "symbolSize": 4, "data": data,
+                           "itemStyle": {"color": style.color}})
     return {
         "title": _title(title),
         "animation": False,
@@ -743,40 +774,82 @@ def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
     }
 
 
-def cv_chart(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> dict[str, Any]:
-    """One bar per sample: the spread of its droplet diameters, as CV in percent; for a live line, the
-    CV the rig had over the whole recording."""
-    plotted = [(index, item, names) for index, item, names in _plotted(results, lives)
-               if (item.cv_percent if isinstance(item, LiveQC) else item.diameters)]
+def per_sample_chart(title: str, unit: str, results: Sequence[FileResult], lives: Sequence[LiveQC],
+                     analysed: Callable[[FileResult], float | None], measured: Callable[[LiveQC], float | None],
+                     *, listed: Sequence[str] | None = None, digits: int = 1) -> dict[str, Any]:
+    """One place per ticked file: the analysis's value as a bar and, hatched beside it, what the rig
+    measured live; a file with only one of them shows that one."""
+    files: dict[tuple[str, str], dict[str, Any]] = {}
+    for item, style, name in _plotted(results, lives, listed):
+        entry = files.setdefault(_file_key(item), {"name": name.removesuffix(" live"), "style": style,
+                                                   "analysed": None, "live": None})
+        if isinstance(item, LiveQC):
+            entry["live"] = measured(item)
+        else:
+            entry["name"], entry["analysed"] = name, analysed(item)
+    shown = [entry for entry in files.values() if entry["analysed"] is not None or entry["live"] is not None]
+    if not shown:
+        return _empty_chart(title)
+
+    def bars(kind: str) -> dict[str, Any]:
+        return {"name": kind, "type": "bar", "barMaxWidth": 28, "barGap": "10%",
+                "data": [{"value": round(entry[kind], digits) if entry[kind] is not None else None,
+                          "itemStyle": entry["style"].item(live=kind == "live")} for entry in shown],
+                "label": {"show": True, "position": "top", "fontSize": 9, "formatter": "{c}"}}
+
+    series = [bars("analysed")] if any(entry["analysed"] is not None for entry in shown) else []
+    if any(entry["live"] is not None for entry in shown):
+        series.append(bars("live"))
     return {
-        "title": _title("CV of diameter per sample (%)"),
+        "title": _title(title),
         "animation": False,
         "tooltip": {"trigger": "axis"},
+        "legend": _legend() if len(series) > 1 else {"show": False},
         "grid": _grid(bottom=48),
-        "xAxis": {"type": "category", "data": [names[_name_key(item)] for _index, item, names in plotted],
+        "xAxis": {"type": "category", "data": [entry["name"] for entry in shown],
                   "axisLabel": {"rotate": 25, "fontSize": 10, "hideOverlap": True, "width": 90,
                                 "overflow": "truncate"}},
-        "yAxis": _value_axis("CV %"),
-        "series": [{"type": "bar", "barMaxWidth": 36,
-                    "data": [{"value": round(item.cv_percent, 2), "itemStyle": {"color": chart_color(index)}}
-                             for index, item, _names in plotted],
-                    "label": {"show": True, "position": "top", "fontSize": 10, "formatter": "{c} %"}}],
+        "yAxis": _value_axis(unit),
+        "series": series,
     }
 
 
-def inclusions_chart(results: list[FileResult]) -> dict[str, Any]:
+def diameter_per_sample_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                              listed: Sequence[str] | None = None) -> dict[str, Any]:
+    return per_sample_chart("Diameter per sample (µm)", "µm", results, lives,
+                            lambda r: r.mean_diameter if r.diameters else None,
+                            lambda live: live.diameter if live.diameter and live.diameter_unit == "um" else None,
+                            listed=listed)
+
+
+def cv_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+             listed: Sequence[str] | None = None) -> dict[str, Any]:
+    """One place per sample: the spread of its droplet diameters as CV in percent, and the CV the rig
+    had over the whole recording."""
+    return per_sample_chart("CV of diameter per sample (%)", "CV %", results, lives,
+                            lambda r: r.cv_percent if r.diameters else None, lambda live: live.cv_percent or None,
+                            listed=listed, digits=2)
+
+
+def rate_per_sample_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                          listed: Sequence[str] | None = None) -> dict[str, Any]:
+    return per_sample_chart("Rate per sample (/s)", "/s", results, lives, lambda r: r.rate_hz or None,
+                            lambda live: live.rate_hz or None, listed=listed, digits=0)
+
+
+def inclusions_chart(results: list[FileResult], lives: Sequence[LiveQC] = (), *,
+                     listed: Sequence[str] | None = None) -> dict[str, Any]:
     """How many droplets of each sample hold 0, 1, 2 ... inclusions; empty for samples without any."""
     keys = sorted({count for result in results for count in result.inclusion_counts})
-    names = _names(results)
     series = []
-    for index, result in enumerate(results):
-        if not result.inclusion_counts:
+    for item, style, name in _plotted(results, (), listed):
+        if not item.inclusion_counts:
             continue
         counts = {key: 0 for key in keys}
-        for value in result.inclusion_counts:
+        for value in item.inclusion_counts:
             counts[value] += 1
-        series.append({"name": names[_name_key(result)], "type": "bar", "barMaxWidth": 24,
-                       "data": [counts[key] for key in keys], "itemStyle": {"color": chart_color(index)}})
+        series.append({"name": name, "type": "bar", "barMaxWidth": 24,
+                       "data": [counts[key] for key in keys], "itemStyle": style.item()})
     return {
         "title": _title("Inclusions per droplet"),
         "animation": False,
@@ -794,27 +867,166 @@ def has_inclusions(results: list[FileResult]) -> bool:
     return any(result.inclusion_counts for result in results)
 
 
-def result_charts(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> list[tuple[str, dict[str, Any]]]:
-    """The plots of the Results stage, named for export: only those the ticked files have data for.
+RESULT_VIEWS = (("aggregated", "Aggregated"), ("opencv", "OpenCV"), ("cellpose", "Cellpose"),
+                ("live", "Live QC + Fluidics"))
+_CHARTS = {
+    "diameter_distribution": diameter_chart, "cv_per_sample": cv_chart, "droplet_timeline": timeline_chart,
+    "diameter_over_time": diameter_time_chart, "rate_over_time": rate_time_chart,
+    "droplet_positions": positions_chart, "area_along_x": area_x_chart,
+    "inclusions_per_droplet": inclusions_chart, "diameter_per_sample": diameter_per_sample_chart,
+    "rate_per_sample": rate_per_sample_chart,
+}
+_VIEW_CHARTS = {
+    "all": ("diameter_distribution", "cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time",
+            "droplet_positions", "area_along_x", "inclusions_per_droplet"),
+    "aggregated": ("diameter_per_sample", "cv_per_sample", "rate_per_sample"),
+    "opencv": ("diameter_distribution", "droplet_timeline", "diameter_over_time", "rate_over_time",
+               "droplet_positions", "area_along_x"),
+    "cellpose": ("diameter_distribution", "inclusions_per_droplet"),
+}
 
-    A video has tracks, positions and areas along the channel; an image folder has inclusions;
-    both have diameters. The rig's live lines join the plots over time and the CV bars: they
-    carry no droplets of their own. A plot with nothing to show is not shown.
+
+def result_charts(results: list[FileResult], lives: Sequence[LiveQC] = (), *, view: str = "all",
+                  listed: Sequence[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+    """The plots of a Results view, named for export: only those the ticked files have data for.
+
+    aggregated sets every file side by side, one number each, the rig's live number beside the
+    analysis's; opencv has the video analyses' distributions and time series; cellpose the image
+    folders' diameters and inclusions. The live view is per run: see run_charts. A plot with nothing
+    to show is not shown.
     """
-    builders = (("diameter_distribution", lambda: diameter_chart(results)),
-                ("cv_per_sample", lambda: cv_chart(results, lives)),
-                ("droplet_timeline", lambda: timeline_chart(results, lives)),
-                ("diameter_over_time", lambda: diameter_time_chart(results, lives)),
-                ("rate_over_time", lambda: rate_time_chart(results, lives)),
-                ("droplet_positions", lambda: positions_chart(results)),
-                ("area_along_x", lambda: area_x_chart(results)),
-                ("inclusions_per_droplet", lambda: inclusions_chart(results)))
+    if view == "opencv":
+        results, lives = [r for r in results if r.engine == "opencv"], ()
+    elif view == "cellpose":
+        results, lives = [r for r in results if r.engine == "cellpose"], ()
     charts = []
-    for name, build in builders:
-        chart = build()
+    for name in _VIEW_CHARTS.get(view, _VIEW_CHARTS["all"]):
+        chart = _CHARTS[name](results, lives, listed=listed)
         if any(series.get("data") for series in chart.get("series", ())):
             charts.append((name, chart))
     return charts
+
+
+CHANNEL_DASHES: tuple[Any, ...] = ("solid", "dashed", [12, 4, 3, 4])     # Oil L, Cells M, Beads M, as on the rig's plots
+
+
+def run_charts(run_dir: str | Path, files: dict[str, tuple[str, SeriesStyle]] | None = None
+               ) -> list[tuple[str, dict[str, Any]]]:
+    """A run's timeline as the rig's Review stage shows it: pressure and flow per channel, then the
+    droplet rate and CV of each recording, on one clock from the run's first reading. FILES names and
+    styles the recordings by their id; the recordings' spans are shaded on the readings.
+    """
+    from admet.core.runs import Run
+    from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics_csv, read_qc_csv, step_markers
+
+    path = Path(run_dir) / "run.csv"
+    if not path.is_file():
+        return []
+    try:
+        t, pressures, flows = read_fluidics_csv(path)
+        qc = read_qc_csv(path)
+    except (OSError, ValueError):
+        return []
+    files = files or {}
+    origin = float(t[0]) if len(t) else (float(qc.t[0]) if qc is not None and len(qc.t) else 0.0)
+    record = Run(run_dir).read()
+    polling = record.get("artifacts", {}).get("polling_origin_monotonic")
+    events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
+    marks = [{"xAxis": round(at - origin, 2), "name": label,
+              "lineStyle": {"color": theme.PALETTE.success_hover if kind == "start" else theme.PALETTE.text_muted,
+                            "type": "dashed", "width": 1},
+              "label": {"formatter": label, "position": "insideEndTop", "fontSize": 9}}
+             for at, label, kind in step_markers(events, polling or 0.0) if events]
+    spans = []
+    if qc is not None:
+        for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
+            recording = qc.recording[chunk[0]]
+            name = files.get(recording, (recording, None))[0]
+            spans.append([{"name": name, "xAxis": round(float(qc.t[chunk[0]]) - origin, 2),
+                           "label": {"fontSize": 9, "position": "insideTop"}},
+                          {"xAxis": round(float(qc.t[chunk[-1]]) - origin, 2)}])
+    xname = "s since the run began"
+    charts = []
+    for key, title, unit, readings in (("pressure", "Pressure (mbar)", "mbar", pressures),
+                                       ("flow", "Flow (µL/min)", "µL/min", flows)):
+        series = []
+        for channel, values in enumerate(readings):
+            points = _thin([[round(float(a) - origin, 3), round(float(b), 3)] for a, b in zip(t, values)
+                            if math.isfinite(b)], 2000)
+            if points:
+                label = FLUIDIC_CHANNEL_LABELS[channel] if channel < len(FLUIDIC_CHANNEL_LABELS) else f"channel {channel}"
+                series.append({"name": label, "type": "line", "showSymbol": False, "silent": True, "data": points,
+                               "lineStyle": {"color": chart_color(channel), "width": 1.5,
+                                             "type": CHANNEL_DASHES[channel % len(CHANNEL_DASHES)]},
+                               "itemStyle": {"color": chart_color(channel)}})
+        if series:
+            series[0]["markArea"] = {"silent": True, "itemStyle": {"color": "rgba(34,93,130,0.08)"}, "data": spans}
+            if key == "flow" and marks:
+                series[0]["markLine"] = {"silent": True, "symbol": "none", "data": marks}
+        charts.append((key, _time_chart(title, unit, series, xname=xname)))
+    rate_series, cv_series = [], []
+    if qc is not None:
+        for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
+            recording = qc.recording[chunk[0]]
+            name, style = files.get(recording, (recording, None))
+            style = style or series_styles([name])[name]
+            times = [round(float(value) - origin, 3) for value in qc.t[chunk]]
+            rate = [[at, round(float(v), 1)] for at, v in zip(times, qc.rate[chunk]) if math.isfinite(v) and v > 0]
+            cv = [[at, round(float(v), 2)] for at, v in zip(times, qc.cv[chunk]) if math.isfinite(v) and v > 0]
+            if rate:
+                rate_series.append(_line(name, rate, style))
+            if cv:
+                cv_series.append(_line(name, cv, style))
+    limit = {"markLine": {"silent": True, "symbol": "none",
+                          "lineStyle": {"color": theme.PALETTE.danger_hover, "type": "dashed", "width": 1},
+                          "label": {"formatter": f"{QC_LIMIT_PERCENT:g} %", "fontSize": 9},
+                          "data": [{"yAxis": QC_LIMIT_PERCENT}]}}
+    if cv_series:
+        cv_series[0].update(limit)
+    charts.append(("droplets", _time_chart("Droplets (/s)", "/s", rate_series, xname=xname)))
+    charts.append(("droplet_cv", _time_chart("Droplet CV (%)", "%", cv_series, xname=xname)))
+    ends = [point[0] for _name, chart in charts for series in chart["series"] for point in series["data"]]
+    for _name, chart in charts:                                   # the four on one clock, as linked plots
+        chart["xAxis"].update({"min": 0, "max": math.ceil(max(ends)) if ends else 1})
+    return [(name, chart) for name, chart in charts if any(s.get("data") for s in chart["series"])]
+
+
+def _thin(points: list, limit: int) -> list:
+    if len(points) <= limit:
+        return points
+    step = len(points) // limit + 1
+    return points[::step] + [points[-1]]
+
+
+AGGREGATED_FIELDS = ("sample", "droplets", "diameter", "cv", "rate", "analysed")
+
+
+def aggregated_cells(name: str, style: SeriesStyle | None, result: FileResult | None, live: LiveQC | None,
+                     *, active: bool = True) -> dict[str, str]:
+    """One file's line of the aggregated table: the analysis's number, with the rig's live one under it."""
+    off = "" if active else " results-off"
+    colour = style.color if style is not None else "var(--text-disabled)"
+
+    def cell(main: str, sub: str = "") -> str:
+        inner = f'<span class="n">{main}</span>' + (f'<div class="sub">{sub}</div>' if sub else "")
+        return f'<div class="results-cell{off}">{inner}</div>'
+
+    unit = live.diameter_unit if live is not None else "um"
+    return {
+        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}',
+                       html.escape(result.engine if result is not None else "not analysed")),
+        "droplets": cell(f"{result.droplets}" if result is not None else "—",
+                         f"{live.count:,.0f} live".replace(",", " ") if live is not None else ""),
+        "diameter": cell(f"{result.mean_diameter:.1f} ± {result.std_diameter:.1f}"
+                         if result is not None and result.diameters else "—",
+                         f"{live.diameter:.1f} {html.escape(unit)} live" if live is not None and live.diameter else ""),
+        "cv": cell(f"{result.cv_percent:.1f}" if result is not None and result.diameters else "—",
+                   f"{live.cv_percent:.1f} live" if live is not None and live.cv_percent else ""),
+        "rate": cell(f"{result.rate_hz:.0f}" if result is not None and result.rate_hz else "—",
+                     f"{live.rate_hz:.0f} live" if live is not None and live.rate_hz else ""),
+        "analysed": cell(html.escape(result.analyzed_at or "earlier") if result is not None else "—",
+                         html.escape(f"{live.state} while recording") if live is not None else ""),
+    }
 
 
 def _title(text: str) -> dict[str, Any]:

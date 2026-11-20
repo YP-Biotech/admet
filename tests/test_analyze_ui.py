@@ -309,22 +309,56 @@ class LiveRowTests(unittest.TestCase):
             view = _make_view(Registry(Path(tmp) / "analyze"))
             view._add_root(data)
 
-            rows = view._results_rows()
+            rows = view._live_rows()
 
-            self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])   # no analysis yet: the rig's line alone
+            self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])
             self.assertIn("STABLE", rows[0]["analysed"])
             self.assertIn("oil", rows[0]["sample"])
             self.assertNotIn("text-disabled", rows[0]["sample"])                        # ticked: in its plot colour
+            self.assertEqual(view._results_rows(), [])                                   # nothing analysed: no result row
+            aggregated = view._aggregated_rows()
+            self.assertEqual(len(aggregated), 1)
+            self.assertIn("7 000 live", aggregated[0]["droplets"])
+            self.assertIn("not analysed", aggregated[0]["sample"])
             lives = view._lives()
             self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])
             self.assertEqual(len(lives[0].points), 5)
-            self.assertEqual([name for name, _ in result_charts([], lives)],
-                             ["cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time"])
+            self.assertEqual([name for name, _ in result_charts([], lives, view="aggregated")],
+                             ["diameter_per_sample", "cv_per_sample", "rate_per_sample"])
             view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
             self.assertFalse(view.matrix[0].active)
-            self.assertFalse(view._results_rows()[0]["active"])
+            self.assertFalse(view._live_rows()[0]["active"])
+            self.assertEqual(view._live_runs(), [])                                      # unticked: not in the live view
+            view.matrix[0].active = True
+            self.assertEqual(view._live_runs(), [(view.matrix[0].run, run.run_id)])
             view.matrix[0].run = ""
-            self.assertEqual(view._results_rows(), [])                                   # a loose file has no live line
+            self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
+
+
+class ResultsViewTests(unittest.TestCase):
+    def test_the_open_view_is_remembered_and_picks_the_rows_shown(self):
+        from tests.test_analyze_results import _run_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            data = Path(tmp) / "data"
+            run, names = run_with_videos(data, "oil", videos=1)
+            _run_csv(run.path, Path(names[0]).stem)
+            view = _make_view(store)
+            view._add_root(data)
+            view.matrix.append(_row(engine="cellpose", sample="imgs"))
+            view._notify = lambda *a, **k: None
+
+            self.assertEqual(view.results_view, "aggregated")
+            self.assertEqual(len(view._results_table_rows()), 1)                        # the video's aggregated line
+            view._set_results_view("live")
+            self.assertEqual(_make_view(store).results_view, "live")                     # remembered
+            self.assertEqual([row["uid"].endswith(":live") for row in view._results_table_rows()], [True])
+            view._set_results_view("opencv")
+            self.assertEqual(view._results_table_rows(), [])                             # no video analysed
+            view._set_results_view("nonsense")
+            self.assertEqual(view.results_view, "opencv")
+            self.assertIn(view.results_view, view._structure_signature())
 
 
 if __name__ == "__main__":
