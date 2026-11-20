@@ -106,23 +106,23 @@ the stored rows stay as found, and *Clear corrections* drops them.
 
 ## Results
 
-The stage is one page. The table in the Action Panel is the **Aggregated** one:
-one line per file with droplets, diameter, CV and rate, the rig's live number
-under the analysis's. Below it come the sections that have data, each with its
-own table and plots:
+The stage is one page with one table, in the Action Panel: one line per file
+with droplets, diameter, CV and rate, the rig's live number under the
+analysis's, the recording's state in the rig's colour, and Use. Below it come
+the plots, in sections that are there when they have data; the table's ticks
+choose for all of them:
 
-- **Aggregated** plots: diameter, CV and rate per sample as bars, a hatched bar
-  for the live value beside the analysed one.
-- **OpenCV**: one row per analysed video with each number's small histogram, and
-  the diameter distribution, droplets, diameter and rate over time, positions and
-  area along the channel.
-- **Cellpose**: the image folders' rows, the diameter distribution and the
-  inclusions per droplet.
-- **Live QC + Fluidics**: every video's live line, the state in the rig's colour,
-  and the four plots of the control app's Review stage: pressure and flow per
-  channel, droplet rate and CV, with every ticked run drawn on its own clock, a
-  colour per run and a line pattern per channel. A lone run has its recordings'
-  spans shaded and its steps marked.
+- **Aggregated**: diameter, CV and rate per sample as bars, a hatched bar for
+  the live value beside the analysed one.
+- **OpenCV**: the analysed videos' diameter distribution, droplets, diameter and
+  rate over time, positions and area along the channel.
+- **Cellpose**: the image folders' diameter distribution and inclusions per
+  droplet.
+- **Live QC + Fluidics**: the four plots of the control app's Review stage,
+  stacked as its *Stacked* view: every ticked recording's step from its own
+  start, so steps and runs overlay. Pressure and flow per channel, the channel
+  told by the line pattern, then the droplet rate and CV the rig measured, each
+  recording in its sample's colour.
 
 Every series has a colour and pattern of its own. Files whose sample names end in
 a replicate marker (`oil rep 2`, `oil_rep02`, `oil r2`, `oil #2`, `oil step 2`) are

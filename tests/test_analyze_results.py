@@ -344,7 +344,7 @@ def _run_csv(directory: Path, stem: str = "oil_step01_x") -> Path:
     columns = ["timestamp", "elapsed_s", "pressure_0_mbar", "flow_0_ul_min", "recording_id", "step", "part", "rate_hz",
                "rate_half", "count", "diameter", "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n",
                "bursts", "speed_px_frame", "spacing_px", "state"]
-    rows = [["10:00:00.000", "0.000", "1300", "300", *[""] * 16]]
+    rows = [[f"10:00:0{k // 2}.{500 * (k % 2):03d}", f"{k / 2:.3f}", "1300", "300", *[""] * 16] for k in range(16)]
     for k in range(5):
         rows.append([f"10:00:0{k + 1}.100", f"{k + 1}.100", "", "", stem, "1", "1", str(1400 + 10 * k), "20",
                      str(1400 * (k + 1)), "124.0", "um", "0.5", f"{3.0 + 0.1 * k:.1f}", "0.3", "200", str(k + 1),
@@ -426,7 +426,7 @@ class LiveQCTests(unittest.TestCase):
         opencv = dict(result_charts([result], [live], view="opencv"))
         self.assertEqual([s["name"] for s in opencv["droplet_timeline"]["series"]], ["oil"])   # the live line stays out
 
-    def test_a_runs_timeline_is_plotted_as_the_rig_shows_it(self):
+    def test_a_recordings_step_is_plotted_from_its_start_as_the_rig_shows_it(self):
         from admet.ui.series_style import series_styles
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -439,24 +439,29 @@ class LiveQCTests(unittest.TestCase):
             style = series_styles(["oil"])["oil"]
 
             charts = dict(run_charts(run, {"oil_step01_x": ("oil", style)}))
+            whole = dict(run_charts(run, {"oil_step01_x": ("oil", style), "other_step02_x": ("other", None)}))
+            no_events = dict(runs_charts([RunPlot(str(Path(tmp) / "nowhere")),
+                                          RunPlot(str(run), files={"oil_step01_x": ("oil", style)})]))
 
         self.assertEqual(list(charts), ["pressure", "flow", "droplets", "droplet_cv"])
-        self.assertEqual(charts["pressure"]["series"][0]["name"], "Oil L")
-        self.assertEqual(charts["pressure"]["series"][0]["data"], [[0.0, 1300.0]])
-        self.assertEqual(charts["flow"]["series"][0]["data"], [[0.0, 300.0]])
-        self.assertEqual(charts["flow"]["xAxis"]["name"], "s since the run began")
-        spans = charts["pressure"]["series"][0]["markArea"]["data"]
-        self.assertEqual([(a["name"], a["xAxis"], b["xAxis"]) for a, b in spans],
-                         [("oil", 1.1, 5.1), ("other_step02_x", 7.1, 7.1)])            # each recording's span
-        self.assertEqual([m["name"] for m in charts["flow"]["series"][0]["markLine"]["data"]], ["▶ 1", "■ 1"])
+        pressure = charts["pressure"]["series"]
+        self.assertEqual([s["name"] for s in pressure], ["oil · Oil L"])                 # the ticked recording's step
+        self.assertEqual(pressure[0]["data"][0], [0.0, 1300.0])                           # from the step's start (2.0 s)
+        self.assertEqual(pressure[0]["data"][-1][0], 3.0)                                 # to its end (5.0 s)
+        self.assertEqual(pressure[0]["lineStyle"]["color"], style.color)
+        self.assertEqual(pressure[0]["lineStyle"]["type"], "solid")                       # the channel's pattern
+        self.assertEqual(charts["flow"]["series"][0]["data"][0], [0.0, 300.0])
+        self.assertEqual(charts["flow"]["xAxis"]["name"], "s since the step began")
         droplets = charts["droplets"]["series"]
-        self.assertEqual([s["name"] for s in droplets], ["oil", "other_step02_x"])
-        self.assertEqual(droplets[0]["data"][0], [1.1, 1400.0])
-        self.assertEqual(droplets[0]["lineStyle"]["color"], style.color)
+        self.assertEqual([s["name"] for s in droplets], ["oil"])
+        self.assertEqual(droplets[0]["data"][0], [-0.9, 1400.0])                          # its first burst, 1.1 s on the run
         self.assertEqual(charts["droplet_cv"]["series"][0]["markLine"]["data"], [{"yAxis": 5.0}])
+        self.assertEqual([s["name"] for s in whole["droplets"]["series"]], ["oil", "other"])
+        self.assertEqual(whole["droplets"]["series"][1]["data"], [[0.0, 900.0]])          # outside the steps: its own span
+        self.assertEqual(list(no_events), ["pressure", "flow", "droplets", "droplet_cv"])  # a missing run is skipped
         self.assertEqual(run_charts(Path(tmp) / "nowhere"), [])
 
-    def test_several_runs_overlay_each_in_its_colour_the_channels_by_pattern(self):
+    def test_several_runs_stack_their_steps_each_recording_in_its_colour(self):
         from admet.ui.series_style import series_styles
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -467,20 +472,17 @@ class LiveQCTests(unittest.TestCase):
                 _run_csv(run)
                 runs.append(run)
             styles = series_styles(["oil", "water"])
-            plots = [RunPlot(str(runs[0]), run_label(runs[0]), styles["oil"].color, {"oil_step01_x": ("oil", styles["oil"])}),
-                     RunPlot(str(runs[1]), run_label(runs[1]), styles["water"].color,
-                             {"oil_step01_x": ("water", styles["water"])})]
+            plots = [RunPlot(str(runs[0]), run_label(runs[0]), {"oil_step01_x": ("oil", styles["oil"])}),
+                     RunPlot(str(runs[1]), run_label(runs[1]), {"oil_step01_x": ("water", styles["water"])})]
 
             charts = dict(runs_charts(plots))
 
         self.assertEqual(run_label(runs[0]), "oil 10:00")
         pressure = charts["pressure"]["series"]
-        self.assertEqual([s["name"] for s in pressure], ["oil 10:00 · Oil L", "water 11:00 · Oil L"])
+        self.assertEqual([s["name"] for s in pressure], ["oil · Oil L", "water · Oil L"])
         self.assertEqual([s["lineStyle"]["color"] for s in pressure], [styles["oil"].color, styles["water"].color])
-        self.assertEqual(pressure[0]["lineStyle"]["type"], "solid")                      # the channel's pattern
-        self.assertNotIn("markArea", pressure[0])                                          # spans only for a lone run
-        self.assertEqual([s["name"] for s in charts["droplets"]["series"]],
-                         ["oil", "other_step02_x", "water", "other_step02_x"])
+        self.assertEqual([s["data"][0][0] for s in pressure], [0.4, 0.4])                 # no events: from the bursts' span
+        self.assertEqual([s["name"] for s in charts["droplets"]["series"]], ["oil", "water"])
 
     def test_the_aggregated_line_sets_the_live_number_under_the_analysis(self):
         from admet.ui.series_style import series_styles

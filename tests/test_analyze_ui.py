@@ -355,7 +355,6 @@ class ResultsSectionTests(unittest.TestCase):
             self.assertEqual([plot.run_dir for plot in plots], [str(first.path.resolve()), str(second.path.resolve())])
             self.assertEqual([plot.label[:3] for plot in plots], ["oil", "wat"])
             self.assertEqual(list(plots[1].files), [Path(names[0]).stem])               # the step the rig measured
-            self.assertNotEqual(plots[0].color, plots[1].color)
             self.assertEqual(plots[1].files[Path(names[0]).stem][0], view.matrix[1].sample_id)
             view.matrix[0].active = False
             self.assertEqual([plot.label[:3] for plot in view._run_plots()], ["wat"])      # unticked: not drawn

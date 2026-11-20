@@ -918,11 +918,10 @@ CHANNEL_DASHES: tuple[Any, ...] = ("solid", "dashed", [12, 4, 3, 4])     # Oil L
 
 @dataclass(frozen=True)
 class RunPlot:
-    """One run to draw on the live plots: its folder, its name, its colour, and its recordings by id,
-    each with its sample's name and style."""
+    """One run to draw on the live plots: its folder, its name, and its ticked recordings by id, each
+    with its sample's name and style."""
     run_dir: str
     label: str = ""
-    color: str = ""
     files: dict[str, tuple[str, SeriesStyle]] = field(default_factory=dict)
 
 
@@ -936,20 +935,21 @@ def run_label(run_dir: str | Path) -> str:
 
 
 def run_charts(run_dir: str | Path, files: dict[str, tuple[str, SeriesStyle]] | None = None, *,
-               label: str = "", color: str = "") -> list[tuple[str, dict[str, Any]]]:
-    return runs_charts([RunPlot(str(run_dir), label or run_label(run_dir), color or chart_color(0), dict(files or {}))])
+               label: str = "") -> list[tuple[str, dict[str, Any]]]:
+    return runs_charts([RunPlot(str(run_dir), label or run_label(run_dir), dict(files or {}))])
 
 
 def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
-    """The ticked runs' timelines as the rig's Review stage shows them: pressure and flow per channel,
-    then the droplet rate and CV of each recording, every run on its own clock from its first reading.
-    A run is a colour, a channel a line pattern; a lone run has its recordings' spans shaded on the
-    readings and its steps marked.
+    """The ticked recordings' steps, stacked, as the rig's Review stage shows them: every step from its
+    own start, so steps and runs overlay; pressure and flow per channel, then the droplet rate and CV.
+
+    A recording is drawn in its sample's colour, a channel in its line pattern. Its step is the one
+    its bursts fall in; a recording outside any step (a run without events) is its bursts' span.
     """
     from admet.core.runs import Run
-    from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics_csv, read_qc_csv, step_markers
+    from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics_csv, read_qc_csv, step_segments
 
-    xname = "s since the run began"
+    xname = "s since the step began"
     readings: dict[str, list[dict[str, Any]]] = {"pressure": [], "flow": []}
     rate_series: list[dict[str, Any]] = []
     cv_series: list[dict[str, Any]] = []
@@ -962,55 +962,41 @@ def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
             qc = read_qc_csv(path)
         except (OSError, ValueError):
             continue
-        origin = float(t[0]) if len(t) else (float(qc.t[0]) if qc is not None and len(qc.t) else 0.0)
-        spans, marks = [], []
-        if len(runs) == 1:
-            record = Run(run.run_dir).read()
-            polling = record.get("artifacts", {}).get("polling_origin_monotonic")
-            events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
-            marks = [{"xAxis": round(at - origin, 2), "name": label,
-                      "lineStyle": {"color": theme.PALETTE.success_hover if kind == "start" else theme.PALETTE.text_muted,
-                                    "type": "dashed", "width": 1},
-                      "label": {"formatter": label, "position": "insideEndTop", "fontSize": 9}}
-                     for at, label, kind in step_markers(events, polling or 0.0) if events]
-            if qc is not None:
-                for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
-                    recording = qc.recording[chunk[0]]
-                    spans.append([{"name": run.files.get(recording, (recording, None))[0],
-                                   "xAxis": round(float(qc.t[chunk[0]]) - origin, 2),
-                                   "label": {"fontSize": 9, "position": "insideTop"}},
-                                  {"xAxis": round(float(qc.t[chunk[-1]]) - origin, 2)}])
-        for key, values_by_channel in (("pressure", pressures), ("flow", flows)):
-            first = True
-            for channel, values in enumerate(values_by_channel):
-                points = _thin([[round(float(a) - origin, 3), round(float(b), 3)] for a, b in zip(t, values)
-                                if math.isfinite(b)], 2000)
-                if not points:
-                    continue
-                label = FLUIDIC_CHANNEL_LABELS[channel] if channel < len(FLUIDIC_CHANNEL_LABELS) else f"channel {channel}"
-                series = {"name": f"{run.label} · {label}" if len(runs) > 1 else label, "type": "line",
-                          "showSymbol": False, "silent": True, "data": points,
-                          "lineStyle": {"color": run.color, "width": 1.5,
-                                        "type": CHANNEL_DASHES[channel % len(CHANNEL_DASHES)]},
-                          "itemStyle": {"color": run.color}}
-                if first and spans:
-                    series["markArea"] = {"silent": True, "itemStyle": {"color": "rgba(34,93,130,0.08)"}, "data": spans}
-                if first and key == "flow" and marks:
-                    series["markLine"] = {"silent": True, "symbol": "none", "data": marks}
-                first = False
-                readings[key].append(series)
-        if qc is not None:
-            for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
-                recording = qc.recording[chunk[0]]
-                name, style = run.files.get(recording, (recording, None))
-                style = style or series_styles([name])[name]
-                times = [round(float(value) - origin, 3) for value in qc.t[chunk]]
-                rate = [[at, round(float(v), 1)] for at, v in zip(times, qc.rate[chunk]) if math.isfinite(v) and v > 0]
-                cv = [[at, round(float(v), 2)] for at, v in zip(times, qc.cv[chunk]) if math.isfinite(v) and v > 0]
-                if rate:
-                    rate_series.append(_line(name, rate, style))
-                if cv:
-                    cv_series.append(_line(name, cv, style))
+        if qc is None:
+            continue                                          # no recording, nothing a ticked file is of
+        record = Run(run.run_dir).read()
+        polling = record.get("artifacts", {}).get("polling_origin_monotonic")
+        events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
+        segments = step_segments(events, polling or 0.0) if events else []
+        for chunk in qc.chunks(np.ones(len(qc.t), dtype=bool)):
+            recording = qc.recording[chunk[0]]
+            if recording not in run.files:
+                continue                                      # not ticked
+            name, style = run.files[recording]
+            style = style or series_styles([name])[name]
+            first, last = float(qc.t[chunk[0]]), float(qc.t[chunk[-1]])
+            step = next(((s, e) for _n, s, e in segments if s <= last and first <= e), None)
+            start, end = step if step else (first, last)
+            inside = (t >= start) & (t <= end)
+            for key, values_by_channel in (("pressure", pressures), ("flow", flows)):
+                for channel, values in enumerate(values_by_channel):
+                    points = _thin([[round(float(a) - start, 3), round(float(b), 3)]
+                                    for a, b in zip(t[inside], values[inside]) if math.isfinite(b)], 2000)
+                    if not points:
+                        continue
+                    label = FLUIDIC_CHANNEL_LABELS[channel] if channel < len(FLUIDIC_CHANNEL_LABELS) else f"channel {channel}"
+                    readings[key].append({"name": f"{name} · {label}", "type": "line", "showSymbol": False,
+                                          "silent": True, "data": points,
+                                          "lineStyle": {"color": style.color, "width": 1.5,
+                                                        "type": CHANNEL_DASHES[channel % len(CHANNEL_DASHES)]},
+                                          "itemStyle": {"color": style.color}})
+            times = [round(float(value) - start, 3) for value in qc.t[chunk]]
+            rate = [[at, round(float(v), 1)] for at, v in zip(times, qc.rate[chunk]) if math.isfinite(v) and v > 0]
+            cv = [[at, round(float(v), 2)] for at, v in zip(times, qc.cv[chunk]) if math.isfinite(v) and v > 0]
+            if rate:
+                rate_series.append(_line(name, rate, style))
+            if cv:
+                cv_series.append(_line(name, cv, style))
     if cv_series:
         cv_series[0]["markLine"] = {"silent": True, "symbol": "none",
                                     "lineStyle": {"color": theme.PALETTE.danger_hover, "type": "dashed", "width": 1},

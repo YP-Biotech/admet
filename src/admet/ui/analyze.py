@@ -46,13 +46,11 @@ from admet.ui.analyze_results import (
     AGGREGATED_FIELDS,
     FileResult,
     LiveQC,
-    RESULT_FIELDS,
     RESULT_LABELS,
     RESULT_SECTIONS,
     RunPlot,
     StoredResult,
     aggregated_cells,
-    chart_color,
     corrected_inclusions,
     correction_key,
     corrections_summary,
@@ -352,9 +350,7 @@ class AnalyzeWorkflowView:
             self._refs["log"] = ui.html("").classes("log-text w-full")
 
     def _sync_tables(self) -> None:
-        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._aggregated_rows,
-                       "results_opencv": lambda: self._results_rows("opencv"),
-                       "results_cellpose": lambda: self._results_rows("cellpose"), "results_live": self._live_rows}
+        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._aggregated_rows}
         for key, tables in self._table_refs.items():
             tables[:] = [table for table in tables if not table.is_deleted]
             source = row_sources.get(key)
@@ -1124,8 +1120,8 @@ class AnalyzeWorkflowView:
     # -- 3. Results -----------------------------------------------------------------------
 
     def _render_results_table(self) -> None:
-        """The aggregated table, one line per file with anything to show, with Use: an unticked file
-        stays here but leaves the plots and export."""
+        """The one table of the stage: a line per file with anything to show, with Use, which every
+        section below follows; an unticked file stays here but leaves the plots and export."""
         from nicegui import ui
 
         rows = self._aggregated_rows()
@@ -1133,16 +1129,12 @@ class AnalyzeWorkflowView:
             if not rows:
                 ui.label("Nothing analysed yet, and no live QC from a run.").classes("muted text-xs")
                 return
-            self._results_table("results", rows, AGGREGATED_FIELDS)
-
-    def _results_table(self, key: str, rows: list[dict[str, Any]], fields: tuple[str, ...]) -> None:
-        from nicegui import ui
-
-        table = ui.table(columns=results_columns(fields, RESULT_LABELS), rows=rows, row_key="uid").classes(
-            "slim-table matrix-table results-table w-full").props("dense flat hide-bottom")
-        self._register_table(key, table)
-        wire_results_table(table, self._handle_matrix_change, fields)
-        self._render_use_all_header(table)
+            table = ui.table(columns=results_columns(AGGREGATED_FIELDS, RESULT_LABELS), rows=rows,
+                             row_key="uid").classes("slim-table matrix-table results-table w-full").props(
+                "dense flat hide-bottom")
+            self._register_table("results", table)
+            wire_results_table(table, self._handle_matrix_change, AGGREGATED_FIELDS)
+            self._render_use_all_header(table)
 
     def _result_sections(self) -> list[str]:
         """The sections with something to show, in their order: aggregated, then the engines' own, then
@@ -1222,8 +1214,8 @@ class AnalyzeWorkflowView:
         return lives
 
     def _render_results_plots(self) -> None:
-        """One page: the aggregated plots, then a section per engine with its own table and plots, then
-        the rig's live QC and fluidics, each only when there is data for it."""
+        """One page: the aggregated plots, then a section of plots per engine, then the rig's live QC
+        and fluidics, each only when there is data for it; the one table above chooses for all."""
         from nicegui import ui
 
         sections = self._result_sections()
@@ -1239,14 +1231,7 @@ class AnalyzeWorkflowView:
         for section in sections:
             with ui.column().classes("panel w-full gap-2 p-3"):
                 ui.label(labels[section]).classes("section-title")
-                if section == "opencv":
-                    fields = tuple(f for f in RESULT_FIELDS if f != "inclusions")
-                    self._results_table("results_opencv", self._results_rows("opencv"), fields)
-                elif section == "cellpose":
-                    self._results_table("results_cellpose", self._results_rows("cellpose"), RESULT_FIELDS)
-                elif section == "live":
-                    self._results_table("results_live", self._live_rows(),
-                                        tuple(f for f in RESULT_FIELDS if f not in ("inclusions", "area", "speed")))
+                if section == "live":
                     self._render_live_charts()
                     continue
                 charts = result_charts(results, lives, view=section, listed=listed)
@@ -1273,8 +1258,7 @@ class AnalyzeWorkflowView:
         return list(runs.items())
 
     def _run_plots(self) -> list[RunPlot]:
-        """Every ticked run for the live plots: in the colour of its first ticked video, its ticked
-        recordings named and styled as their files are."""
+        """Every ticked run for the live plots, its ticked recordings named and styled as their files are."""
         styles = self._styles()
         plots = []
         for run_dir, label in self._live_runs():
@@ -1283,13 +1267,12 @@ class AnalyzeWorkflowView:
                 if row.active and row.run == run_dir and self._live_qc(row) is not None:
                     files[Path(row.source_path).stem] = (
                         row.sample_id, styles.get((Path(row.run).name, str(Path(row.source_path)))))
-            first = next((style for _name, style in files.values() if style is not None), None)
-            plots.append(RunPlot(run_dir, label, first.color if first is not None else chart_color(len(plots)), files))
+            plots.append(RunPlot(run_dir, label, files))
         return plots
 
     def _render_live_charts(self) -> None:
-        """The ticked runs' timelines as the rig's Review stage shows them: pressure, flow, droplet rate
-        and CV on each run's clock; nothing to pick, every ticked run is drawn."""
+        """The ticked recordings' steps, stacked, as the rig's Review stage shows them: pressure, flow,
+        droplet rate and CV, every step from its own start; nothing to pick, the table above chooses."""
         from nicegui import ui
 
         charts = runs_charts(self._run_plots())

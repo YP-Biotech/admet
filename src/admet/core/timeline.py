@@ -129,3 +129,16 @@ def step_markers(events: list[dict], origin: float) -> list[tuple[float, str, st
             current = None
             markers.append((at, f"■ {number_}", "completed" if outcome == "completed" else "failed"))
     return markers
+
+
+def step_segments(events: list[dict], origin: float) -> list[tuple[int, float, float]]:
+    """Each protocol step as (number, start, end) on the CSV's clock, from its start to its end."""
+    starts: dict[int, float] = {}
+    segments = []
+    for at, label, kind in step_markers(events, origin):
+        number = int(label[2:])
+        if kind == "start":
+            starts[number] = at
+        elif number in starts and at > starts[number]:
+            segments.append((number, starts.pop(number), at))
+    return segments
