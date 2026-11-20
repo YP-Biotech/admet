@@ -382,7 +382,32 @@ class DownstreamTests(unittest.TestCase):
         self.assertEqual(view._matrix_record(view.matrix)[1]["used"], True)              # both ticks are kept
 
 
-class ResultsSectionTests(unittest.TestCase):
+class ResultsDataTests(unittest.TestCase):
+    def test_the_kinds_of_data_results_takes_are_chosen_and_remembered(self):
+        from tests.test_analyze_results import _run_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            data = Path(tmp) / "data"
+            run, names = run_with_videos(data, "oil", videos=1)
+            _run_csv(run.path, Path(names[0]).stem)
+            view = _make_view(store)
+            view._add_root(data)
+            view._notify = lambda *a, **k: None
+
+            self.assertEqual(view.results_data, {"opencv", "cellpose", "live"})
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])
+            view._set_results_data("live", False)
+
+            self.assertEqual(view._lives(), [])                                          # the live QC left out
+            self.assertEqual(view._aggregated_rows(), [])
+            self.assertEqual(view._result_sections(), [])
+            self.assertEqual(_make_view(store).results_data, {"opencv", "cellpose"})     # remembered
+            view._set_results_data("live", True)
+            self.assertEqual(len(view._lives()), 1)
+            self.assertIn(("cellpose", "live", "opencv"), view._structure_signature())    # a change remounts the stage
+
+
     def test_every_ticked_run_is_drawn_on_the_live_plots_in_its_videos_colour(self):
         from tests.test_analyze_results import _run_csv
 

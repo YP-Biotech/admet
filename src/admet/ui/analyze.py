@@ -77,6 +77,7 @@ from admet.workflows.analyze_runner import AnalyzeBatchReport, AnalyzeBatchRunne
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 # Per-file detection settings a video row starts with and "Reset file settings" goes back to.
+RESULT_DATA = {"opencv": "OpenCV", "cellpose": "Cellpose", "live": "Live QC"}
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
@@ -134,6 +135,9 @@ class AnalyzeWorkflowView:
         # The setting columns the Analyse table shows, as chosen last time.
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
+        # The kinds of data 3. Results uses, as chosen last time: the engines' analyses and the rig's live QC.
+        chosen = self.store.view_setting("results_data", list(RESULT_DATA))
+        self.results_data: set[str] = {kind for kind in RESULT_DATA if kind in (chosen or [])}
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
@@ -218,7 +222,8 @@ class AnalyzeWorkflowView:
     def _structure_signature(self) -> tuple[Any, ...]:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(self.analyse_fields),
-                                   tuple(row.uid for row in self.matrix), self._running)
+                                   tuple(row.uid for row in self.matrix), self._running,
+                                   tuple(sorted(self.results_data)))
 
     def _mount_stage(self) -> None:
         for key in ("action_box_body", "action_panel_body", "main_body", "log_body"):
@@ -1135,8 +1140,15 @@ class AnalyzeWorkflowView:
 
         rows = self._aggregated_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
+            with ui.row().classes("items-center gap-4 no-wrap"):
+                ui.label("Data").classes("text-xs muted")
+                for kind, label in RESULT_DATA.items():
+                    box = ui.checkbox(label, value=kind in self.results_data).props("dense")
+                    box.on("update:model-value", lambda event, kind=kind: self._set_results_data(kind, bool(event.args)),
+                           [None])
             if not rows:
-                ui.label("No ticked file is analysed yet or has the rig's live QC.").classes("muted text-xs")
+                ui.label("No ticked file is analysed yet or has the rig's live QC." if self.results_data
+                         else "No data chosen.").classes("muted text-xs")
                 return
             table = ui.table(columns=results_columns(AGGREGATED_FIELDS, RESULT_LABELS), rows=rows,
                              row_key="uid").classes("slim-table matrix-table results-table w-full").props(
@@ -1144,6 +1156,15 @@ class AnalyzeWorkflowView:
             self._register_table("results", table)
             wire_results_table(table, self._handle_matrix_change, AGGREGATED_FIELDS)
             self._render_use_all_header(table)
+
+    def _set_results_data(self, kind: str, chosen: bool) -> None:
+        """A kind of data taken into 3. Results or left out, for every table, plot and export; remembered."""
+        wanted = (self.results_data | {kind}) if chosen else (self.results_data - {kind})
+        if wanted == self.results_data:
+            return
+        self.results_data = wanted
+        self.store.set_view_setting("results_data", [kind for kind in RESULT_DATA if kind in wanted])
+        self._refresh(force_mount=True)
 
     def _result_sections(self) -> list[str]:
         """The sections with something to show, in their order: aggregated, then the engines' own, then
@@ -1204,8 +1225,9 @@ class AnalyzeWorkflowView:
         return rows
 
     def _live_qc(self, row: MatrixRow):
-        """The live QC the rig wrote for this video while recording it, when the file came from a run."""
-        if not row.run or row.engine != "opencv":
+        """The live QC the rig wrote for this video while recording it, when the file came from a run and
+        3. Results takes live data."""
+        if not row.run or row.engine != "opencv" or "live" not in self.results_data:
             return None
         try:
             mtime = (Path(row.run) / "run.csv").stat().st_mtime
@@ -1309,7 +1331,7 @@ class AnalyzeWorkflowView:
             fixes = json.dumps(corrections.get((row.engine, self._row_key(row)[2]), {}), sort_keys=True)
             scales = json.dumps([*self._row_scale(row), self._row_flow(row)])
             results.extend(result for result in _cached_results(stored, fixes, scales)
-                           if _result_key(result) in listed)
+                           if _result_key(result) in listed and result.engine in self.results_data)
         return results
 
     def _row_scale(self, row: MatrixRow) -> tuple[float, float]:

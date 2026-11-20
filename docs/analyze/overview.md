@@ -106,7 +106,9 @@ the stored rows stay as found, and *Clear corrections* drops them.
 
 ## Results
 
-The stage is one page with one table, in the Action Panel: one line per file
+The stage is one page with one table, in the Action Panel. **Data** above it
+chooses what the stage takes in, OpenCV, Cellpose and Live QC, for every table,
+plot and export; the choice is remembered. The table has one line per file
 with droplets, diameter, CV and rate, the rig's live number under the
 analysis's, the recording's state in the rig's colour, and Use. Below it come
 the plots, in sections that are there when they have data; the table's ticks
