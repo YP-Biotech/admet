@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from admet.ui import theme as ui  # noqa: E402
@@ -41,6 +42,7 @@ class ExperimentStepTests(unittest.TestCase):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             self.app.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)   # as the running loop does
             time.sleep(0.01)
 
     def stage_index(self, stage_id):
@@ -115,6 +117,39 @@ class ExperimentStepTests(unittest.TestCase):
         self.assertNotIn(stage.id, self.api._previews)
         self.assertEqual(window.workflow.stages[window.workflow_state.index].id, "experiment_1")   # the step before it
         self.assertFalse(window._remove_protocol_stage(window.workflow.stages[0].id))
+
+    def test_removing_the_step_shown_keeps_the_live_panels_for_the_stage_shown_next(self):
+        import shiboken6
+
+        window = self.window
+        for index in range(len(window.workflow.stages)):                      # every page exists, as after a walk
+            window._select_stage(index)
+            self.pump(0.05)
+        first = window._add_protocol_stage("Oil 1")
+        second = window._add_protocol_stage("Oil 2")
+        self.pump()
+        self.assertTrue(window.current_stage_page.isAncestorOf(window.monitor_table))   # the live set is on Oil 2
+
+        self.assertTrue(window._remove_protocol_stage(second.id))
+        self.pump()
+
+        self.assertEqual(window.workflow.stages[window.workflow_state.index].id, first.id)
+        for widget in (window.plot_panel, window.preview, window.monitor_table):
+            self.assertTrue(shiboken6.isValid(widget))                       # not deleted with the page
+        self.assertTrue(window.current_stage_page.isAncestorOf(window.monitor_table))   # shown on Oil 1 now
+        self.assertTrue(window.current_stage_page.isAncestorOf(window.protocol_editors[first.id]))
+        window._poll()                                                        # what the timer runs: no dead widgets
+        window._select_stage(self.stage_index("experiment_1"))
+        self.pump()
+        self.assertTrue(window._remove_protocol_stage("experiment_1"))      # the stock step, while shown
+        self.pump()
+        again = window._add_protocol_stage("Experiment 1")
+        self.pump()
+        self.assertEqual(window.workflow.stages[window.workflow_state.index].id, again.id)
+        self.assertTrue(window.current_stage_page.isAncestorOf(window.protocol_editors[again.id]))
+        self.assertTrue(window.current_stage_page.isAncestorOf(window.monitor_table))
+        self.assertEqual([b.text() for b in window._transport_button_refs][:2], ["Plan", "Execute"])
+        window._poll()
 
     def test_a_step_whose_protocol_runs_stays(self):
         window = self.window

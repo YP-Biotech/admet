@@ -698,6 +698,11 @@ class ControlWindow(QMainWindow):
             editor.deleteLater()
         page = self.stage_pages.pop(stage_id, None)
         if page is not None:
+            # The plots, the preview and the monitor table are one set shared by every stage; the page
+            # that held them must not take them along.
+            for widget in (self.plot_panel, self.preview, self.monitor_table):
+                if widget is not None and page.isAncestorOf(widget):
+                    widget.setParent(None)
             if self.page_scroll is not None and self.page_scroll.widget() is page:
                 self.page_scroll.takeWidget()
             if self.current_stage_page is page:
@@ -903,7 +908,7 @@ class ControlWindow(QMainWindow):
         self._apply_stage_liquids(stage)
         previous_page = self.current_stage_page
         page = self._activate_stage_page(stage)
-        stage_changed = previous_page is not None and previous_page is not page
+        stage_changed = previous_page is not page          # None when the page shown was just removed
         signature = self._structure_signature(stage)
         if structure_changed(page.mounted_signature, signature):
             self._mount_stage(stage)
