@@ -650,8 +650,8 @@ class AnalyzeWorkflowView:
         self._sync_action_box()
         self._notify(self._stage_summary(), "primary")
         self._mount_sidebar()
-        if self._stage_id() == "results":
-            self._remount_main()                      # the plots follow the ticked files
+        if self._stage_id() != "files":
+            self._remount_main()                      # the editor and the plots follow the ticked files
 
     def _handle_header_set(self, field: str, value: Any) -> None:
         """A value entered in a setting column's header: onto every ticked file the setting applies to."""
@@ -673,7 +673,7 @@ class AnalyzeWorkflowView:
 
     def _analyse_rows(self) -> list[dict[str, Any]]:
         rows = []
-        for row in self.matrix:
+        for row in self._targets():                  # only ticked files go on from 1. Files
             if row.engine == "opencv":
                 size = _known_video_size(Path(row.source_path))
                 frames = size[0] if size else 0
@@ -1127,7 +1127,7 @@ class AnalyzeWorkflowView:
         rows = self._aggregated_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
             if not rows:
-                ui.label("Nothing analysed yet, and no live QC from a run.").classes("muted text-xs")
+                ui.label("No ticked file is analysed yet or has the rig's live QC.").classes("muted text-xs")
                 return
             table = ui.table(columns=results_columns(AGGREGATED_FIELDS, RESULT_LABELS), rows=rows,
                              row_key="uid").classes("slim-table matrix-table results-table w-full").props(
@@ -1139,8 +1139,8 @@ class AnalyzeWorkflowView:
     def _result_sections(self) -> list[str]:
         """The sections with something to show, in their order: aggregated, then the engines' own, then
         the rig's live QC with the fluidics; a section without data is not there."""
-        results = self._results(ticked_only=False)
-        lives = any(self._live_qc(row) is not None for row in self.matrix)
+        results = self._results()
+        lives = any(self._live_qc(row) is not None for row in self._targets())
         present = {"aggregated": bool(results) or lives,
                    "opencv": any(r.engine == "opencv" for r in results),
                    "cellpose": any(r.engine == "cellpose" for r in results), "live": lives}
@@ -1157,7 +1157,7 @@ class AnalyzeWorkflowView:
         styles = self._styles()
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
-        for row in self.matrix:
+        for row in self._targets():
             result = by_key.get(self._row_key(row))
             if result is None or (engine and result.engine != engine):
                 continue
@@ -1170,7 +1170,7 @@ class AnalyzeWorkflowView:
         """One row per listed video the rig measured while recording, named as the file is."""
         styles = self._styles()
         rows = []
-        for row in self.matrix:
+        for row in self._targets():
             live = self._live_qc(row)
             if live is None:
                 continue
@@ -1185,7 +1185,7 @@ class AnalyzeWorkflowView:
         styles = self._styles()
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
-        for row in self.matrix:
+        for row in self._targets():
             result, live = by_key.get(self._row_key(row)), self._live_qc(row)
             if result is None and live is None:
                 continue
@@ -1543,9 +1543,9 @@ class AnalyzeWorkflowView:
             self._sync_action_box()
             self._notify(self._stage_summary(), "primary")
             self._mount_sidebar()
-            if self._stage_id() == "results":
-                self._sync_tables()                      # the row greys out or gets its colour back
-                self._remount_main()                     # the plots follow the ticked files
+            self._sync_tables()                          # past 1. Files, an unticked file leaves the table
+            if self._stage_id() != "files":
+                self._remount_main()                     # the editor and the plots follow the ticked files
             return
         if field_name == "sample_id":
             row.sample_id = str(value or "")
@@ -1565,7 +1565,11 @@ class AnalyzeWorkflowView:
             self._refresh()
 
     def _selected_row(self) -> MatrixRow | None:
-        return next((row for row in self.matrix if row.uid == self.selected_uid), None)
+        """The file picked in the table; past 1. Files an unticked one is not on the page, so not picked."""
+        row = next((row for row in self.matrix if row.uid == self.selected_uid), None)
+        if row is not None and not row.active and self._stage_id() != "files":
+            return None
+        return row
 
     def _targets(self, engine: str | None = None) -> list[MatrixRow]:
         return [row for row in self.matrix if row.active and (engine is None or row.engine == engine)]

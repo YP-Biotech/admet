@@ -34,7 +34,7 @@ The file list comes back as you left it.
 
 | Stage | What you do there |
 |---|---|
-| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's name; **Add files…** takes single videos and image folders. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. |
+| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's name; **Add files…** takes single videos and image folders. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here, and Use all in the table's header ticks or clears every file on any stage. |
 | **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. |
 | **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 

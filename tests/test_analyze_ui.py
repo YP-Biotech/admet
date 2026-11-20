@@ -328,12 +328,37 @@ class LiveRowTests(unittest.TestCase):
                              ["diameter_per_sample", "cv_per_sample", "rate_per_sample"])
             view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
             self.assertFalse(view.matrix[0].active)
-            self.assertFalse(view._live_rows()[0]["active"])
-            self.assertEqual(view._live_runs(), [])                                      # unticked: not in the live view
+            self.assertEqual(view._live_rows(), [])                                      # unticked: gone from 3. Results
+            self.assertEqual(view._aggregated_rows(), [])
+            self.assertEqual(view._result_sections(), [])
+            self.assertEqual(view._live_runs(), [])                                      # and from the live plots
             view.matrix[0].active = True
             self.assertEqual([folder for folder, _label in view._live_runs()], [view.matrix[0].run])
             view.matrix[0].run = ""
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
+
+
+class DownstreamTests(unittest.TestCase):
+    def test_only_ticked_files_go_on_from_the_files_stage(self):
+        from dataclasses import replace
+
+        view = _make_view()
+        view.matrix = [_row(sample="a", microns_per_pixel=1.1, fps=24.0), _row(sample="b"), _row(sample="c")]
+        view._notify = lambda *a, **k: None
+        view.state = replace(view.state, index=1)                                        # 2. Analyse
+        view.selected_uid = view.matrix[1].uid
+
+        self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "b", "c"])
+        self.assertIs(view._selected_row(), view.matrix[1])
+        view._handle_matrix_change(SimpleNamespace(args={"uid": view.matrix[1].uid, "field": "active", "value": False}))
+
+        self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "c"])  # b has left the table
+        self.assertIsNone(view._selected_row())                                           # and the editor
+        self.assertEqual([row["sample_id"] for row in view._files_rows()], ["a", "b", "c"])  # but stays listed
+        view.state = replace(view.state, index=0)                                        # 1. Files
+        self.assertIs(view._selected_row(), view.matrix[1])                               # picked there still
+        view._handle_use_all(True)
+        self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "b", "c"])
 
 
 class ResultsSectionTests(unittest.TestCase):
