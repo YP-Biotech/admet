@@ -38,7 +38,7 @@ class WorkflowShapeTests(unittest.TestCase):
 
         self.assertEqual([stage.id for stage in workflow.stages], ["files", "analyse", "results"])
         self.assertEqual([action.label for action in workflow.stages[1].actions],
-                         ["Run all ticked", "Run selected", "Reset ticked", "Reset file settings"])
+                         ["Run all ticked", "Run selected", "Stop", "Reset ticked", "Reset file settings"])
         self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export CSV", "Export plots"])
 
 
@@ -327,9 +327,14 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual([name for name, _ in result_charts([], lives, view="aggregated")],
                              ["diameter_per_sample", "cv_per_sample", "rate_per_sample"])
             from dataclasses import replace
+            view.state = replace(view.state, index=1)                                    # 2. Analyse
+            view._handle_matrix_change(SimpleNamespace(args={"uid": view.matrix[0].uid, "field": "active", "value": False}))
+            self.assertEqual((view.matrix[0].active, view.matrix[0].to_run, view.matrix[0].plotted), (True, False, True))
+            self.assertTrue(view._live_rows()[0]["active"])                              # not run, still in Results
+            self.assertEqual(len(view._live_runs()), 1)
             view.state = replace(view.state, index=2)                                    # 3. Results
             view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
-            self.assertEqual((view.matrix[0].active, view.matrix[0].used), (True, False))
+            self.assertEqual((view.matrix[0].active, view.matrix[0].plotted), (True, False))
             self.assertFalse(view._live_rows()[0]["active"])                             # still listed, greyed
             self.assertEqual(view._result_sections(), ["aggregated", "live"])
             self.assertEqual(view._live_runs(), [])                                      # out of the live plots
@@ -340,10 +345,29 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual(view._aggregated_rows(), [])
             self.assertEqual(view._result_sections(), [])
             view.matrix[0].active = True
-            view.matrix[0].used = True
+            view.matrix[0].plotted = True
             self.assertEqual([folder for folder, _label in view._live_runs()], [view.matrix[0].run])
             view.matrix[0].run = ""
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
+
+
+class StopTests(unittest.TestCase):
+    def test_stop_asks_the_run_in_hand_to_stop_now_and_only_works_while_running(self):
+        from admet.workflows.analyze_runner import AnalysisStop
+
+        view = _make_view()
+        view._notify = lambda *a, **k: None
+        self.assertFalse(view._guard_value("running"))
+        view._stop_analysis()                                                             # nothing running: no-op
+        view._running, view._stop = True, AnalysisStop()
+        self.assertTrue(view._guard_value("running"))
+        specs = {spec["action"]: spec for spec in view._action_specs("analyse")}
+        self.assertTrue(specs["stop_analysis"]["enabled"])
+
+        view._stop_analysis()
+
+        self.assertTrue(view._stop.now.is_set())
+        self.assertFalse(view._stop.after_file.is_set())
 
 
 class DownstreamTests(unittest.TestCase):
@@ -362,15 +386,16 @@ class DownstreamTests(unittest.TestCase):
 
         self.assertEqual([(row["sample_id"], row["active"]) for row in view._analyse_rows()],
                          [("a", True), ("b", False), ("c", True)])                        # b stays, greyed
-        self.assertEqual((b.active, b.used), (True, False))
+        self.assertEqual((b.active, b.to_run, b.plotted), (True, False, True))         # not run, still shown
         self.assertEqual([row.sample_id for row in view._targets()], ["a", "c"])          # out of the run
+        self.assertEqual([row.sample_id for row in view._shown()], ["a", "b", "c"])       # in the plots
         self.assertIs(view._selected_row(), b)                                            # still picked
-        self.assertIsNone(view._use_state())                                              # some in use
+        self.assertIsNone(view._use_state())                                              # some to run
         view._handle_use_all(True)
-        self.assertTrue(b.used)
+        self.assertTrue(b.to_run)
         view.state = replace(view.state, index=0)                                        # 1. Files
         view._handle_matrix_change(SimpleNamespace(args={"uid": b.uid, "field": "active", "value": False}))
-        self.assertEqual((b.active, b.used), (False, True))
+        self.assertEqual((b.active, b.to_run), (False, True))
         self.assertEqual([row["sample_id"] for row in view._files_rows()], ["a", "b", "c"])  # listed on Files
         view.state = replace(view.state, index=1)
         self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "c"])  # gone from Analyse
@@ -379,7 +404,8 @@ class DownstreamTests(unittest.TestCase):
         view.state = replace(view.state, index=0)
         view._handle_use_all(True)
         self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "b", "c"])
-        self.assertEqual(view._matrix_record(view.matrix)[1]["used"], True)              # both ticks are kept
+        record = view._matrix_record(view.matrix)[1]
+        self.assertEqual((record["active"], record["to_run"], record["plotted"]), (True, True, True))   # all kept
 
 
 class ResultsDataTests(unittest.TestCase):

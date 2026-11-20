@@ -72,7 +72,7 @@ from admet.ui.analyze_results import (
 from admet.ui.window import log_state, panel_specs, settings_panel_state, structure_signature
 from admet.ui.workflow_view import action_button_state, current_stage, instruction_text, stage_by_id, toc_row_states
 from admet.workflows import StageStatus, Workflow, WorkflowState
-from admet.workflows.analyze_runner import AnalyzeBatchReport, AnalyzeBatchRunner, AnalyzeTarget
+from admet.workflows.analyze_runner import AnalysisStop, AnalyzeBatchReport, AnalyzeBatchRunner, AnalyzeTarget
 
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
@@ -92,7 +92,8 @@ class MatrixRow:
     sample_id: str
     cache_policy: str = "use"
     active: bool = True                # ticked on 1. Files: goes on to the stages after it
-    used: bool = True                  # ticked there: in the run, the plots and the export
+    to_run: bool = True                # ticked on 2. Analyse: in the run
+    plotted: bool = True               # ticked on 3. Results: in the plots and the export
     settings: dict[str, Any] = field(default_factory=dict)
     run: str = ""                      # the run folder the file came from, when it did
 
@@ -141,6 +142,7 @@ class AnalyzeWorkflowView:
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
+        self._stop: AnalysisStop | None = None          # how the run in progress is told to stop
         self.show_overlay = True
         self.show_stages = False
         self.notice = "Add a folder of runs, or files, to start."
@@ -289,7 +291,8 @@ class AnalyzeWorkflowView:
             return
         for button, spec in zip(self._button_refs, specs, strict=True):
             button.set_text(spec["label"])
-            button.set_enabled(bool(spec.get("enabled", True)) and not self._running)
+            # While a run is on, only Stop works
+            button.set_enabled(bool(spec.get("enabled", True)) and (not self._running or spec.get("action") == "stop_analysis"))
 
     def _progress(self) -> tuple[float, str]:
         """How far the current stage is, as a fraction and in words."""
@@ -643,22 +646,23 @@ class AnalyzeWorkflowView:
 
     def _use_state(self) -> bool | None:
         """What the Use header shows: True when every file is ticked, False when none, None for some.
-        On 1. Files the tick is whether a file goes on; past it, whether a listed file is in use."""
-        if self._stage_id() == "files":
+        On 1. Files the tick is whether a file goes on; on 2. Analyse whether it is run; on 3. Results
+        whether it is in the plots and the export."""
+        stage = self._stage_id()
+        if stage == "files":
             ticked = [row.active for row in self.matrix]
+        elif stage == "analyse":
+            ticked = [row.to_run for row in self._listed()]
         else:
-            ticked = [row.used for row in self._listed()]
+            ticked = [row.plotted for row in self._listed()]
         if not ticked or all(ticked):
             return bool(ticked)
         return False if not any(ticked) else None
 
     def _handle_use_all(self, value: bool) -> None:
-        if self._stage_id() == "files":
-            for row in self.matrix:
-                row.active = bool(value)
-        else:
-            for row in self._listed():
-                row.used = bool(value)
+        stage = self._stage_id()
+        for row in self.matrix if stage == "files" else self._listed():
+            self._tick(row, stage, bool(value))
         self._save_matrix()
         self._sync_tables()
         self._sync_action_box()
@@ -1193,7 +1197,7 @@ class AnalyzeWorkflowView:
                 continue
             style = styles.get((result.run, result.source_path))
             colour = style.color if style is not None else "var(--text-disabled)"
-            rows.append({"uid": row.uid, "active": row.used, **results_cells(result, colour, active=row.used)})
+            rows.append({"uid": row.uid, "active": row.plotted, **results_cells(result, colour, active=row.plotted)})
         return rows
 
     def _live_rows(self) -> list[dict[str, Any]]:
@@ -1206,8 +1210,8 @@ class AnalyzeWorkflowView:
                 continue
             style = styles.get((live.run, live.source_path))
             colour = style.color if style is not None else "var(--text-disabled)"
-            rows.append({"uid": f"{row.uid}:live", "active": row.used,
-                         **live_cells(live, row.sample_id, colour, active=row.used)})
+            rows.append({"uid": f"{row.uid}:live", "active": row.plotted,
+                         **live_cells(live, row.sample_id, colour, active=row.plotted)})
         return rows
 
     def _aggregated_rows(self) -> list[dict[str, Any]]:
@@ -1220,8 +1224,8 @@ class AnalyzeWorkflowView:
             if result is None and live is None:
                 continue
             key = (result.run, result.source_path) if result is not None else (live.run, live.source_path)
-            rows.append({"uid": row.uid, "active": row.used,
-                         **aggregated_cells(row.sample_id, styles.get(key), result, live, active=row.used)})
+            rows.append({"uid": row.uid, "active": row.plotted,
+                         **aggregated_cells(row.sample_id, styles.get(key), result, live, active=row.plotted)})
         return rows
 
     def _live_qc(self, row: MatrixRow):
@@ -1238,7 +1242,7 @@ class AnalyzeWorkflowView:
     def _lives(self) -> list[LiveQC]:
         """The live QC of every ticked video that has one, named as the file is: data to view like a result."""
         lives = []
-        for row in self._targets():
+        for row in self._shown():
             live = self._live_qc(row)
             if live is not None:
                 lives.append(replace(live, sample_id=row.sample_id))
@@ -1283,7 +1287,7 @@ class AnalyzeWorkflowView:
     def _live_runs(self) -> list[tuple[str, str]]:
         """The runs of the ticked videos the rig measured, as (folder, name), in the list's order."""
         runs: dict[str, str] = {}
-        for row in self._targets():
+        for row in self._shown():
             if row.run and self._live_qc(row) is not None:
                 runs.setdefault(row.run, run_label(row.run))
         return list(runs.items())
@@ -1294,7 +1298,7 @@ class AnalyzeWorkflowView:
         plots = []
         for run_dir, label in self._live_runs():
             files = {}
-            for row in self._targets():
+            for row in self._shown():
                 if row.run == run_dir and self._live_qc(row) is not None:
                     files[Path(row.source_path).stem] = (
                         row.sample_id, styles.get((Path(row.run).name, str(Path(row.source_path)))))
@@ -1317,7 +1321,7 @@ class AnalyzeWorkflowView:
 
         A file is known by its path, never by its sample name: two files may be given the same name.
         """
-        listed = {self._row_key(row) for row in self.matrix if row.active and (row.used or not ticked_only)}
+        listed = {self._row_key(row) for row in self.matrix if row.active and (row.plotted or not ticked_only)}
         corrections = self._corrections()
         results = []
         for row in self.matrix:
@@ -1574,10 +1578,7 @@ class AnalyzeWorkflowView:
         if row is None:
             return
         if field_name == "active":
-            if self._stage_id() == "files":
-                row.active = bool(value)             # goes on to the next stages, or stays here only
-            else:
-                row.used = bool(value)               # in the run and the plots, or listed and left out
+            self._tick(row, self._stage_id(), bool(value))
             self._save_matrix()
             self._sync_use_all()
             self._sync_action_box()
@@ -1611,13 +1612,27 @@ class AnalyzeWorkflowView:
             return None
         return row
 
+    @staticmethod
+    def _tick(row: MatrixRow, stage: str, value: bool) -> None:
+        """Each stage's Use is its own: 1. Files passes a file on, 2. Analyse runs it, 3. Results plots it."""
+        if stage == "files":
+            row.active = value
+        elif stage == "analyse":
+            row.to_run = value
+        else:
+            row.plotted = value
+
     def _listed(self) -> list[MatrixRow]:
         """The files that went on from 1. Files: what the stages after it list."""
         return [row for row in self.matrix if row.active]
 
     def _targets(self, engine: str | None = None) -> list[MatrixRow]:
-        """The files in use: listed past 1. Files and ticked there."""
-        return [row for row in self.matrix if row.active and row.used and (engine is None or row.engine == engine)]
+        """The files to run: listed past 1. Files and ticked on 2. Analyse."""
+        return [row for row in self.matrix if row.active and row.to_run and (engine is None or row.engine == engine)]
+
+    def _shown(self) -> list[MatrixRow]:
+        """The files in the plots and the export: listed past 1. Files and ticked on 3. Results."""
+        return [row for row in self.matrix if row.active and row.plotted]
 
     def _row_ready(self, row: MatrixRow) -> bool:
         """Whether the file has what a run cannot do without."""
@@ -1659,7 +1674,8 @@ class AnalyzeWorkflowView:
             rows.append(MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=engine,
                                   sample_id=str(entry.get("sample_id") or Path(entry["path"]).stem),
                                   cache_policy=str(entry.get("cache_policy") or "use"),
-                                  active=bool(entry.get("active", True)), used=bool(entry.get("used", True)),
+                                  active=bool(entry.get("active", True)), to_run=bool(entry.get("to_run", True)),
+                                  plotted=bool(entry.get("plotted", True)),
                                   settings=dict(entry.get("settings") or {}),
                                   run=str(entry.get("run") or "")))
         for row in rows:
@@ -1670,7 +1686,7 @@ class AnalyzeWorkflowView:
     @staticmethod
     def _matrix_record(rows: list[MatrixRow]) -> list[dict[str, Any]]:
         return [{"path": row.source_path, "engine": row.engine, "sample_id": row.sample_id,
-                 "cache_policy": row.cache_policy, "active": row.active, "used": row.used,
+                 "cache_policy": row.cache_policy, "active": row.active, "to_run": row.to_run, "plotted": row.plotted,
                  "settings": dict(row.settings), "run": row.run}
                 for row in rows]
 
@@ -1722,13 +1738,14 @@ class AnalyzeWorkflowView:
     async def _run_rows(self, rows: list[MatrixRow]) -> None:
         from nicegui import run, ui
 
-        rows = [row for row in rows if row.active and row.used and self._row_ready(row)]
+        rows = [row for row in rows if row.active and row.to_run and self._row_ready(row)]
         if not rows or self._running:
             return
         jobs = tuple(self._target_to_run(row) for row in rows)
         # Taken now: the refresh below deletes the button whose slot this handler runs in.
         page = ui.context.client
         self._running = True
+        self._stop = AnalysisStop()
         self._run_progress = self._run_step_progress = 0.0
         self._notify(f"Analysing {_count(len(jobs), 'file')}…", "primary")
         self._log(f"analysis: running {', '.join(row.sample_id for row in rows)}")
@@ -1744,17 +1761,31 @@ class AnalyzeWorkflowView:
         finally:
             timer.cancel()
             self._running = False
+            self._stop = None
             self._run_progress = self._run_step_progress = 0.0
         _cached_results.cache_clear()
-        failed = [job for job in report.jobs if job.status not in {"complete", "cached"}]
-        if failed:
+        stopped = [job for job in report.jobs if job.status == "stopped"]
+        failed = [job for job in report.jobs if job.status not in {"complete", "cached", "stopped"}]
+        done = len(report.jobs) - len(failed) - len(stopped)
+        if stopped:
+            self._notify(f"Stopped: {_count(done, 'file')} analysed, {len(stopped)} not; run again to go on.", "warning")
+        elif failed:
             self._notify(f"{_count(len(failed), 'file')} failed: "
                          + "; ".join(f"{job.sample_id}: {', '.join(job.warnings) or job.status}" for job in failed),
                          "danger")
         else:
             self._notify(f"Analysed {_count(len(report.jobs), 'file')} · see 3. Results.", "success")
-        self._log(f"analysis: done, {len(report.jobs) - len(failed)} of {len(report.jobs)} complete")
+        self._log(f"analysis: {'stopped' if stopped else 'done'}, {done} of {len(report.jobs)} complete")
         self._refresh(force_mount=True)
+
+    def _stop_analysis(self) -> None:
+        """Stop the run in hand at its next step: the file being analysed is left unfinished and is run
+        again next time; the files already finished keep their results."""
+        if not self._running or self._stop is None:
+            return
+        self._stop.now.set()
+        self._notify("Stopping…", "warning")
+        self._log("analysis: stop asked")
 
     def _run_batch(self, jobs: tuple[AnalyzeTarget, ...]) -> AnalyzeBatchReport:
         def on_progress(percent: float) -> None:
@@ -1764,7 +1795,7 @@ class AnalyzeWorkflowView:
             self._run_step_progress = percent
 
         return AnalyzeBatchRunner(self.registry, results_dir=self.store.results_dir).run(
-            jobs, on_progress=on_progress, on_file_progress=on_file_progress)
+            jobs, on_progress=on_progress, on_file_progress=on_file_progress, stop=self._stop)
 
     def _sync_run_progress(self) -> None:
         progress = self._refs.get("action_progress")
@@ -1807,7 +1838,7 @@ class AnalyzeWorkflowView:
     def _action_spec(self, action: Any) -> dict[str, Any]:
         state = action_button_state(action, self._guard_value)
         return {"label": state.label, "handler": self._action_handler(action.action), "active": state.active,
-                "warning": state.warning, "enabled": state.enabled}
+                "warning": state.warning, "enabled": state.enabled, "action": action.action}
 
     def _action_handler(self, action: str | None) -> Any:
         if action == "browse_source":
@@ -1824,6 +1855,8 @@ class AnalyzeWorkflowView:
             return lambda: self._run_rows(self._targets())
         if action == "analyze_selected":
             return lambda: self._run_rows([row for row in [self._selected_row()] if row is not None])
+        if action == "stop_analysis":
+            return self._stop_analysis
         if action == "export_csv":
             return self._export_csv
         if action == "export_plots":
@@ -1845,6 +1878,8 @@ class AnalyzeWorkflowView:
             return selected is not None and selected.active and self._row_ready(selected)
         if guard == "has_results":
             return bool(self._results())
+        if guard == "running":
+            return self._running
         return True
 
     def _activate(self, index: int) -> None:
