@@ -1287,12 +1287,18 @@ class AnalyzeWorkflowView:
         A file is known by its path, never by its sample name: two files may be given the same name.
         """
         listed = {self._row_key(row) for row in self.matrix if row.active or not ticked_only}
-        fixes = json.dumps([[engine, source, value] for (engine, source), value in self._corrections().items()],
-                           sort_keys=True)
-        scales = json.dumps([[row.engine, self._row_key(row)[2], *self._row_scale(row), self._row_flow(row)]
-                             for row in self.matrix], sort_keys=True)
+        corrections = self._corrections()
         results = []
-        for stored in self._stored_results():
+        for row in self.matrix:
+            if self._row_key(row) not in listed:
+                continue
+            stored = self._stored_result(row)
+            if stored is None:
+                continue
+            # Each file's rows are read with its own scale, fps, flow and corrections, so a change to one
+            # file leaves the others' parsed results in the cache.
+            fixes = json.dumps(corrections.get((row.engine, self._row_key(row)[2]), {}), sort_keys=True)
+            scales = json.dumps([*self._row_scale(row), self._row_flow(row)])
             results.extend(result for result in _cached_results(stored, fixes, scales)
                            if _result_key(result) in listed)
         return results
@@ -1851,15 +1857,19 @@ class AnalyzeWorkflowView:
 
 # -- stored results, read once per version of the raw file ------------------------------
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=256)
 def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, sample_id: str, run: str,
                 fixes: str, scales: str) -> tuple[FileResult, ...]:
+    """One file's results parsed from its rows: FIXES are its own corrections, SCALES its own
+    (µm/px, fps, flow), as JSON, so the cache is keyed by what the parse depends on and no more."""
     stored = load_stored_result(Path(result_dir), source_path=Path(source_path), engine=engine, sample_id=sample_id,
                                 run=run)
     if stored is None:
         return ()
-    corrections = {(engine, source): value for engine, source, value in json.loads(fixes)}
-    scale_of = {(engine, source): (scale, fps, *flow) for engine, source, scale, fps, *flow in json.loads(scales)}
+    key = (engine, str(stored.source_path))
+    own_fixes = json.loads(fixes) if fixes else {}
+    corrections = {key: own_fixes} if own_fixes else {}
+    scale_of = {key: tuple(json.loads(scales))} if scales else {}
     return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of))
 
 
@@ -1872,7 +1882,7 @@ def _result_key(result: FileResult) -> tuple[str, str, str]:
     return (result.run, result.engine, str(Path(result.source_path).resolve()))
 
 
-def _cached_results(stored: StoredResult, fixes: str = "[]", scales: str = "[]") -> tuple[FileResult, ...]:
+def _cached_results(stored: StoredResult, fixes: str = "", scales: str = "") -> tuple[FileResult, ...]:
     try:
         mtime = stored.rows_path.stat().st_mtime
     except OSError:
@@ -2092,7 +2102,20 @@ def _recorded_scale(row: MatrixRow) -> float:
 
 
 def _video_record(source: Path) -> dict[str, Any] | None:
-    """The record a video carries about itself, when it was made by control."""
+    """The record a video carries about itself, when it was made by control; read once per file version."""
+    try:
+        stat = Path(source).stat()
+    except OSError:
+        return None
+    return _video_record_of(str(source), stat.st_mtime, stat.st_size)
+
+
+@lru_cache(maxsize=256)
+def _video_record_of(path: str, _mtime: float, _size: int) -> dict[str, Any] | None:
+    return _read_video_record(Path(path))
+
+
+def _read_video_record(source: Path) -> dict[str, Any] | None:
     from admet.engines.acquisition.camera.tags import read_recording_tag
 
     try:
