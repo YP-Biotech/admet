@@ -146,6 +146,7 @@ class AnalyzeWorkflowView:
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
         self.current_set = str(self.store.view_setting("current_set", "") or "")   # the named set in use
+        self._last_tick = ""                            # the Use box clicked last, for shift-click ranges
         # The kinds of data 3. Results uses, as chosen last time: the engines' analyses and the rig's live QC.
         chosen = self.store.view_setting("results_data", list(RESULT_DATA))
         self.results_data: set[str] = {kind for kind in RESULT_DATA if kind in (chosen or [])}
@@ -1702,7 +1703,17 @@ class AnalyzeWorkflowView:
         if row is None:
             return
         if field_name == "active":
-            self._tick(row, self._stage_id(), bool(value))
+            # Shift held: every row between the last box clicked and this one takes the same tick.
+            shown = self.matrix if self._stage_id() == "files" else self._listed()
+            targets = [row]
+            if payload.get("shift") and self._last_tick:
+                uids = [r.uid for r in shown]
+                if row.uid in uids and self._last_tick in uids:
+                    first, last = sorted((uids.index(row.uid), uids.index(self._last_tick)))
+                    targets = shown[first:last + 1]
+            for target in targets:
+                self._tick(target, self._stage_id(), bool(value))
+            self._last_tick = row.uid
             self._save_matrix()
             self._sync_use_all()
             self._sync_action_box()

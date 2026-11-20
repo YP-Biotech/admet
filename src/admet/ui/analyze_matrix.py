@@ -226,7 +226,8 @@ def _bool_cell_slot(field: str, *, applies: str = "true") -> str:
     <q-td :props="props">
       <q-checkbox v-if="{applies}" dense v-model="props.row.{field}"
         @click.stop @mousedown.stop
-        @update:model-value="val => $parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: val}})" />
+        @update:model-value="(val, evt) => $parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: val,
+                                                                           shift: !!(evt && evt.shiftKey)}})" />
       <span v-else class="muted">—</span>
     </q-td>
     """

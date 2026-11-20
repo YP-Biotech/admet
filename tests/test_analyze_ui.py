@@ -462,6 +462,35 @@ class StopTests(unittest.TestCase):
         self.assertFalse(view._stop.after_file.is_set())
 
 
+class ShiftClickTests(unittest.TestCase):
+    def test_shift_click_ticks_or_clears_every_row_between_the_last_box_and_this_one(self):
+        from dataclasses import replace
+
+        view = _make_view()
+        view.matrix = [_row(sample=name) for name in "abcde"]
+        view._notify = lambda *a, **k: None
+        for row in view.matrix:
+            row.active = False
+        a, b, c, d, e = view.matrix
+
+        def tick(row, value, shift=False):
+            view._handle_matrix_change(SimpleNamespace(args={"uid": row.uid, "field": "active", "value": value,
+                                                             "shift": shift}))
+
+        tick(d, True, shift=True)                                                         # no box before: this one only
+        self.assertEqual([r.active for r in view.matrix], [False, False, False, True, False])
+        tick(a, True)
+        tick(c, True, shift=True)                                                         # a to c
+        self.assertEqual([r.active for r in view.matrix], [True, True, True, True, False])
+        tick(e, False, shift=True)                                                        # c to e, cleared
+        self.assertEqual([r.active for r in view.matrix], [True, True, False, False, False])
+        view.state = replace(view.state, index=1)                                        # 2. Analyse lists a and b
+        tick(a, False)
+        tick(b, False, shift=True)
+        self.assertEqual([(r.active, r.to_run) for r in view.matrix][:2], [(True, False), (True, False)])
+        self.assertTrue(c.to_run)                                                         # not listed there: untouched
+
+
 class DownstreamTests(unittest.TestCase):
     def test_the_files_tick_gates_the_later_stages_and_their_own_tick_keeps_the_row(self):
         from dataclasses import replace

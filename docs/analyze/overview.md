@@ -48,8 +48,9 @@ engine and when it was last analysed. The **sample** is the grouping: files give
 one name are replicates of it, and a name ending in a replicate marker (`rep 2`,
 `#2`) says which; it starts as the run's tag or protocol, and the protocol, the time
 and the step stay in columns of their own however the sample is named. **Use**
-decides which files go on; **✕** takes a file off the list (its stored results
-stay). **Rescan** at the top lists videos that arrived in the watched folders since.
+decides which files go on, and a shift-click on a Use box ticks or clears every file
+between it and the box clicked last, on any stage; **✕** takes a file off the list (its
+stored results stay). **Rescan** at the top lists videos that arrived in the watched folders since.
 The list and every file's settings are kept in the registry, so the screen comes
 back as you left it.
 
