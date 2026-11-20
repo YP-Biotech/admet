@@ -67,11 +67,10 @@ files out of theirs. Choosing a set from **Set** above the list ticks exactly it
 files. The set is kept with the file list.
 
 A set names its files: `<set>_rep1`, `<set>_rep2`, … in the order of their runs and
-replicates, unless a name is written over. Sets carry through to 3. Results: **Sets**
-beside the Data choice says which sets the stage takes, the table groups its lines
-by set with the set in a column, every file of a set shares the set's hue in the
-plots with a shade per file, and the summary CSV has set and replicate columns. A
-file in no set is grouped by its sample name alone.
+replicates, unless a name is written over. Sets carry through to 3. Results: the
+table groups its lines by set with the set in a column, every file of a set shares
+the set's hue in the plots with a shade per file, and the summary CSV has set and
+replicate columns. A file in no set is grouped by its sample name alone.
 
 ## Setting a video up
 
@@ -135,8 +134,8 @@ the stored rows stay as found, and *Clear corrections* drops them.
 ## Results
 
 The stage is one page with one table, in the Action Panel. **Data** above it
-chooses what the stage takes in, OpenCV, Cellpose and Live QC, and **Sets** which
-sets, for every table, plot and export; both choices are remembered. The table has one line per file
+chooses what the stage takes in, OpenCV, Cellpose and Live QC, for every table,
+plot and export; the choice is remembered. The table has one line per file
 with droplets, diameter, CV and rate, the rig's live number under the
 analysis's, the recording's state in the rig's colour, and Use. Below it come
 the plots, in sections that are there when they have data; the table's ticks

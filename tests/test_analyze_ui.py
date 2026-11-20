@@ -387,32 +387,19 @@ class SetTests(unittest.TestCase):
             self.assertEqual([row.active for row in view.matrix], [True, True, False])
             view._use_set("nothing")
             self.assertEqual([row.active for row in view.matrix], [True, True, False])
-            self.assertEqual(view._results_set_choices(), ["Oil A", "Water"])
             c.active = True
             view.state = replace(view.state, index=2)                                    # 3. Results
             self.assertEqual([row.name for row in view._for_results()],
                              ["Oil A_rep1", "Oil A_rep2", "Water_rep1"])                 # built from the sets
-            view._set_results_sets(SimpleNamespace(value=["Water"]))
-            self.assertEqual(view.results_sets, ["Water"])
-            self.assertEqual([row.set for row in view._for_results()], ["Water"])
-            self.assertEqual([row.set for row in view._shown()], ["Water"])
-            self.assertEqual(_make_view(store).results_sets, ["Water"])                   # remembered
-            view._set_results_sets(SimpleNamespace(value=["Water", "Oil A"]))
-            self.assertIsNone(view.results_sets)                                          # every set: no choice kept
             view._clear_set()
             self.assertEqual([row.set for row in view.matrix], ["", "", ""])
-            self.assertEqual(view._results_set_choices(), [])
 
     def test_results_group_the_files_by_set_in_the_sets_order(self):
         view = _make_view()
         view.matrix = [_row(sample="a"), _row(sample="b"), _row(sample="c"), _row(sample="d")]
         view.matrix[0].set, view.matrix[1].set, view.matrix[2].set = "two", "one", "two"
-        view.results_sets = None
 
         self.assertEqual([row.sample_id for row in view._for_results()], ["a", "c", "b", "d"])
-        self.assertEqual(view._results_set_choices(), ["two", "one", "(no set)"])
-        view.results_sets = ["(no set)"]
-        self.assertEqual([row.sample_id for row in view._for_results()], ["d"])
 
 
 class StoredResultTests(unittest.TestCase):

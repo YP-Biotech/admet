@@ -79,7 +79,6 @@ VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 # Per-file detection settings a video row starts with and "Reset file settings" goes back to.
 RESULT_DATA = {"opencv": "OpenCV", "cellpose": "Cellpose", "live": "Live QC"}
-NO_SET = "(no set)"
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
@@ -161,8 +160,6 @@ class AnalyzeWorkflowView:
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
         self.current_set = str(self.store.view_setting("current_set", "") or "")   # the set in use
-        chosen_sets = self.store.view_setting("results_sets", None)                 # the sets 3. Results takes
-        self.results_sets: list[str] | None = [str(n) for n in chosen_sets] if isinstance(chosen_sets, list) else None
         self._last_tick = ""                            # the Use box clicked last, for shift-click ranges
         # The kinds of data 3. Results uses, as chosen last time: the engines' analyses and the rig's live QC.
         chosen = self.store.view_setting("results_data", list(RESULT_DATA))
@@ -253,8 +250,7 @@ class AnalyzeWorkflowView:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(self.analyse_fields),
                                    tuple(row.uid for row in self.matrix), self._running,
-                                   tuple(sorted(self.results_data)), self.current_set,
-                                   tuple(self.results_sets or ()))
+                                   tuple(sorted(self.results_data)), self.current_set)
 
     def _mount_stage(self) -> None:
         for key in ("action_box_body", "action_panel_body", "main_body", "log_body"):
@@ -624,32 +620,11 @@ class AnalyzeWorkflowView:
         self.current_set = name
         self.store.set_view_setting("current_set", name)
 
-    def _in_results_sets(self, row: MatrixRow) -> bool:
-        """Whether 3. Results takes the file's set: every set unless some are chosen there."""
-        return self.results_sets is None or (row.set or NO_SET) in self.results_sets
-
     def _for_results(self) -> list[MatrixRow]:
-        """The files 3. Results lists: listed past 1. Files and of the sets chosen, grouped by set."""
-        rows = [row for row in self._listed() if self._in_results_sets(row)]
+        """The files 3. Results lists: listed past 1. Files, grouped by set in the sets' order."""
+        rows = self._listed()
         order = list(dict.fromkeys(row.set for row in rows))
         return sorted(rows, key=lambda row: order.index(row.set))
-
-    def _set_results_sets(self, event: Any) -> None:
-        chosen = getattr(event, "value", None)
-        names = [str(name) for name in chosen] if isinstance(chosen, list) else []
-        wanted = None if not names or set(names) >= set(self._results_set_choices()) else names
-        if wanted == self.results_sets:
-            return
-        self.results_sets = wanted
-        self.store.set_view_setting("results_sets", wanted)
-        self._refresh(force_mount=True)
-
-    def _results_set_choices(self) -> list[str]:
-        """The sets to choose from on 3. Results, with "(no set)" for the files in none; nothing without sets."""
-        names = self._set_names()
-        if names and any(not row.set for row in self._listed()):
-            names.append(NO_SET)
-        return names
 
     def _files_rows(self) -> list[dict[str, Any]]:
         return [files_row(row, count=self._count_text(row), analyzed=self._analyzed_at(row),
@@ -1293,13 +1268,6 @@ class AnalyzeWorkflowView:
                     box = ui.checkbox(label, value=kind in self.results_data).props("dense")
                     box.on("update:model-value", lambda event, kind=kind: self._set_results_data(kind, bool(event.args)),
                            [None])
-                choices = self._results_set_choices()
-                if choices:
-                    ui.label("Sets").classes("text-xs muted")
-                    ui.select(choices, multiple=True,
-                              value=[n for n in (self.results_sets or choices) if n in choices],
-                              on_change=self._set_results_sets).props(
-                        "dense outlined options-dense use-chips").classes("sets-select")
             if not rows:
                 ui.label("No ticked file is analysed yet or has the rig's live QC." if self.results_data
                          else "No data chosen.").classes("muted text-xs")
@@ -1472,8 +1440,7 @@ class AnalyzeWorkflowView:
 
         A file is known by its path, never by its sample name: two files may be given the same name.
         """
-        listed = {self._row_key(row) for row in self.matrix
-                  if row.active and (row.plotted or not ticked_only) and self._in_results_sets(row)}
+        listed = {self._row_key(row) for row in self.matrix if row.active and (row.plotted or not ticked_only)}
         corrections = self._corrections()
         results = []
         for row in self.matrix:
@@ -1827,8 +1794,8 @@ class AnalyzeWorkflowView:
         return [row for row in self.matrix if row.active and row.to_run and (engine is None or row.engine == engine)]
 
     def _shown(self) -> list[MatrixRow]:
-        """The files in the plots and the export: listed past 1. Files, of the sets chosen, ticked on 3. Results."""
-        return [row for row in self.matrix if row.active and row.plotted and self._in_results_sets(row)]
+        """The files in the plots and the export: listed past 1. Files and ticked on 3. Results."""
+        return [row for row in self.matrix if row.active and row.plotted]
 
     def _row_ready(self, row: MatrixRow) -> bool:
         """Whether the file has what a run cannot do without."""
