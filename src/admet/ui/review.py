@@ -151,7 +151,7 @@ def _bin(t: np.ndarray, y: np.ndarray, size: float) -> tuple[np.ndarray, np.ndar
     return np.bincount(index, weights=t)[used] / counts[used], np.bincount(index, weights=y)[used] / counts[used]
 
 
-COLUMNS = ("", "Colour", "Run", "Recorded", "State", "Duration", "Droplets", "Rate, /s", "CV, %")
+COLUMNS = ("", "Colour", "Run", "Set", "Recorded", "State", "Duration", "Droplets", "Rate, /s", "CV, %")
 
 
 class _Crosshair:
@@ -218,8 +218,8 @@ class ReviewPanel(QWidget):
         self._pg = pg
         self.project = None
         self._runs: dict[str, ReviewRun] = {}
-        # key -> (kind, run name, recorded, state, duration): project runs, then files loaded by hand
-        self._sources: dict[str, tuple[str, str, str, str, str]] = {}
+        # key -> (kind, run name, set, recorded, state, duration): project runs, then files loaded by hand
+        self._sources: dict[str, tuple[str, str, str, str, str, str]] = {}
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(ui.spacing("default"))
@@ -318,18 +318,18 @@ class ReviewPanel(QWidget):
         checked = set(self.checked_keys())
         project = {}
         for run in recorded_runs(self.project):
-            project[run["directory"]] = ("project", run["name"], run["at"][:16].replace("T", " "), run["state"],
-                                         _duration(Path(run["directory"])))
+            project[run["directory"]] = ("project", run["name"], run["set"], run["at"][:16].replace("T", " "),
+                                         run["state"], _duration(Path(run["directory"])))
         self._sources = project | {k: v for k, v in self._sources.items() if v[0] == "file"}
         self.table.blockSignals(True)
         self.table.setRowCount(len(self._sources))
-        for row, (key, (kind, name, recorded, state, duration)) in enumerate(self._sources.items()):
+        for row, (key, (kind, name, group, recorded, state, duration)) in enumerate(self._sources.items()):
             tick = QTableWidgetItem()
             tick.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             tick.setCheckState(Qt.CheckState.Checked if key in checked else Qt.CheckState.Unchecked)
             tick.setData(Qt.ItemDataRole.UserRole, key)
             self.table.setItem(row, 0, tick)
-            for column, text in enumerate(("■", name, recorded or "—", state, duration, "", "", ""), 1):
+            for column, text in enumerate(("■", name, group, recorded or "—", state, duration, "", "", ""), 1):
                 item = QTableWidgetItem(text)
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 item.setToolTip(key)
@@ -353,7 +353,7 @@ class ReviewPanel(QWidget):
         keys = [str(Path(path).resolve()) for path in paths]
         for key in keys:
             modified = datetime.fromtimestamp(Path(key).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-            self._sources.setdefault(key, ("file", Path(key).name, modified, "file", ""))
+            self._sources.setdefault(key, ("file", Path(key).name, "", modified, "file", ""))
         self.refresh()
         for row in range(self.table.rowCount()):
             if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) in keys:
@@ -421,9 +421,9 @@ class ReviewPanel(QWidget):
             if key not in self._runs:
                 continue
             run = self._runs[key]
-            if not self._sources[key][4]:
-                self.table.item(row, 5).setText(f"{run.t[-1] - run.t[0]:.0f} s" if len(run.t) > 1 else "")
-            for column, text in zip((6, 7, 8), qc_cells(run.qc)):
+            if not self._sources[key][5]:
+                self.table.item(row, 6).setText(f"{run.t[-1] - run.t[0]:.0f} s" if len(run.t) > 1 else "")
+            for column, text in zip((7, 8, 9), qc_cells(run.qc)):
                 self.table.item(row, column).setText(text)
         self.table.blockSignals(False)
         bin_text = "off" if self.bin.value() <= 0 else f"{self.bin.value():g} s"

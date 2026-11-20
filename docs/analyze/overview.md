@@ -61,10 +61,12 @@ back as you left it.
 ## Sets
 
 A set is the group a file belongs to, a field of its own beside the sample: one
-condition, one experiment, the controls. Type it in the **Set** column, or tick the
-files and **Assign…** them to a set, named anew or chosen; **Clear** takes the ticked
-files out of theirs. Choosing a set from **Set** above the list ticks exactly its
-files. The set is kept with the file list.
+condition, one experiment, the controls. A run planned with a set in `admet
+control` brings it along: its videos start in that set when they are scanned.
+Type a set in the **Set** column, or tick the files and **Assign…** them to a set,
+named anew or chosen; **Clear** takes the ticked files out of theirs. Choosing a
+set from **Set** above the list ticks exactly its files. The set is kept with the
+file list.
 
 A set names its files: `<set>_rep1`, `<set>_rep2`, … in the order of their runs and
 replicates, unless a name is written over. Sets carry through to 3. Results: the

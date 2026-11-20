@@ -9,9 +9,15 @@ plan; the runs it executed stay. Steps are not kept between sessions.
 
 1. **Select** a protocol from the selector. Its parameters appear in the
    *Parameter / Value* table; the JSON can be edited too.
-2. **Plan** first asks for the run's name, proposing the step's, and the step
-   takes that name. The name tags the run: its record, the record of each
-   recording and the lists in Review and Calculations carry it. Then it resolves the parameters and freezes the
+2. **Plan** first asks for the run's name and its set. The name, proposed from
+   the step's, tags the run: the step takes it, and its record, the record of each
+   recording and the lists in Review and Calculations carry it. The set is the
+   group the run belongs to, one condition or one experiment across runs; it is
+   written into the run's record and each recording's, Review lists it, and
+   `admet analyze` puts the run's videos into that set when it scans them, named
+   `<set>_rep1`, `<set>_rep2`, … (see [Sets](../analyze/overview#sets)), so the
+   grouping is done once, at the rig. The set given last is proposed for the
+   next run; leave it empty for none. Then Plan resolves the parameters and freezes the
    steps. Nothing moves and nothing is recorded. The plan table shows, per step:
    **STEP · UNIT ID · TYPE · TARGET · TRIGGER & ETA · END · CONFIRM**.
    Lines inside one row run at the same time. The action bar sums the step count,
@@ -54,10 +60,10 @@ A new run starts with an empty table. To review or correct an earlier run, use
 Every run is one folder under the home's `data/runs/`, named by date, time and
 the run's name: `20261118_183000_oil_3/`. It holds:
 
-- `run.json`, the run's record: the protocol and the plan as they ran, the state
-  and times, the rig mapping and corrections in force, the step events, the
-  measurements typed during the run, the videos made and the results calculated
-  from it afterwards;
+- `run.json`, the run's record: the protocol and the plan as they ran, the run's
+  name and set, the state and times, the rig mapping and corrections in force,
+  the step events, the measurements typed during the run, the videos made and
+  the results calculated from it afterwards;
 - `run.csv`, the timeline: pressure and flow of each channel and the live QC rows,
   on one clock;
 - the step videos, one file per step marked `"record": true`

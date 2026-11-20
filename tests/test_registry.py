@@ -10,12 +10,12 @@ from admet.core.registry import Registry, content_key, infer_engine, replicate_o
 from admet.core.runs import RunStore
 
 
-def run_with_videos(data_dir, tag, videos=2, kind="protocol"):
+def run_with_videos(data_dir, tag, videos=2, kind="protocol", group=""):
     store = RunStore(data_dir)
     if kind == "recording":
         run = store.begin_recording(tag)
     else:
-        run = store.begin({"plan_id": "p", "tag": tag, "operation_id": "run_json_protocol",
+        run = store.begin({"plan_id": "p", "tag": tag, "set": group, "operation_id": "run_json_protocol",
                            "normalized_settings": {"protocol": {"name": "dropseq", "steps": [
                                {"name": "collect", "trigger_type": "time", "trigger_params": {"duration_s": 1}}]}}})
     names = []
@@ -73,7 +73,7 @@ class RegistryTests(unittest.TestCase):
     def test_scanning_a_data_folder_registers_every_video_with_its_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"
-            run, names = run_with_videos(data, "Oil 3")
+            run, names = run_with_videos(data, "Oil 3", group="oil")
             by_hand, _ = run_with_videos(data, "cap", videos=1, kind="recording")
             going = RunStore(data).begin({"plan_id": "p", "tag": "going", "operation_id": "x",
                                            "normalized_settings": {"protocol": {"name": "d", "steps": [
@@ -90,6 +90,7 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual([(entry["protocol"], entry["run_time"], entry["replicate"]) for entry in added],
                              [("cap", at(by_hand.run_id), None), ("Oil 3", at(run.run_id), 1),
                               ("Oil 3", at(run.run_id), 2)])                            # fields of their own
+            self.assertEqual([entry["set"] for entry in added], ["", "oil", "oil"])       # the run's set, from control
             self.assertEqual({entry["run"] for entry in added}, {str(run.path.resolve()), str(by_hand.path.resolve())})
             self.assertTrue(all(entry["engine"] == "opencv" for entry in added))
             self.assertEqual(registry.scan(), [])                                     # nothing new the second time

@@ -56,7 +56,7 @@ class ExperimentStepTests(unittest.TestCase):
                 return editor.plan
         self.fail("no plan arrived")
 
-    def test_plan_asks_for_the_runs_name_and_the_plan_carries_it(self):
+    def test_plan_asks_for_the_runs_name_and_set_and_the_plan_carries_them(self):
         window = self.window
         index = self.stage_index("experiment_1")
         window._select_stage(index)
@@ -64,29 +64,43 @@ class ExperimentStepTests(unittest.TestCase):
         editor.set_document(DOCUMENT)
         asked = []
 
-        def ask(parent, title, label, **kwargs):
-            asked.append((title, label, kwargs.get("text")))
-            return "Oil 3", True
+        def ask(parent, name, group):
+            asked.append((name, group))
+            return "Oil 3", " oil "
 
-        with patch("admet.ui.protocols.QInputDialog.getText", side_effect=ask):
+        with patch("admet.ui.protocols.PlanDialog.ask", side_effect=ask):
             editor.build_plan()
             plan = self.wait_plan(editor)
 
-        self.assertEqual(plan["tag"], "Oil 3")
-        self.assertEqual(asked[0][2], "Experiment 1")                        # the step's own name is proposed
-        self.assertIn("tags the run", asked[0][1])
+        self.assertEqual((plan["tag"], plan["set"]), ("Oil 3", "oil"))
+        self.assertEqual(asked[0], ("Experiment 1", ""))                     # the step's own name is proposed
         self.assertEqual(window.workflow.stages[index].label, "Oil 3")       # and the step takes the name typed
         self.assertEqual(window.toc_rows[index]["label"].text(), f"{index + 1}. Oil 3")
         self.assertIs(editor.stage, window.workflow.stages[index])
-        with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", False)):
+        with patch("admet.ui.protocols.PlanDialog.ask", return_value=None):
             editor.build_plan()
             self.pump(0.3)
         self.assertEqual(editor.plan["plan_id"], plan["plan_id"])              # backing out plans nothing
-        with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", True)):
+        with patch("admet.ui.protocols.PlanDialog.ask", side_effect=ask):
             editor.build_plan()
             again = self.wait_plan(editor, previous_id=plan["plan_id"])
-        self.assertEqual(again["tag"], "Oil 3")                               # an empty name keeps the last one
+        self.assertEqual(asked[1], ("Oil 3", "oil"))                          # the last name and set are proposed
+        with patch("admet.ui.protocols.PlanDialog.ask", return_value=("", "")):
+            editor.build_plan()
+            again = self.wait_plan(editor, previous_id=again["plan_id"])
+        self.assertEqual((again["tag"], again["set"]), ("Oil 3", ""))         # an empty name keeps the last one
         self.assertEqual(window.workflow.stages[index].label, "Oil 3")
+        self.assertEqual(window.run_set, "")                                   # an empty set is none
+
+    def test_the_plan_dialog_proposes_the_name_and_the_set_and_returns_them_as_typed(self):
+        from admet.ui.protocols import PlanDialog
+
+        dialog = PlanDialog(None, "Oil 3", "oil")
+        self.addCleanup(dialog.close)
+        self.assertEqual((dialog.name.text(), dialog.group.text()), ("Oil 3", "oil"))
+        dialog.group.setText("oil 2")
+        dialog.accept()
+        self.assertEqual((dialog.name.text(), dialog.group.text()), ("Oil 3", "oil 2"))
 
     def test_an_added_step_can_be_removed_and_its_plan_goes_with_it(self):
         window = self.window
@@ -99,7 +113,7 @@ class ExperimentStepTests(unittest.TestCase):
         self.assertIsNone(window.toc_rows[0]["remove"])                       # stock stages have no cross
         editor = window._protocol_editor(stage)
         editor.set_document(DOCUMENT)
-        with patch("admet.ui.protocols.QInputDialog.getText", return_value=("Oil 3", True)):
+        with patch("admet.ui.protocols.PlanDialog.ask", return_value=("Oil 3", "")):
             editor.build_plan()
             self.wait_plan(editor)
         self.assertIn(stage.id, self.api._previews)

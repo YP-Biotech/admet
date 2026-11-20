@@ -7,8 +7,8 @@ import statistics
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
-    QInputDialog, QLineEdit, QPlainTextEdit,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QPlainTextEdit,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -308,6 +308,40 @@ class Measurements(QWidget):
             del self.pending[run_id]
 
 
+class PlanDialog(QDialog):
+    """Plan's question: the run's name and the set it joins, the group analyze puts its videos in."""
+
+    def __init__(self, parent, name: str, group: str):
+        super().__init__(parent)
+        self.setWindowTitle("Plan")
+        root = QVBoxLayout(self)
+        hint = QLabel("The name tags the run: its record, its recordings and the lists in Review and "
+                      "Calculations carry it. The set is the group the run's recordings start in on "
+                      "analyze, where its files are named <set>_rep1, <set>_rep2, …; leave it empty for none.")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        form = QFormLayout()
+        self.name = QLineEdit(name)
+        self.group = QLineEdit(group)
+        self.group.setPlaceholderText("none")
+        form.addRow("Run", self.name)
+        form.addRow("Set", self.group)
+        root.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.name.selectAll()
+
+    @classmethod
+    def ask(cls, parent, name: str, group: str) -> tuple[str, str] | None:
+        """(name, set) as typed, or None when the operator backs out."""
+        dialog = cls(parent, name, group)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.name.text(), dialog.group.text()
+
+
 class ProtocolEditor(QWidget):
     """Only the new definition/preview content; transport and logs stay in the window."""
 
@@ -512,11 +546,12 @@ class ProtocolEditor(QWidget):
         except Exception as exc:
             self.error(exc)
             return
-        tag = ""
+        tag = group = ""
         if not self.builtin:
-            tag = self.ask_run_name()
-            if tag is None:
+            named = self.ask_run_name()
+            if named is None:
                 return
+            tag, group = named
             self.window._rename_protocol_stage(self.stage.id, tag)      # the step is the run from now on
         generation = self._edit_generation
 
@@ -524,20 +559,21 @@ class ProtocolEditor(QWidget):
             if generation == self._edit_generation:
                 self.add_plan(plan)
 
-        self.submit(lambda: self.backend.preview(self.stage.id, document, tag), received)
+        self.submit(lambda: self.backend.preview(self.stage.id, document, tag, group), received)
 
     def ask_run_name(self):
-        """The run's name, asked before every Plan; the step takes it. None when the operator backs out."""
+        """The run's name and its set, asked before every Plan; the step takes the name and the window
+        keeps the set for the next run. None when the operator backs out."""
         import re
 
         default = self.run_name or re.sub(r"^\d+\.\s*", "", self.stage.label)
-        name, accepted = QInputDialog.getText(
-            self, "Plan", "Name this run.\nThe name tags the run: its record, its recordings and the "
-            "lists in Review and Calculations carry it.", text=default)
-        if not accepted:
+        answer = PlanDialog.ask(self, default, getattr(self.window, "run_set", ""))
+        if answer is None:
             return None
+        name, group = answer
         self.run_name = name.strip() or default
-        return self.run_name
+        self.window.run_set = group.strip()
+        return self.run_name, self.window.run_set
 
     def add_plan(self, plan):
         self.plan = plan
