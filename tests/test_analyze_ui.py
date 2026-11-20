@@ -446,6 +446,17 @@ class StoredResultTests(unittest.TestCase):
             (baked / "result.json").write_text(json.dumps({"settings": {"skip_left_pct": 10.0}, "window": "whole"}))
             self.assertEqual(view._stored_result(clip).result_dir, baked)
             self.assertEqual(view._read_settings(clip), {"skip_left_pct": 10.0, "skip_right_pct": 0.0, "gate_pct": 50.0})
+            (baked / "rows.jsonl").write_text(json.dumps({"engine": "opencv", "item_id": "v", "file_id": "f", "kind": "detection",
+                                                          "values": {"frame": 1, "droplet_id": 1, "centroid_x": 10.0,
+                                                                     "centroid_y": 5.0, "equivalent_diameter": 20.0,
+                                                                     "area": 314.0}}) + "\n")
+            clip.set, clip.replicate = "oil", 2
+            view._save_matrix()                                                          # names follow the set
+            result, = view._results()
+            self.assertEqual((result.set, result.replicate, result.sample_id), ("oil", 2, "v"))   # the row's, as written
+            clip.sample_id = ""
+            view._save_matrix()
+            self.assertEqual(view._results()[0].sample_id, "oil_rep1")                   # built, without a re-read
             self.assertEqual(view._read_settings(folder), {"frame_limit": 3, "detect_inclusions": True})
 
 

@@ -1487,7 +1487,10 @@ class AnalyzeWorkflowView:
             fixes = json.dumps(corrections.get((row.engine, self._row_key(row)[2]), {}), sort_keys=True)
             scales = json.dumps({"scale": [*self._row_scale(row), self._row_flow(row)],
                                  "read": self._read_settings(row)}, sort_keys=True)
-            results.extend(result for result in _cached_results(stored, fixes, scales)
+            # The name, the set and the replicate are the row's, stamped on after the parse: renaming or
+            # moving a file between sets re-reads nothing.
+            results.extend(replace(result, sample_id=row.name, set=row.set, replicate=row.replicate)
+                           for result in _cached_results(stored, fixes, scales)
                            if _result_key(result) in listed and result.engine in self.results_data)
         return results
 
@@ -1868,7 +1871,7 @@ class AnalyzeWorkflowView:
             origin: dict[str, Any] = {"protocol": str(entry.get("protocol") or ""),
                                       "run_time": str(entry.get("run_time") or ""),
                                       "replicate": _int_or_none(entry.get("replicate"))}
-            if run and not any(origin.values()):
+            if run and (not any(origin.values()) or "replicate" not in entry):
                 origin = _run_origin(run, Path(entry["path"]).name)      # listed before these were fields
             rows.append(MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=engine,
                                   sample_id=str(entry.get("sample_id") or ""),
@@ -2210,7 +2213,7 @@ def _cached_results(stored: StoredResult, fixes: str = "", scales: str = "") -> 
         mtime = stored.rows_path.stat().st_mtime
     except OSError:
         return ()
-    return _results_of(str(stored.result_dir), mtime, str(stored.source_path), stored.engine, stored.sample_id,
+    return _results_of(str(stored.result_dir), mtime, str(stored.source_path), stored.engine, "",   # named by the row
                        stored.run, fixes, scales)
 
 
