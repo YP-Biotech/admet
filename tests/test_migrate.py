@@ -102,7 +102,7 @@ class MigrateTests(unittest.TestCase):
             self.assertEqual(rows[3]["pressure_0_mbar"], "")
             self.assertEqual([run["name"] for run in RunStore(Path(tmp) / "data").list()], ["Oil 3", "by_hand"])   # as control names runs
             self.assertEqual(sorted(entry["sample_id"] for entry in registry.sources()),
-                             ["by_hand 19:05", "oil_3 16:43"])
+                             ["Oil 3 16:43", "by_hand 19:05"])                           # the protocol's name, its time
 
     def test_a_video_recorded_by_hand_is_a_recording_run(self):
         with tempfile.TemporaryDirectory() as tmp:
