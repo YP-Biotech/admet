@@ -2659,7 +2659,8 @@ def _style() -> str:
     .path-label { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
     .log-text { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text-muted); font-family: Menlo, Consolas, monospace; font-size: 12px; }
     .slim-table .q-table th, .slim-table .q-table td { height: 30px; padding: 2px 6px; font-size: 12px; white-space: nowrap; }
-    .slim-table .q-table td:nth-child(2), .slim-table .q-table td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }
+    .slim-table .q-table td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }       /* the sample */
+    .matrix-table .q-table td:nth-child(6) { white-space: normal; overflow-wrap: anywhere; }     /* the file name */
     .matrix-table .q-table td { height: 38px; }
     .matrix-table .q-field__control { min-height: 28px; }
     .matrix-table .q-field { max-width: 104px; }
