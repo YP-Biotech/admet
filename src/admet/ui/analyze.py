@@ -43,12 +43,14 @@ from admet.ui.analyze_matrix import (
     wire_results_table,
 )
 from admet.ui.analyze_results import (
+    AGGREGATED_FIELDS,
     FileResult,
     LiveQC,
-    RESULT_FIELDS,
     RESULT_LABELS,
+    RESULT_SECTIONS,
+    RunPlot,
     StoredResult,
-    chart_color,
+    aggregated_cells,
     corrected_inclusions,
     correction_key,
     corrections_summary,
@@ -60,8 +62,11 @@ from admet.ui.analyze_results import (
     live_qc,
     load_stored_result,
     local_time,
+    plot_styles,
     result_charts,
     results_cells,
+    run_label,
+    runs_charts,
     zip_bytes,
 )
 from admet.ui.window import log_state, panel_specs, settings_panel_state, structure_signature
@@ -223,7 +228,7 @@ class AnalyzeWorkflowView:
         # writes to a deleted element. Stages that need them create them again below.
         for key in ("action_progress", "action_progress_text", "log", "frame_image", "frame_caption",
                     "stages", "crop_label", "editor_warnings", "image_preview", "image_image", "image_caption",
-                    "corrections_table", "files_hint"):
+                    "corrections_table", "files_hint", "use_all_boxes"):
             self._refs.pop(key, None)
         self._table_refs = {}
         self._button_refs = []
@@ -300,8 +305,10 @@ class AnalyzeWorkflowView:
             if missing:
                 text += f" · {missing} missing µm/px or FPS"
             return analysed / len(ticked), text
-        results = self._results()
-        return (1.0 if results else 0.0), (f"{_count(len(results), 'result')}" if results else "nothing analysed yet")
+        results, lives = self._results(), self._lives()
+        if not results and not lives:
+            return 0.0, "nothing analysed yet"
+        return 1.0, f"{_count(len(results), 'result')}" + (f" · {len(lives)} live" if lives else "")
 
     def _mount_action_panel(self) -> None:
         body = self._refs["action_panel_body"]
@@ -343,7 +350,7 @@ class AnalyzeWorkflowView:
             self._refs["log"] = ui.html("").classes("log-text w-full")
 
     def _sync_tables(self) -> None:
-        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._results_rows}
+        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._aggregated_rows}
         for key, tables in self._table_refs.items():
             tables[:] = [table for table in tables if not table.is_deleted]
             source = row_sources.get(key)
@@ -361,9 +368,22 @@ class AnalyzeWorkflowView:
         self._sync_use_all()
 
     def _sync_use_all(self) -> None:
-        box = self._refs.get("use_all")
-        if box is not None and not box.is_deleted:
+        boxes = [box for box in self._refs.get("use_all_boxes", []) if not box.is_deleted]
+        self._refs["use_all_boxes"] = boxes
+        for box in boxes:
             box.value = self._use_state()
+
+    def _render_use_all_header(self, table: Any) -> None:
+        """A box in the table's Use header that ticks or clears every file; it reads indeterminate for some.
+        A NiceGUI element in the header slot, as a slot template cannot reach Python; a plain th, as
+        Quasar's q-th looks its column up by the vnode key, which NiceGUI uses for the element id."""
+        from nicegui import ui
+
+        with table.add_slot("header-cell-active"), ui.element("th").classes("text-center"):
+            # update:model-value is the browser's click; setting the value from Python stays quiet
+            box = ui.checkbox(value=self._use_state()).props("dense")
+            box.on("update:model-value", lambda event: self._handle_use_all(bool(event.args)), [None])
+            self._refs.setdefault("use_all_boxes", []).append(box)
 
     def _sync_previews(self) -> None:
         target = self._selected_row()
@@ -474,6 +494,7 @@ class AnalyzeWorkflowView:
                 "slim-table matrix-table w-full").props("dense flat hide-bottom")
             self._register_table("files", table)
             wire_files_table(table, self._handle_matrix_change, self._handle_matrix_remove)
+            self._render_use_all_header(table)
             table.on("rowClick", self._select_row_event)
             self._refs["files_hint"] = ui.label("No files yet. Add files… to list videos or image folders."
                                                 ).classes("muted text-xs")
@@ -578,12 +599,7 @@ class AnalyzeWorkflowView:
         ticked file. They are NiceGUI elements in the header slots: a slot template cannot reach Python."""
         from nicegui import ui
 
-        # plain cells: Quasar's q-th looks its column up by the vnode key, which NiceGUI uses for the element id
-        with table.add_slot("header-cell-active"), ui.element("th").classes("text-center"):
-            # update:model-value is the browser's click; setting the value from Python stays quiet
-            box = ui.checkbox(value=self._use_state()).props("dense")
-            box.on("update:model-value", lambda event: self._handle_use_all(bool(event.args)), [None])
-            self._refs["use_all"] = box
+        self._render_use_all_header(table)
         for name in self.analyse_fields:
             kind = matrix_field_kind(name)
             if kind is None:
@@ -634,6 +650,8 @@ class AnalyzeWorkflowView:
         self._sync_action_box()
         self._notify(self._stage_summary(), "primary")
         self._mount_sidebar()
+        if self._stage_id() == "results":
+            self._remount_main()                      # the plots follow the ticked files
 
     def _handle_header_set(self, field: str, value: Any) -> None:
         """A value entered in a setting column's header: onto every ticked file the setting applies to."""
@@ -1102,46 +1120,78 @@ class AnalyzeWorkflowView:
     # -- 3. Results -----------------------------------------------------------------------
 
     def _render_results_table(self) -> None:
-        """One row per analysed file, with Use: an unticked file stays here but leaves the plots and export."""
+        """The one table of the stage: a line per file with anything to show, with Use, which every
+        section below follows; an unticked file stays here but leaves the plots and export."""
         from nicegui import ui
 
-        rows = self._results_rows()
+        rows = self._aggregated_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
             if not rows:
                 ui.label("Nothing analysed yet, and no live QC from a run.").classes("muted text-xs")
                 return
-            fields = tuple(f for f in RESULT_FIELDS
-                           if f != "inclusions" or any(r.inclusion_counts for r in self._results(ticked_only=False)))
-            table = ui.table(columns=results_columns(fields, RESULT_LABELS), rows=rows, row_key="uid").classes(
-                "slim-table matrix-table results-table w-full").props("dense flat hide-bottom")
+            table = ui.table(columns=results_columns(AGGREGATED_FIELDS, RESULT_LABELS), rows=rows,
+                             row_key="uid").classes("slim-table matrix-table results-table w-full").props(
+                "dense flat hide-bottom")
             self._register_table("results", table)
-            wire_results_table(table, self._handle_matrix_change, fields)
+            wire_results_table(table, self._handle_matrix_change, AGGREGATED_FIELDS)
+            self._render_use_all_header(table)
 
-    def _results_rows(self) -> list[dict[str, Any]]:
-        """Every listed file with a stored result or a live QC, ticked or not; the ticked ones in their plot colour.
+    def _result_sections(self) -> list[str]:
+        """The sections with something to show, in their order: aggregated, then the engines' own, then
+        the rig's live QC with the fluidics; a section without data is not there."""
+        results = self._results(ticked_only=False)
+        lives = any(self._live_qc(row) is not None for row in self.matrix)
+        present = {"aggregated": bool(results) or lives,
+                   "opencv": any(r.engine == "opencv" for r in results),
+                   "cellpose": any(r.engine == "cellpose" for r in results), "live": lives}
+        return [section for section, _label in RESULT_SECTIONS if present[section]]
 
-        A video recorded on the rig gets a second line: what the live QC measured while it was recorded,
-        to set against what the analysis found. Before the analysis runs, that line stands alone.
-        """
-        results, lives = self._results(), self._lives()
-        colours = {_result_key(result): chart_color(index) for index, result in enumerate(results)}
-        colours.update({(live.run, live.source_path): chart_color(len(results) + index)
-                        for index, live in enumerate(lives)})
+    def _styles(self) -> dict[tuple[str, str], Any]:
+        """A style per file, its sample's hue and shade, over the ticked results and live lines; the
+        hues follow the whole list's order, so a file keeps its colour whichever are ticked."""
+        return plot_styles([*self._results(), *self._lives()], listed=[row.sample_id for row in self.matrix])
+
+    def _results_rows(self, engine: str | None = None) -> list[dict[str, Any]]:
+        """One row per listed file with a stored result (of the engine), ticked or not; the ticked ones
+        in their plot colour."""
+        styles = self._styles()
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
         for row in self.matrix:
-            key = self._row_key(row)
-            result, live = by_key.get(key), self._live_qc(row)
+            result = by_key.get(self._row_key(row))
+            if result is None or (engine and result.engine != engine):
+                continue
+            style = styles.get((result.run, result.source_path))
+            colour = style.color if style is not None else "var(--text-disabled)"
+            rows.append({"uid": row.uid, "active": row.active, **results_cells(result, colour, active=row.active)})
+        return rows
+
+    def _live_rows(self) -> list[dict[str, Any]]:
+        """One row per listed video the rig measured while recording, named as the file is."""
+        styles = self._styles()
+        rows = []
+        for row in self.matrix:
+            live = self._live_qc(row)
+            if live is None:
+                continue
+            style = styles.get((live.run, live.source_path))
+            colour = style.color if style is not None else "var(--text-disabled)"
+            rows.append({"uid": f"{row.uid}:live", "active": row.active,
+                         **live_cells(live, row.sample_id, colour, active=row.active)})
+        return rows
+
+    def _aggregated_rows(self) -> list[dict[str, Any]]:
+        """One row per listed file with anything to show: the analysis's numbers, the rig's live ones under."""
+        styles = self._styles()
+        by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
+        rows = []
+        for row in self.matrix:
+            result, live = by_key.get(self._row_key(row)), self._live_qc(row)
             if result is None and live is None:
                 continue
-            grey = "var(--text-disabled)"
-            if result is not None:
-                rows.append({"uid": row.uid, "active": row.active,
-                             **results_cells(result, colours.get(key, grey), active=row.active)})
-            if live is not None:
-                colour = colours.get((live.run, live.source_path), grey)
-                rows.append({"uid": f"{row.uid}:live", "active": row.active,
-                             **live_cells(live, "" if result is not None else row.sample_id, colour, active=row.active)})
+            key = (result.run, result.source_path) if result is not None else (live.run, live.source_path)
+            rows.append({"uid": row.uid, "active": row.active,
+                         **aggregated_cells(row.sample_id, styles.get(key), result, live, active=row.active)})
         return rows
 
     def _live_qc(self, row: MatrixRow):
@@ -1164,20 +1214,72 @@ class AnalyzeWorkflowView:
         return lives
 
     def _render_results_plots(self) -> None:
+        """One page: the aggregated plots, then a section of plots per engine, then the rig's live QC
+        and fluidics, each only when there is data for it; the one table above chooses for all."""
         from nicegui import ui
 
-        results, lives = self._results(), self._lives()
-        with ui.column().classes("panel w-full gap-2 p-3"):
-            ui.label("Plots").classes("section-title")
-            if not results and not lives:
+        sections = self._result_sections()
+        if not sections:
+            with ui.column().classes("panel w-full gap-2 p-3"):
+                ui.label("Plots").classes("section-title")
                 ui.label("Plots appear here once a ticked file is analysed or has the rig's live QC.").classes(
                     "muted text-xs")
-                return
-            with ui.element("div").classes("results-grid w-full"):
-                for name, options in result_charts(results, lives):
-                    with ui.column().classes("plot-card"):
-                        chart = ui.echart(options).classes("w-full h-full")
-                    self._chart_refs.append((name, chart))
+            return
+        listed = [row.sample_id for row in self.matrix]
+        results, lives = self._results(), self._lives()
+        labels = dict(RESULT_SECTIONS)
+        for section in sections:
+            with ui.column().classes("panel w-full gap-2 p-3"):
+                ui.label(labels[section]).classes("section-title")
+                if section == "live":
+                    self._render_live_charts()
+                    continue
+                charts = result_charts(results, lives, view=section, listed=listed)
+                if charts:
+                    self._render_charts(charts, "results-grid")
+                else:
+                    ui.label("Tick a file of this section to plot it.").classes("muted text-xs")
+
+    def _render_charts(self, charts: list[tuple[str, dict[str, Any]]], grid: str) -> None:
+        from nicegui import ui
+
+        with ui.element("div").classes(f"{grid} w-full"):
+            for name, options in charts:
+                with ui.column().classes("plot-card"):
+                    chart = ui.echart(options).classes("w-full h-full")
+                self._chart_refs.append((name, chart))
+
+    def _live_runs(self) -> list[tuple[str, str]]:
+        """The runs of the ticked videos the rig measured, as (folder, name), in the list's order."""
+        runs: dict[str, str] = {}
+        for row in self.matrix:
+            if row.active and row.run and self._live_qc(row) is not None:
+                runs.setdefault(row.run, run_label(row.run))
+        return list(runs.items())
+
+    def _run_plots(self) -> list[RunPlot]:
+        """Every ticked run for the live plots, its ticked recordings named and styled as their files are."""
+        styles = self._styles()
+        plots = []
+        for run_dir, label in self._live_runs():
+            files = {}
+            for row in self.matrix:
+                if row.active and row.run == run_dir and self._live_qc(row) is not None:
+                    files[Path(row.source_path).stem] = (
+                        row.sample_id, styles.get((Path(row.run).name, str(Path(row.source_path)))))
+            plots.append(RunPlot(run_dir, label, files))
+        return plots
+
+    def _render_live_charts(self) -> None:
+        """The ticked recordings' steps, stacked, as the rig's Review stage shows them: pressure, flow,
+        droplet rate and CV, every step from its own start; nothing to pick, the table above chooses."""
+        from nicegui import ui
+
+        charts = runs_charts(self._run_plots())
+        if not charts:
+            ui.label("Tick a video from a run to plot what the rig measured.").classes("muted text-xs")
+            return
+        self._render_charts(charts, "results-grid-2")
 
     def _results(self, *, ticked_only: bool = True) -> list[FileResult]:
         """Stored results of the listed files -- the ticked ones unless asked otherwise -- with the hand corrections.
@@ -2310,6 +2412,8 @@ def _style() -> str:
     .matrix-table .q-table td { height: 38px; }
     .matrix-table .q-field__control { min-height: 28px; }
     .matrix-table .q-field { max-width: 104px; }
+    .matrix-table .q-field.matrix-text { max-width: none; min-width: 260px; width: 100%; }   /* a sample name is read whole */
+    .matrix-table .q-table td:nth-child(2) { min-width: 272px; }
     .matrix-missing .q-field__control { outline: 2px solid var(--danger-hover); outline-offset: -2px; border-radius: 8px; }
     .matrix-table th .col-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
     .matrix-table th .col-label { font-weight: 600; }
@@ -2335,10 +2439,13 @@ def _style() -> str:
     .results-cell .spark { fill: var(--accent); fill-opacity: 0.8; vertical-align: middle; }
     .results-cell .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
     .results-off { opacity: 0.45; }
-    .results-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .qc-state { font-weight: 700; }
+    .results-grid, .results-grid-2 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .results-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .results-grid-2 .plot-card { aspect-ratio: 16 / 9; min-height: 0; }
     .results-grid .plot-card { aspect-ratio: 4 / 3; min-height: 0; }
     @media (max-width: 1100px) { .results-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 760px) { .results-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 760px) { .results-grid, .results-grid-2 { grid-template-columns: 1fr; } }
     .plot-card { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-control); padding: 4px; }
     .muted { color: var(--text-muted); }
     .section-title { color: var(--text-muted); font-size: 12px; text-transform: uppercase; font-weight: 700; }

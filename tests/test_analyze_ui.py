@@ -309,22 +309,58 @@ class LiveRowTests(unittest.TestCase):
             view = _make_view(Registry(Path(tmp) / "analyze"))
             view._add_root(data)
 
-            rows = view._results_rows()
+            rows = view._live_rows()
 
-            self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])   # no analysis yet: the rig's line alone
+            self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])
             self.assertIn("STABLE", rows[0]["analysed"])
             self.assertIn("oil", rows[0]["sample"])
             self.assertNotIn("text-disabled", rows[0]["sample"])                        # ticked: in its plot colour
+            self.assertEqual(view._results_rows(), [])                                   # nothing analysed: no result row
+            aggregated = view._aggregated_rows()
+            self.assertEqual(len(aggregated), 1)
+            self.assertIn("7 000", aggregated[0]["droplets"])
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])             # no engine's section yet
+            self.assertIn("not analysed", aggregated[0]["sample"])
             lives = view._lives()
             self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])
             self.assertEqual(len(lives[0].points), 5)
-            self.assertEqual([name for name, _ in result_charts([], lives)],
-                             ["cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time"])
+            self.assertEqual([name for name, _ in result_charts([], lives, view="aggregated")],
+                             ["diameter_per_sample", "cv_per_sample", "rate_per_sample"])
             view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
             self.assertFalse(view.matrix[0].active)
-            self.assertFalse(view._results_rows()[0]["active"])
+            self.assertFalse(view._live_rows()[0]["active"])
+            self.assertEqual(view._live_runs(), [])                                      # unticked: not in the live view
+            view.matrix[0].active = True
+            self.assertEqual([folder for folder, _label in view._live_runs()], [view.matrix[0].run])
             view.matrix[0].run = ""
-            self.assertEqual(view._results_rows(), [])                                   # a loose file has no live line
+            self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
+
+
+class ResultsSectionTests(unittest.TestCase):
+    def test_every_ticked_run_is_drawn_on_the_live_plots_in_its_videos_colour(self):
+        from tests.test_analyze_results import _run_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            first, names = run_with_videos(data, "oil", videos=1)
+            _run_csv(first.path, Path(names[0]).stem)
+            second, names = run_with_videos(data, "water", videos=2)
+            _run_csv(second.path, Path(names[0]).stem)
+            view = _make_view(Registry(Path(tmp) / "analyze"))
+            view._add_root(data)
+            view._notify = lambda *a, **k: None
+
+            plots = view._run_plots()
+
+            self.assertEqual([plot.run_dir for plot in plots], [str(first.path.resolve()), str(second.path.resolve())])
+            self.assertEqual([plot.label[:3] for plot in plots], ["oil", "wat"])
+            self.assertEqual(list(plots[1].files), [Path(names[0]).stem])               # the step the rig measured
+            self.assertEqual(plots[1].files[Path(names[0]).stem][0], view.matrix[1].sample_id)
+            view.matrix[0].active = False
+            self.assertEqual([plot.label[:3] for plot in view._run_plots()], ["wat"])      # unticked: not drawn
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])
+            view.matrix.append(_row(engine="cellpose", sample="imgs"))
+            self.assertEqual(view._result_sections(), ["aggregated", "live"])             # listed, not analysed
 
 
 if __name__ == "__main__":

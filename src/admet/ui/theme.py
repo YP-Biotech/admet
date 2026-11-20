@@ -64,17 +64,23 @@ SPACING = Spacing()
 TYPOGRAPHY = Typography()
 RADII = Radii()
 
-# Colours for data series told apart by colour (runs, files), in order, in both apps.
+# Colours for data series told apart by colour (runs, samples), in this order, in both apps: eight
+# hues checked for colour-blind separation and contrast on the white plot surface (every adjacent
+# pair clears the gates; aqua, yellow and magenta sit below 3:1, so a legend and a table always
+# accompany them). The order is part of the check: do not reorder.
 CHART_COLORS = (
-    PALETTE.accent,
-    PALETTE.success,
-    PALETTE.warning,
-    PALETTE.danger,
-    PALETTE.accent_hover,
-    PALETTE.success_hover,
-    PALETTE.warning_hover,
-    PALETTE.danger_hover,
+    "#2a78d6",   # blue
+    "#eb6834",   # orange
+    "#1baf7a",   # aqua
+    "#eda100",   # yellow
+    "#e87ba4",   # magenta
+    "#008300",   # green
+    "#4a3aa7",   # violet
+    "#e34948",   # red
 )
+
+# The droplet QC states the rig reports, in their colours, in both apps.
+QC_STATE_COLORS = {"STABLE": PALETTE.success_hover, "UNSTABLE": PALETTE.danger_hover, "SETTLING": PALETTE.warning}
 
 STATUS_COLORS = {
     "done": PALETTE.success,

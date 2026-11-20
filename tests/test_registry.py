@@ -94,6 +94,12 @@ class RegistryTests(unittest.TestCase):
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n} for i, n in enumerate(
                 [*names, "oil_3_step03_x.avi"])]})
             self.assertEqual([e["sample_id"] for e in registry.scan()], [f"Oil 3 {at(run.run_id)} step 3"])
+            run.update(artifacts={"videos": [{"step": 1, "step_name": "set01_rep01", "video_path": "oil_3_r1.avi"},
+                                             {"step": 2, "step_name": "set01_rep02", "video_path": "oil_3_r2.avi"}]})
+            for video in ("oil_3_r1.avi", "oil_3_r2.avi"):
+                (run.path / video).write_bytes(b"v")
+            self.assertEqual([e["sample_id"] for e in registry.scan()],                  # a step's own name
+                             [f"Oil 3 {at(run.run_id)} set01_rep01", f"Oil 3 {at(run.run_id)} set01_rep02"])
 
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:

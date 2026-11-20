@@ -201,7 +201,7 @@ def _required_number_slot(field: str, *, applies: str = "true", required: bool =
 def _text_cell_slot(field: str) -> str:
     return f"""
     <q-td :props="props">
-      <q-input dense outlined v-model="props.row.{field}"
+      <q-input dense outlined class="matrix-text" v-model="props.row.{field}"
         @click.stop @mousedown.stop
         @blur="$parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: props.row.{field}}})"
         @keyup.enter="$event.target.blur()" />
