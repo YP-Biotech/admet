@@ -85,9 +85,13 @@ passes once); **satellite size**, **min droplet area** and **threshold × noise*
 Tick *Show detection stages* to see each step on the preview frame. *Reset file
 settings* puts the selected file back to the defaults, keeping its µm/px and FPS.
 
-To set one thing on many files, use **Apply to ticked files** above the table: pick
-the setting, give the value, press Apply, and every ticked file whose engine has
-that setting takes it, for example *Detect inclusions* off on every image folder, or
+To set one thing on many files, type it in the column's header: every ticked file
+whose engine has that setting takes it as soon as the value is entered. The
+**Columns** dropdown above the table chooses which settings are shown as columns
+(µm/px, FPS, the frame range and the detection settings; the frames and crop
+summaries too), and the box in the **Use** header ticks or clears every file at
+once. Every setting column also edits per file, in its row. A value in a header
+lands, for example *Detect inclusions* off on every image folder, or
 one µm/px on every video. Unticked files are left alone.
 
 ## Setting an image folder up
@@ -109,10 +113,12 @@ from a run gets a second line, **live**: the rate, size and CV the rig measured
 while recording it, from the run's timeline, with how many droplets it counted and
 the state it ended in. It is there before the analysis runs, so the rig's numbers
 and the analysis can be set against each other. The plots show the diameter
-distribution, the droplet timeline, positions and area along the channel, with the
-files overlaid. **Export CSV** downloads a zip with a summary (the live numbers in
-its last columns) and every droplet row per file; **Export plots** downloads the
-plots as PNG.
+distribution, CV per sample, droplets, diameter and rate over time, positions and
+area along the channel, with the files overlaid. A live line is data too: it joins
+the plots over time (dashed) and the CV bars as its own series, named `… live`.
+**Export CSV** downloads a zip with a summary (the live numbers in its last
+columns) and every droplet row per file; **Export plots** downloads the plots as
+PNG.
 
 ## Where results go
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,9 @@ class Registry:
                 run_dir = record_path.parent
                 name = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
                            or record.get("name") or run_dir.name)
+                stamp = run_dir.name[:15]
+                if re.fullmatch(r"\d{8}_\d{6}", stamp):
+                    name = f"{name} {stamp[9:11]}:{stamp[11:13]}"            # the run's time tells runs apart
                 videos = [video for video in record.get("artifacts", {}).get("videos", [])
                           if isinstance(video, dict) and video.get("video_path")]
                 if isinstance(record.get("recording"), dict) and record["recording"].get("video_path"):
@@ -198,6 +202,17 @@ class Registry:
                     if entry is not None:
                         added.append(entry)
         return added
+
+    # -- what the screen remembers -------------------------------------------------------
+    def view_setting(self, key: str, default: Any = None) -> Any:
+        view = self.read().get("view")
+        return view.get(key, default) if isinstance(view, dict) else default
+
+    def set_view_setting(self, key: str, value: Any) -> None:
+        record = self.read()
+        view = record.get("view") if isinstance(record.get("view"), dict) else {}
+        record["view"] = {**view, key: value}
+        self.write(record)
 
     # -- results ------------------------------------------------------------------------
     def result_dir(self, source: str | Path, settings: dict[str, Any] | None = None) -> Path:

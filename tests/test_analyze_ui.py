@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from admet.core.engine import EngineRegistry
 from admet.core.registry import Registry
 from admet.ui.analyze import (
+    IMAGING_DEFAULTS,
     AnalyzeWorkflowView,
     MatrixRow,
     _addable,
@@ -16,6 +17,7 @@ from admet.ui.analyze import (
     _uid,
     apply_click,
 )
+from admet.ui.analyze_results import result_charts
 from admet.workflows import create_analyze_workflow
 from tests.test_registry import run_with_videos
 
@@ -36,7 +38,7 @@ class WorkflowShapeTests(unittest.TestCase):
 
         self.assertEqual([stage.id for stage in workflow.stages], ["files", "analyse", "results"])
         self.assertEqual([action.label for action in workflow.stages[1].actions],
-                         ["Run all ticked", "Run selected", "Reset file settings"])
+                         ["Run all ticked", "Run selected", "Reset ticked", "Reset file settings"])
         self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export CSV", "Export plots"])
 
 
@@ -57,33 +59,87 @@ class MatrixChangeTests(unittest.TestCase):
         self.assertEqual([row.active for row in view.matrix], [True, True, False])
         self.assertEqual([row.sample_id for row in view._targets("opencv")], ["a", "b"])
 
-    def test_a_setting_applied_from_the_header_lands_on_every_ticked_file_that_takes_it(self):
-        from admet.ui.analyze_matrix import apply_setting, mass_edit_fields
+    def test_a_value_in_a_column_header_lands_on_every_ticked_file_that_takes_it(self):
+        from admet.ui.analyze_matrix import apply_setting
 
         view = _make_view()
         view.matrix = [_row(engine="cellpose", sample=f"img{i}", detect_inclusions=True) for i in range(3)]
         view.matrix += [_row(sample="vid", k_sigma=4.0)]
         view.matrix[1].active = False                                        # unticked: left alone
-        view._notify = lambda *a, **k: None
+        notices = []
+        view._notify = lambda text, kind: notices.append((kind, text))
 
-        changed = view._apply_to_ticked("detect_inclusions", False)
+        view._handle_header_set("detect_inclusions", False)
 
-        self.assertEqual([row.sample_id for row in changed], ["img0", "img2"])
         self.assertEqual([row.settings.get("detect_inclusions") for row in view.matrix], [False, True, False, None])
-        self.assertEqual(view._apply_to_ticked("detect_inclusions", False), [])   # already so: nothing changes
-
-        changed = view._apply_to_ticked("microns_per_pixel", "2.27")
-        self.assertEqual(len(changed), 3)
+        self.assertIn("on 2 ticked file(s)", notices[-1][1])
+        view._handle_header_set("detect_inclusions", False)
+        self.assertEqual(notices[-1][0], "secondary")                        # already so: nothing changes
+        view._handle_header_set("microns_per_pixel", "2.27")
         self.assertEqual(view.matrix[0].settings["px_to_um"], 2.27)             # the imaging engine's name for it
         self.assertEqual(view.matrix[3].settings["microns_per_pixel"], 2.27)
         self.assertNotIn("px_to_um", view.matrix[1].settings)
-
+        view._handle_header_set("k_sigma", "")          # left empty
+        self.assertEqual(view.matrix[3].settings["k_sigma"], 4.0)
         self.assertEqual(apply_setting(view.matrix, "k_sigma", 3), [view.matrix[3]])
-        self.assertEqual(view.matrix[3].settings["k_sigma"], 3.0)
         self.assertEqual(apply_setting(view.matrix, "no_such_setting", 1), [])
-        self.assertEqual([f for f, _l, _k in mass_edit_fields({"cellpose"})],
-                         ["microns_per_pixel", "frame_limit", "detect_inclusions"])
-        self.assertEqual(len(mass_edit_fields({"opencv", "cellpose"})), 12)
+
+    def test_reset_ticked_puts_every_ticked_file_back_to_the_defaults_and_what_its_recording_carries(self):
+        import admet.ui.analyze as module
+
+        view = _make_view()
+        view.matrix = [_row(sample="a", k_sigma=9.0, microns_per_pixel=3.0, fps=24.0),
+                       _row(sample="b", k_sigma=9.0, microns_per_pixel=1.2),
+                       _row(engine="cellpose", sample="i", px_to_um=2.0, detect_inclusions=False)]
+        view.matrix[1].active = False
+        view._notify = lambda *a, **k: None
+        recorded_scale, recorded_fps = module._recorded_scale, module._recorded_capture_fps
+        module._recorded_scale = lambda row: 2.5 if row.sample_id == "a" else 0.0      # a typed 3.0 goes back to it
+        module._recorded_capture_fps = lambda row: 500.0 if row.sample_id == "a" else 0.0
+        try:
+            view._reset_ticked_settings()
+        finally:
+            module._recorded_scale, module._recorded_capture_fps = recorded_scale, recorded_fps
+
+        self.assertEqual((view.matrix[0].settings["k_sigma"], view.matrix[0].settings["microns_per_pixel"],
+                          view.matrix[0].settings["fps"]), (4.0, 2.5, 500.0))
+        self.assertEqual(view.matrix[1].settings["k_sigma"], 9.0)                  # unticked: left alone
+        self.assertEqual((view.matrix[2].settings["detect_inclusions"], view.matrix[2].settings["px_to_um"]),
+                         (True, IMAGING_DEFAULTS["px_to_um"]))                      # the typed 2.0 is gone
+
+    def test_the_use_header_ticks_or_clears_every_file(self):
+        view = _make_view()
+        view.matrix = [_row(sample="a"), _row(sample="b")]
+        view._notify = lambda *a, **k: None
+        self.assertIs(view._use_state(), True)
+        view._handle_use_all(False)
+        self.assertEqual([row.active for row in view.matrix], [False, False])
+        self.assertIs(view._use_state(), False)
+        view.matrix[0].active = True
+        self.assertIsNone(view._use_state())                                    # some: the box is indeterminate
+        view._handle_use_all(True)
+        self.assertEqual([row.active for row in view.matrix], [True, True])
+
+    def test_the_setting_columns_are_chosen_and_remembered(self):
+        from admet.ui.analyze_matrix import analyse_columns, analyse_row
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            view = _make_view(store)
+            self.assertEqual(view.analyse_fields, ["microns_per_pixel", "fps", "range", "crop"])
+            view._columns_changed(SimpleNamespace(value=["k_sigma", "fps", "nonsense"]))
+            self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
+            self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
+            names = [column["name"] for column in analyse_columns(view.analyse_fields)]
+            self.assertEqual(names, ["active", "sample_id", "source", "engine", "fps", "k_sigma", "analyzed"])
+            row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
+                              crop_text="full", analyzed="")
+            self.assertEqual((row["k_sigma"], row["microns_per_pixel"], row["fps"]), (4.0, 1.1, None))
+            self.assertEqual((row["frame_limit"], row["frame_limit_applies"], row["k_sigma_applies"]), (None, False, True))
+            image = analyse_row(_row(engine="cellpose", sample="i", px_to_um=2.0, detect_inclusions=True),
+                                range_text="all", crop_text="—", analyzed="")
+            self.assertEqual((image["microns_per_pixel"], image["detect_inclusions"], image["fps_applies"]), (2.0, True, False))
+            view._handle_matrix_change(SimpleNamespace(args={"uid": view.matrix[0].uid if view.matrix else "", "field": "k_sigma", "value": "3"}))
 
     def test_a_scale_typed_in_the_table_lands_on_the_row(self):
         view = _make_view()
@@ -129,7 +185,7 @@ class ReadinessTests(unittest.TestCase):
         view.matrix[0].settings["px_to_um"] = 1.14
         self.assertTrue(view._row_ready(view.matrix[0]))
 
-    def test_reset_keeps_scale_and_fps_and_restores_detection_defaults(self):
+    def test_reset_restores_the_detection_defaults_and_drops_a_typed_scale_and_fps(self):
         view = _make_view()
         view.matrix = [_row(sample="a", microns_per_pixel=1.2, fps=200, k_sigma=9, gate_pct=80)]
         view.selected_uid = view.matrix[0].uid
@@ -137,7 +193,8 @@ class ReadinessTests(unittest.TestCase):
         view._reset_row_settings()
 
         settings = view.matrix[0].settings
-        self.assertEqual((settings["microns_per_pixel"], settings["fps"]), (1.2, 200))
+        self.assertNotIn("microns_per_pixel", settings)                            # a loose file: nothing recorded
+        self.assertNotIn("fps", settings)
         self.assertEqual((settings["k_sigma"], settings["gate_pct"]), (4.0, 50.0))
 
 
@@ -168,7 +225,8 @@ class RegistryTests(unittest.TestCase):
 
             view._add_root(data)
 
-            self.assertEqual([row.sample_id for row in view.matrix], ["Oil 3 step 1", "Oil 3 step 2"])
+            at = f"{run.run_id[9:11]}:{run.run_id[11:13]}"                      # the run's time tells runs apart
+            self.assertEqual([row.sample_id for row in view.matrix], [f"Oil 3 {at} step 1", f"Oil 3 {at} step 2"])
             self.assertEqual({row.run for row in view.matrix}, {str(run.path.resolve())})
             self.assertEqual(view._row_key(view.matrix[0])[0], run.run_id)
             self.assertEqual(store.roots(), [str(data.resolve())])
@@ -179,7 +237,7 @@ class RegistryTests(unittest.TestCase):
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n}
                                              for i, n in enumerate([*names, "oil_3_step03_x.avi"])]})
             view._rescan()
-            self.assertEqual([row.sample_id for row in view.matrix][-1], "Oil 3 step 3")
+            self.assertEqual([row.sample_id for row in view.matrix][-1], f"Oil 3 {at} step 3")
             self.assertEqual(len(_make_view(store).matrix), 3)                         # the list persists
             self.assertIn("runs in", view._refs.get("topbar_text", "runs in") or "runs in")
 
@@ -256,6 +314,12 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual([row["uid"].endswith(":live") for row in rows], [True])   # no analysis yet: the rig's line alone
             self.assertIn("STABLE", rows[0]["analysed"])
             self.assertIn("oil", rows[0]["sample"])
+            self.assertNotIn("text-disabled", rows[0]["sample"])                        # ticked: in its plot colour
+            lives = view._lives()
+            self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])
+            self.assertEqual(len(lives[0].points), 5)
+            self.assertEqual([name for name, _ in result_charts([], lives)],
+                             ["cv_per_sample", "droplet_timeline", "diameter_over_time", "rate_over_time"])
             view._handle_matrix_change(SimpleNamespace(args={"uid": rows[0]["uid"], "field": "active", "value": False}))
             self.assertFalse(view.matrix[0].active)
             self.assertFalse(view._results_rows()[0]["active"])

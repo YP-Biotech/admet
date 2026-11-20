@@ -26,21 +26,25 @@ from admet.engines.cellpose.detection import CellposeDetection, read_image_8bit
 from admet.engines.opencv.settings import OPENCV_SETTINGS
 from admet.ui import theme
 from admet.ui.analyze_matrix import (
+    ANALYSE_COLUMN_LABELS,
+    DEFAULT_ANALYSE_FIELDS,
     analyse_columns,
+    analyse_fields,
     analyse_row,
     apply_setting,
     cast_matrix_value,
     files_columns,
     files_row,
-    mass_edit_fields,
     matrix_field_kind,
     results_columns,
+    setting_key,
     wire_analyse_table,
     wire_files_table,
     wire_results_table,
 )
 from admet.ui.analyze_results import (
     FileResult,
+    LiveQC,
     RESULT_FIELDS,
     RESULT_LABELS,
     StoredResult,
@@ -121,6 +125,9 @@ class AnalyzeWorkflowView:
         self.selected_uid = ""
         self._saved_matrix: list[dict[str, Any]] | None = None
         self.matrix: list[MatrixRow] = self._load_matrix()
+        # The setting columns the Analyse table shows, as chosen last time.
+        self.analyse_fields: list[str] = analyse_fields(
+            self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
@@ -204,6 +211,7 @@ class AnalyzeWorkflowView:
 
     def _structure_signature(self) -> tuple[Any, ...]:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
+                                   tuple(self.analyse_fields),
                                    tuple(row.uid for row in self.matrix), self._running)
 
     def _mount_stage(self) -> None:
@@ -344,10 +352,18 @@ class AnalyzeWorkflowView:
             rows = source()
             for table in tables:
                 table.rows = rows
+                if key == "analyse":
+                    table.columns = analyse_columns(self.analyse_fields)
                 table.update()
         hint = self._refs.get("files_hint")
         if hint is not None:
             hint.set_visibility(not self.matrix)
+        self._sync_use_all()
+
+    def _sync_use_all(self) -> None:
+        box = self._refs.get("use_all")
+        if box is not None and not box.is_deleted:
+            box.value = self._use_state()
 
     def _sync_previews(self) -> None:
         target = self._selected_row()
@@ -543,60 +559,99 @@ class AnalyzeWorkflowView:
         from nicegui import ui
 
         with ui.column().classes("panel w-full gap-2 p-3"):
-            if self.matrix:
-                self._render_mass_edit()
-            table = ui.table(columns=analyse_columns(), rows=self._analyse_rows(), row_key="uid").classes(
-                "slim-table matrix-table w-full").props("dense flat hide-bottom")
+            with ui.row().classes("items-center gap-2 no-wrap w-full"):
+                ui.label("Columns").classes("text-xs muted")
+                ui.select(dict(ANALYSE_COLUMN_LABELS), multiple=True, value=list(self.analyse_fields),
+                          on_change=self._columns_changed).props(
+                    "dense outlined options-dense use-chips").classes("columns-select grow")
+            table = ui.table(columns=analyse_columns(self.analyse_fields), rows=self._analyse_rows(),
+                             row_key="uid").classes("slim-table matrix-table w-full").props("dense flat hide-bottom")
             self._register_table("analyse", table)
-            wire_analyse_table(table, self._handle_matrix_change)
+            wire_analyse_table(table, self._handle_matrix_change, self.analyse_fields)
+            self._render_analyse_headers(table)
             table.on("rowClick", self._select_row_event)
             if not self.matrix:
                 ui.label("No files. Add them on 1. Files.").classes("muted text-xs")
 
-    def _render_mass_edit(self) -> None:
-        """One setting for every ticked file at once: pick it, give the value, apply."""
+    def _render_analyse_headers(self, table: Any) -> None:
+        """The Use header ticks or clears every file; a setting column's header takes a value for every
+        ticked file. They are NiceGUI elements in the header slots: a slot template cannot reach Python."""
         from nicegui import ui
 
-        fields = mass_edit_fields({row.engine for row in self.matrix})
-        if not fields:
+        # plain cells: Quasar's q-th looks its column up by the vnode key, which NiceGUI uses for the element id
+        with table.add_slot("header-cell-active"), ui.element("th").classes("text-center"):
+            # update:model-value is the browser's click; setting the value from Python stays quiet
+            box = ui.checkbox(value=self._use_state()).props("dense")
+            box.on("update:model-value", lambda event: self._handle_use_all(bool(event.args)), [None])
+            self._refs["use_all"] = box
+        for name in self.analyse_fields:
+            kind = matrix_field_kind(name)
+            if kind is None:
+                continue                                      # a read-only summary column
+            with table.add_slot(f"header-cell-{name}"), ui.element("th").classes("text-left"), \
+                    ui.element("div").classes("col-head"):
+                ui.label(ANALYSE_COLUMN_LABELS[name]).classes("col-label")
+                if kind is ParamKind.BOOLEAN:
+                    with ui.element("div").classes("col-actions"):
+                        ui.button("on", on_click=lambda _e, f=name: self._handle_header_set(f, True)).props(
+                            "dense flat no-caps size=sm")
+                        ui.button("off", on_click=lambda _e, f=name: self._handle_header_set(f, False)).props(
+                            "dense flat no-caps size=sm")
+                else:
+                    entry = ui.number().props("dense outlined step=any input-class=matrix-num")
+                    entry.on("keydown.enter", lambda _e, f=name, box=entry: self._header_entered(f, box))
+                    entry.on("blur", lambda _e, f=name, box=entry: self._header_entered(f, box))
+
+    def _header_entered(self, field: str, entry: Any) -> None:
+        """What was typed in a header goes to the ticked files once, then the header is clear again."""
+        value = entry.value
+        if value is None or value == "":
             return
-        kinds = {field: kind for field, _label, kind in fields}
-        with ui.row().classes("items-center gap-2 no-wrap mass-edit"):
-            ui.label("Apply to ticked files").classes("text-xs muted")
-            select = ui.select({field: label for field, label, _kind in fields}, value=fields[0][0]).props(
-                "dense outlined options-dense").classes("mass-edit-field")
-            number = ui.number(value=None).props("dense outlined step=any").classes("mass-edit-value")
-            number.bind_visibility_from(select, "value", backward=lambda v: kinds.get(v) is not ParamKind.BOOLEAN)
-            switch = ui.switch("on").props("dense")
-            switch.bind_visibility_from(select, "value", backward=lambda v: kinds.get(v) is ParamKind.BOOLEAN)
+        entry.value = None
+        self._handle_header_set(field, value)
 
-            def apply() -> None:
-                field = select.value
-                value = switch.value if kinds.get(field) is ParamKind.BOOLEAN else number.value
-                if value is None and kinds.get(field) is not ParamKind.BOOLEAN:
-                    self._notify("Give the value first.", "warning")
-                    return
-                self._apply_to_ticked(field, value)
+    def _columns_changed(self, event: Any) -> None:
+        """The setting columns to show, as ticked in the dropdown; remembered for next time."""
+        chosen = analyse_fields(getattr(event, "value", None) or [])
+        if chosen == self.analyse_fields:
+            return
+        self.analyse_fields = chosen or list(DEFAULT_ANALYSE_FIELDS)
+        self.store.set_view_setting("analyse_columns", list(self.analyse_fields))
+        self._refresh(force_mount=True)
 
-            ui.button("Apply", on_click=apply).props("dense no-caps unelevated size=sm")
-            ticked = sum(1 for row in self.matrix if row.active)
-            ui.label(f"{ticked} ticked").classes("text-xs muted")
+    def _use_state(self) -> bool | None:
+        """What the Use header shows: True when every file is ticked, False when none, None for some."""
+        ticked = [row.active for row in self.matrix]
+        if not ticked or all(ticked):
+            return bool(ticked)
+        return False if not any(ticked) else None
 
-    def _apply_to_ticked(self, field: str, value: Any) -> list[MatrixRow]:
-        """The value onto every ticked file the setting applies to; the files it changed."""
+    def _handle_use_all(self, value: bool) -> None:
+        for row in self.matrix:
+            row.active = bool(value)
+        self._save_matrix()
+        self._sync_tables()
+        self._sync_action_box()
+        self._notify(self._stage_summary(), "primary")
+        self._mount_sidebar()
+
+    def _handle_header_set(self, field: str, value: Any) -> None:
+        """A value entered in a setting column's header: onto every ticked file the setting applies to."""
+        if value is None or value == "":
+            return
         changed = apply_setting(self.matrix, field, value)
-        label = next((label for name, label, _kind in mass_edit_fields({"opencv", "cellpose"}) if name == field), field)
+        label = ANALYSE_COLUMN_LABELS.get(field, field)
         if not changed:
             self._notify(f"{label}: no ticked file takes it, or every one has it already.", "secondary")
-            return []
+            self._mount_sidebar()
+            return
         shown = ("on" if value else "off") if isinstance(value, bool) else f"{value}"
         self._sync_previews()
         self._sync_tables()
         self._sync_action_box()
-        self._mount_sidebar()
         self._save_matrix()
         self._notify(f"{label} = {shown} on {len(changed)} ticked file(s).", "positive")
-        return changed
+        self._mount_sidebar()
 
     def _analyse_rows(self) -> list[dict[str, Any]]:
         rows = []
@@ -1068,7 +1123,10 @@ class AnalyzeWorkflowView:
         A video recorded on the rig gets a second line: what the live QC measured while it was recorded,
         to set against what the analysis found. Before the analysis runs, that line stands alone.
         """
-        shown = {_result_key(r): i for i, r in enumerate(self._results())}
+        results, lives = self._results(), self._lives()
+        colours = {_result_key(result): chart_color(index) for index, result in enumerate(results)}
+        colours.update({(live.run, live.source_path): chart_color(len(results) + index)
+                        for index, live in enumerate(lives)})
         by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
         rows = []
         for row in self.matrix:
@@ -1076,12 +1134,14 @@ class AnalyzeWorkflowView:
             result, live = by_key.get(key), self._live_qc(row)
             if result is None and live is None:
                 continue
-            color = chart_color(shown[key]) if key in shown else "var(--text-disabled)"
+            grey = "var(--text-disabled)"
             if result is not None:
-                rows.append({"uid": row.uid, "active": row.active, **results_cells(result, color, active=row.active)})
+                rows.append({"uid": row.uid, "active": row.active,
+                             **results_cells(result, colours.get(key, grey), active=row.active)})
             if live is not None:
+                colour = colours.get((live.run, live.source_path), grey)
                 rows.append({"uid": f"{row.uid}:live", "active": row.active,
-                             **live_cells(live, "" if result is not None else row.sample_id, color, active=row.active)})
+                             **live_cells(live, "" if result is not None else row.sample_id, colour, active=row.active)})
         return rows
 
     def _live_qc(self, row: MatrixRow):
@@ -1094,17 +1154,27 @@ class AnalyzeWorkflowView:
             return None
         return _live_qc_of(row.run, str(Path(row.source_path)), mtime)
 
+    def _lives(self) -> list[LiveQC]:
+        """The live QC of every ticked video that has one, named as the file is: data to view like a result."""
+        lives = []
+        for row in self.matrix:
+            live = self._live_qc(row) if row.active else None
+            if live is not None:
+                lives.append(replace(live, sample_id=row.sample_id))
+        return lives
+
     def _render_results_plots(self) -> None:
         from nicegui import ui
 
-        results = self._results()
+        results, lives = self._results(), self._lives()
         with ui.column().classes("panel w-full gap-2 p-3"):
             ui.label("Plots").classes("section-title")
-            if not results:
-                ui.label("Plots appear here once a ticked file is analysed.").classes("muted text-xs")
+            if not results and not lives:
+                ui.label("Plots appear here once a ticked file is analysed or has the rig's live QC.").classes(
+                    "muted text-xs")
                 return
             with ui.element("div").classes("results-grid w-full"):
-                for name, options in result_charts(results):
+                for name, options in result_charts(results, lives):
                     with ui.column().classes("plot-card"):
                         chart = ui.echart(options).classes("w-full h-full")
                     self._chart_refs.append((name, chart))
@@ -1335,12 +1405,24 @@ class AnalyzeWorkflowView:
         row = self._selected_row()
         if row is None:
             return
-        keep = {key: row.settings[key] for key in ("microns_per_pixel", "fps") if key in row.settings}
-        row.settings = keep
-        self._prefill_settings(row)
+        self._reset_settings(row)
         self._notify(f"Settings of {row.sample_id} are back to the defaults.", "success")
         self._log(f"settings: reset {row.sample_id}")
         self._refresh(force_mount=True)
+
+    def _reset_ticked_settings(self) -> None:
+        """Every ticked file back to the defaults and to the fps and µm/px its recording carries."""
+        rows = self._targets()
+        for row in rows:
+            self._reset_settings(row)
+        self._notify(f"{_count(len(rows), 'ticked file')} back to the defaults.", "success")
+        self._log(f"settings: reset {len(rows)} ticked file(s)")
+        self._refresh(force_mount=True)
+
+    def _reset_settings(self, row: MatrixRow) -> None:
+        """The defaults again, with the fps and µm/px the recording carries; whatever was typed goes."""
+        row.settings = {}
+        self._prefill_settings(row)
 
     def _handle_matrix_change(self, event: Any) -> None:
         payload = getattr(event, "args", {})
@@ -1355,6 +1437,7 @@ class AnalyzeWorkflowView:
         if field_name == "active":
             row.active = bool(value)
             self._save_matrix()
+            self._sync_use_all()
             self._sync_action_box()
             self._notify(self._stage_summary(), "primary")
             self._mount_sidebar()
@@ -1369,8 +1452,7 @@ class AnalyzeWorkflowView:
         kind = matrix_field_kind(field_name)
         if kind is None:
             return
-        key = "px_to_um" if field_name == "microns_per_pixel" and row.engine == "cellpose" else field_name
-        row.settings[key] = cast_matrix_value(kind, value)
+        row.settings[setting_key(field_name, row.engine)] = cast_matrix_value(kind, value)
         self._settings_edited(row)
 
     def _select_row_event(self, event: Any) -> None:
@@ -1583,6 +1665,8 @@ class AnalyzeWorkflowView:
             return self._clear_matrix
         if action == "reset_row_settings":
             return self._reset_row_settings
+        if action == "reset_ticked_settings":
+            return self._reset_ticked_settings
         if action == "analyze":
             return lambda: self._run_rows(self._targets())
         if action == "analyze_selected":
@@ -1630,8 +1714,10 @@ class AnalyzeWorkflowView:
                 return "No files ticked."
             analysed = sum(1 for row in ticked if self._analyzed_at(row))
             return f"{len(ticked)} ticked, {analysed} analysed."
-        results = self._results()
-        return f"{_count(len(results), 'result')} for the ticked files." if results else "Nothing analysed yet."
+        results, lives = self._results(), self._lives()
+        live_note = f", {_count(len(lives), 'live line')}" if lives else ""
+        return (f"{_count(len(results), 'result')}{live_note} for the ticked files." if results
+                else f"Nothing analysed yet{live_note}.")
 
     def _stage_id(self) -> str:
         return self._stage().id
@@ -2225,6 +2311,13 @@ def _style() -> str:
     .matrix-table .q-field__control { min-height: 28px; }
     .matrix-table .q-field { max-width: 104px; }
     .matrix-missing .q-field__control { outline: 2px solid var(--danger-hover); outline-offset: -2px; border-radius: 8px; }
+    .matrix-table th .col-head { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
+    .matrix-table th .col-label { font-weight: 600; }
+    .matrix-table th .q-field { max-width: 104px; }
+    .matrix-table th .q-field__control { min-height: 26px; outline: 1px solid var(--border); outline-offset: -1px;
+      border-radius: 6px; }
+    .matrix-table th .col-actions { display: flex; gap: 2px; }
+    .columns-select { max-width: 760px; }
     .matrix-num { text-align: right; }
     .results-wrap { overflow-x: auto; }
     table.results { border-collapse: collapse; width: 100%; font-size: 12px; }

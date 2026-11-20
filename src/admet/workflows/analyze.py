@@ -41,6 +41,7 @@ def create_analyze_workflow() -> Workflow:
                 actions=(
                     StageAction("Run all ticked", "analyze", guard="targets_ready", completes=True),
                     StageAction("Run selected", "analyze_selected", guard="selected_ready", variant="secondary"),
+                    StageAction("Reset ticked", "reset_ticked_settings", guard="has_targets", variant="secondary"),
                     StageAction("Reset file settings", "reset_row_settings", guard="has_selected",
                                 variant="secondary"),
                 ),
