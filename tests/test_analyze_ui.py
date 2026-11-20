@@ -131,7 +131,8 @@ class MatrixChangeTests(unittest.TestCase):
             self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
             self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
             names = [column["name"] for column in analyse_columns(view.analyse_fields)]
-            self.assertEqual(names, ["active", "sample_id", "source", "engine", "fps", "k_sigma", "analyzed"])
+            self.assertEqual(names, ["active", "sample_id", "set", "protocol", "run_time", "replicate", "source",
+                                     "engine", "fps", "k_sigma", "analyzed"])
             row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
                               crop_text="full", analyzed="")
             self.assertEqual((row["k_sigma"], row["microns_per_pixel"], row["fps"]), (4.0, 1.1, None))
@@ -225,8 +226,14 @@ class RegistryTests(unittest.TestCase):
 
             view._add_root(data)
 
-            at = f"{run.run_id[9:11]}:{run.run_id[11:13]}"                      # the run's time tells runs apart
-            self.assertEqual([row.sample_id for row in view.matrix], [f"Oil 3 {at} step 1", f"Oil 3 {at} step 2"])
+            at = f"{run.run_id[9:11]}:{run.run_id[11:13]}"
+            self.assertEqual([row.sample_id for row in view.matrix], ["", ""])             # nothing written over
+            self.assertEqual([row.name for row in view.matrix], ["Oil 3_rep1", "Oil 3_rep2"])   # built: protocol, replicate
+            self.assertEqual([(row.protocol, row.run_time[11:], row.replicate) for row in view.matrix],
+                             [("Oil 3", at, 1), ("Oil 3", at, 2)])                    # fields of their own
+            self.assertEqual(view.matrix[0].origin, f"Oil 3 · {view.matrix[0].run_time} · rep 1")
+            view.matrix[0].sample_id = "control"
+            self.assertEqual(view.matrix[0].name, "control")                             # written over
             self.assertEqual({row.run for row in view.matrix}, {str(run.path.resolve())})
             self.assertEqual(view._row_key(view.matrix[0])[0], run.run_id)
             self.assertEqual(store.roots(), [str(data.resolve())])
@@ -237,7 +244,8 @@ class RegistryTests(unittest.TestCase):
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n}
                                              for i, n in enumerate([*names, "oil_3_step03_x.avi"])]})
             view._rescan()
-            self.assertEqual([row.sample_id for row in view.matrix][-1], f"Oil 3 {at} step 3")
+            self.assertEqual([(row.name, row.replicate) for row in view.matrix][-1], ("Oil 3_rep3", 3))
+            self.assertEqual(_make_view(store).matrix[-1].replicate, 3)               # kept with the list
             self.assertEqual(len(_make_view(store).matrix), 3)                         # the list persists
             self.assertIn("runs in", view._refs.get("topbar_text", "runs in") or "runs in")
 
@@ -322,7 +330,7 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual(view._result_sections(), ["aggregated", "live"])             # no engine's section yet
             self.assertIn("not analysed", aggregated[0]["sample"])
             lives = view._lives()
-            self.assertEqual([live.sample_id for live in lives], [view.matrix[0].sample_id])
+            self.assertEqual([live.sample_id for live in lives], [view.matrix[0].name])
             self.assertEqual(len(lives[0].points), 5)
             self.assertEqual([name for name, _ in result_charts([], lives, view="aggregated")],
                              ["diameter_per_sample", "cv_per_sample", "rate_per_sample"])
@@ -349,6 +357,49 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual([folder for folder, _label in view._live_runs()], [view.matrix[0].run])
             view.matrix[0].run = ""
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
+
+
+class SetTests(unittest.TestCase):
+    def test_the_ticked_files_go_into_a_set_which_can_be_used_cleared_and_chosen_for_results(self):
+        from dataclasses import replace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            data = Path(tmp) / "data"
+            run_with_videos(data, "Oil 3", videos=3)
+            view = _make_view(store)
+            view._add_root(data)
+            view._notify = lambda *a, **k: None
+            a, b, c = view.matrix
+            c.active = False
+
+            view._assign_set("Oil A")
+
+            self.assertEqual([row.set for row in view.matrix], ["Oil A", "Oil A", ""])
+            self.assertEqual((view.current_set, view._set_names()), ("Oil A", ["Oil A"]))
+            self.assertEqual(_make_view(store).matrix[0].set, "Oil A")                  # kept with the list
+            view._assign_set("")                                                          # a name is needed
+            self.assertEqual(b.set, "Oil A")
+            view._handle_matrix_change(SimpleNamespace(args={"uid": c.uid, "field": "set", "value": " Water "}))
+            self.assertEqual((c.set, view._set_names()), ("Water", ["Oil A", "Water"]))   # typed in the column
+            c.active = True
+            view._use_set("Oil A")                                                        # ticks exactly its files
+            self.assertEqual([row.active for row in view.matrix], [True, True, False])
+            view._use_set("nothing")
+            self.assertEqual([row.active for row in view.matrix], [True, True, False])
+            c.active = True
+            view.state = replace(view.state, index=2)                                    # 3. Results
+            self.assertEqual([row.name for row in view._for_results()],
+                             ["Oil A_rep1", "Oil A_rep2", "Water_rep1"])                 # built from the sets
+            view._clear_set()
+            self.assertEqual([row.set for row in view.matrix], ["", "", ""])
+
+    def test_results_group_the_files_by_set_in_the_sets_order(self):
+        view = _make_view()
+        view.matrix = [_row(sample="a"), _row(sample="b"), _row(sample="c"), _row(sample="d")]
+        view.matrix[0].set, view.matrix[1].set, view.matrix[2].set = "two", "one", "two"
+
+        self.assertEqual([row.sample_id for row in view._for_results()], ["a", "c", "b", "d"])
 
 
 class StoredResultTests(unittest.TestCase):
@@ -382,6 +433,17 @@ class StoredResultTests(unittest.TestCase):
             (baked / "result.json").write_text(json.dumps({"settings": {"skip_left_pct": 10.0}, "window": "whole"}))
             self.assertEqual(view._stored_result(clip).result_dir, baked)
             self.assertEqual(view._read_settings(clip), {"skip_left_pct": 10.0, "skip_right_pct": 0.0, "gate_pct": 50.0})
+            (baked / "rows.jsonl").write_text(json.dumps({"engine": "opencv", "item_id": "v", "file_id": "f", "kind": "detection",
+                                                          "values": {"frame": 1, "droplet_id": 1, "centroid_x": 10.0,
+                                                                     "centroid_y": 5.0, "equivalent_diameter": 20.0,
+                                                                     "area": 314.0}}) + "\n")
+            clip.set, clip.replicate = "oil", 2
+            view._save_matrix()                                                          # names follow the set
+            result, = view._results()
+            self.assertEqual((result.set, result.replicate, result.sample_id), ("oil", 2, "v"))   # the row's, as written
+            clip.sample_id = ""
+            view._save_matrix()
+            self.assertEqual(view._results()[0].sample_id, "oil_rep1")                   # built, without a re-read
             self.assertEqual(view._read_settings(folder), {"frame_limit": 3, "detect_inclusions": True})
 
 
@@ -402,6 +464,35 @@ class StopTests(unittest.TestCase):
 
         self.assertTrue(view._stop.now.is_set())
         self.assertFalse(view._stop.after_file.is_set())
+
+
+class ShiftClickTests(unittest.TestCase):
+    def test_shift_click_ticks_or_clears_every_row_between_the_last_box_and_this_one(self):
+        from dataclasses import replace
+
+        view = _make_view()
+        view.matrix = [_row(sample=name) for name in "abcde"]
+        view._notify = lambda *a, **k: None
+        for row in view.matrix:
+            row.active = False
+        a, b, c, d, e = view.matrix
+
+        def tick(row, value, shift=False):
+            view._handle_matrix_change(SimpleNamespace(args={"uid": row.uid, "field": "active", "value": value,
+                                                             "shift": shift}))
+
+        tick(d, True, shift=True)                                                         # no box before: this one only
+        self.assertEqual([r.active for r in view.matrix], [False, False, False, True, False])
+        tick(a, True)
+        tick(c, True, shift=True)                                                         # a to c
+        self.assertEqual([r.active for r in view.matrix], [True, True, True, True, False])
+        tick(e, False, shift=True)                                                        # c to e, cleared
+        self.assertEqual([r.active for r in view.matrix], [True, True, False, False, False])
+        view.state = replace(view.state, index=1)                                        # 2. Analyse lists a and b
+        tick(a, False)
+        tick(b, False, shift=True)
+        self.assertEqual([(r.active, r.to_run) for r in view.matrix][:2], [(True, False), (True, False)])
+        self.assertTrue(c.to_run)                                                         # not listed there: untouched
 
 
 class DownstreamTests(unittest.TestCase):
@@ -440,6 +531,24 @@ class DownstreamTests(unittest.TestCase):
         self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "b", "c"])
         record = view._matrix_record(view.matrix)[1]
         self.assertEqual((record["active"], record["to_run"], record["plotted"]), (True, True, True))   # all kept
+
+
+class BuiltNameTests(unittest.TestCase):
+    def test_a_files_name_is_built_from_its_set_and_place_unless_written_over(self):
+        from admet.ui.analyze import _name_rows
+
+        rows = [MatrixRow(uid=_uid(), source_path=f"/v{n}.avi", engine="opencv", sample_id="", protocol="dropseq",
+                          run_time=f"2026-11-17 19:3{n}", replicate=n) for n in (1, 2, 3)]
+        rows.append(MatrixRow(uid=_uid(), source_path="/loose.avi", engine="opencv", sample_id=""))
+        self.assertEqual([row.name for row in rows], ["dropseq_rep1", "dropseq_rep2", "dropseq_rep3", "loose"])
+        rows[0].set = rows[2].set = "oil"                                                 # the set numbers its files
+        rows[1].sample_id = "control"
+        _name_rows(rows)
+        self.assertEqual([row.name for row in rows], ["oil_rep1", "control", "oil_rep2", "loose"])
+        rows[2].sample_id = "oil high"                                                     # written over
+        self.assertEqual(rows[2].name, "oil high")
+        rows[2].sample_id = ""
+        self.assertEqual(rows[2].name, "oil_rep2")                                        # cleared: built again
 
 
 class ResultsDataTests(unittest.TestCase):
@@ -486,7 +595,7 @@ class ResultsDataTests(unittest.TestCase):
             self.assertEqual([plot.run_dir for plot in plots], [str(first.path.resolve()), str(second.path.resolve())])
             self.assertEqual([plot.label[:3] for plot in plots], ["oil", "wat"])
             self.assertEqual(list(plots[1].files), [Path(names[0]).stem])               # the step the rig measured
-            self.assertEqual(plots[1].files[Path(names[0]).stem][0], view.matrix[1].sample_id)
+            self.assertEqual(plots[1].files[Path(names[0]).stem][0], view.matrix[1].name)
             view.matrix[0].active = False
             self.assertEqual([plot.label[:3] for plot in view._run_plots()], ["wat"])      # unticked: not drawn
             self.assertEqual(view._result_sections(), ["aggregated", "live"])

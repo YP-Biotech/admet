@@ -38,6 +38,10 @@ def files_columns() -> list[dict[str, Any]]:
     return [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
+        {"name": "set", "label": "Set", "field": "set", "align": "left"},
+        {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
+        {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
+        {"name": "replicate", "label": "Rep.", "field": "replicate", "align": "left"},
         {"name": "source", "label": "File", "field": "source", "align": "left"},
         {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
         {"name": "count", "label": "Frames / images", "field": "count", "align": "right"},
@@ -57,6 +61,10 @@ def analyse_columns(fields) -> list[dict[str, Any]]:
     columns = [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
+        {"name": "set", "label": "Set", "field": "set", "align": "left"},
+        {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
+        {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
+        {"name": "replicate", "label": "Rep.", "field": "replicate", "align": "left"},
         {"name": "source", "label": "File", "field": "source", "align": "left"},
         {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
     ]
@@ -86,7 +94,12 @@ def files_row(row: Any, *, count: str, analyzed: str, removable: bool) -> dict[s
     return {
         "uid": row.uid,
         "active": row.active,
-        "sample_id": row.sample_id,
+        "sample_id": row.sample_id,            # the name written over, empty when the built one stands
+        "name": row.name,                      # the name in force, shown where nothing is written over
+        "set": row.set,
+        "protocol": row.protocol,
+        "run_time": row.run_time,
+        "replicate": f"rep {row.replicate}" if row.replicate else "",
         "source": Path(row.source_path).name or row.source_path,
         "engine": row.engine,
         "count": count,
@@ -100,7 +113,11 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
     cells: dict[str, Any] = {
         "uid": row.uid,
         "active": row.to_run,                 # the tick of 2. Analyse: run it
-        "sample_id": row.sample_id,
+        "sample_id": row.name,
+        "set": row.set,
+        "protocol": row.protocol,
+        "run_time": row.run_time,
+        "replicate": f"rep {row.replicate}" if row.replicate else "",
         "source": Path(row.source_path).name or row.source_path,
         "engine": row.engine,
         "range": range_text,
@@ -117,7 +134,8 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
 
 def wire_files_table(table: Any, on_change: Any, on_remove: Any) -> None:
     table.add_slot("body-cell-active", _bool_cell_slot("active"))
-    table.add_slot("body-cell-sample_id", _text_cell_slot("sample_id"))
+    table.add_slot("body-cell-sample_id", _text_cell_slot("sample_id", placeholder="name"))
+    table.add_slot("body-cell-set", _text_cell_slot("set"))
     table.add_slot("body-cell-remove", """
     <q-td :props="props">
       <q-btn v-if="props.row.remove" flat dense round size="sm" icon="close" title="Remove from the list"
@@ -198,10 +216,12 @@ def _required_number_slot(field: str, *, applies: str = "true", required: bool =
     """
 
 
-def _text_cell_slot(field: str) -> str:
+def _text_cell_slot(field: str, *, placeholder: str = "") -> str:
+    """A text field per row; PLACEHOLDER names the row field shown greyed when nothing is written."""
+    hint = f' :placeholder="props.row.{placeholder}"' if placeholder else ""
     return f"""
     <q-td :props="props">
-      <q-input dense outlined class="matrix-text" v-model="props.row.{field}"
+      <q-input dense outlined class="matrix-text" v-model="props.row.{field}"{hint}
         @click.stop @mousedown.stop
         @blur="$parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: props.row.{field}}})"
         @keyup.enter="$event.target.blur()" />
@@ -214,7 +234,8 @@ def _bool_cell_slot(field: str, *, applies: str = "true") -> str:
     <q-td :props="props">
       <q-checkbox v-if="{applies}" dense v-model="props.row.{field}"
         @click.stop @mousedown.stop
-        @update:model-value="val => $parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: val}})" />
+        @update:model-value="(val, evt) => $parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: val,
+                                                                           shift: !!(evt && evt.shiftKey)}})" />
       <span v-else class="muted">—</span>
     </q-td>
     """

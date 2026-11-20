@@ -16,8 +16,9 @@ def create_analyze_workflow() -> Workflow:
                 instruction_cards=(
                     StageInstruction("Add a folder of runs (a data or export folder), or single videos and image "
                                      "folders, to analyse.", guard="not has_matrix_rows"),
-                    StageInstruction("Tick Use on the files to take on and name the samples, then go to 2. Analyse; "
-                                     "an unticked file stays here only."),
+                    StageInstruction("Tick Use on the files to take on, name the samples and put them into sets "
+                                     "(Assign…); a run's protocol, time and step are fields of their own. "
+                                     "Then go to 2. Analyse."),
                 ),
                 settings_panel=SettingsSpec("matrix", title="Files"),
                 actions=(

@@ -260,6 +260,28 @@ class ReadTimeSettingTests(unittest.TestCase):
         self.assertFalse(stale_window({}))
 
 
+class SetStyleTests(unittest.TestCase):
+    def test_files_of_one_set_share_a_hue_and_sets_take_the_hues_in_the_lists_order(self):
+        from admet.ui.analyze_results import plot_styles
+
+        water = [_result(sample_id=f"w{n}", source_path=f"/w{n}.avi", set="water") for n in (1, 2)]
+        oil = [_result(sample_id=f"o{n}", source_path=f"/o{n}.avi", set="oil") for n in (1, 2, 3)]
+        loose = _result(sample_id="loose rep 1", source_path="/l.avi")
+
+        styles = plot_styles([*water, *oil, loose], listed=["oil", "oil", "oil", "water", "water", "loose rep 1"])
+
+        def hue(r):
+            return styles[(r.run, r.source_path)].hue
+
+        self.assertEqual({hue(r) for r in oil}, {0})                                     # oil listed first: hue 0
+        self.assertEqual({hue(r) for r in water}, {1})
+        self.assertEqual(hue(loose), 2)                                                   # no set: by its sample name
+        self.assertEqual(sorted(styles[(r.run, r.source_path)].shade for r in oil), [0, 1, 2])   # replicates: shades
+        cells = aggregated_cells("o1", styles[(oil[0].run, oil[0].source_path)], oil[0], None)
+        self.assertIn("oil", cells["set"])
+        self.assertIn("—", aggregated_cells("l", None, loose, None)["set"])
+
+
 class ChartTests(unittest.TestCase):
     def test_histogram_bins_follow_a_tight_distribution(self):
         values = [49.9 + 0.01 * (i % 20) for i in range(400)]
@@ -329,6 +351,12 @@ class ChartTests(unittest.TestCase):
         whole = ["dropseq_1n 16:43", "dropseq_3n 19:30 step 1"]                   # too short to cut at a word: kept whole
         self.assertEqual(short_names(whole), {name: name for name in whole})
         self.assertEqual(short_names(["only"]), {"only": "only"})
+        stamped = _result(run="20261117_193050_dropseq_3n", sample_id="oil_rep1", replicate=1)
+        self.assertEqual((stamped.protocol, stamped.run_time, stamped.replicate), ("dropseq_3n", "2026-11-17 19:30", 1))
+        reps = [_result(run="20261117_193050_dropseq_3n", sample_id=f"oil_rep{n}", source_path=f"/{n}.avi", replicate=n)
+                for n in (1, 2)]
+        self.assertEqual([s["name"] for s in timeline_chart([replace(r, arrivals_s=(0.0, 0.1)) for r in reps])["series"]],
+                         ["oil_rep1", "oil_rep2"])                                       # the built names, as given
         chart = cv_chart([_result(sample_id=names[0], source_path="/1.avi", diameters=(1.0, 2.0)),
                           _result(sample_id=names[1], source_path="/2.avi", diameters=(1.0, 2.0))])
         self.assertEqual(chart["xAxis"]["data"], ["step01_20261113_183825", "step02_20261113_184149"])
@@ -366,8 +394,8 @@ class ExportTests(unittest.TestCase):
 
             self.assertEqual(sorted(archive.namelist()), ["droplets/study_s_opencv.csv", "summary.csv"])
             summary = archive.read("summary.csv").decode().splitlines()
-            self.assertTrue(summary[0].startswith("run,sample,engine"))
-            self.assertIn("study,s,opencv", summary[1])
+            self.assertTrue(summary[0].startswith("run,protocol,time,replicate,sample,set,engine"))
+            self.assertIn("study,study,,,s,,opencv", summary[1])                     # no stamp: the run as named
             droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
             self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,bbox_x,bbox_width,equivalent_diameter,area")
             self.assertEqual(len(droplets), 10)
