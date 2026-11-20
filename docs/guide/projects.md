@@ -1,8 +1,25 @@
 # Projects
 
 A project is a folder ending in `.admetp`, the format earlier versions recorded
-into. Neither `admet control` nor `admet analyze` writes one any more; `admet
-migrate` will convert them into run folders.
+into. Neither `admet control` nor `admet analyze` writes or reads one any more;
+`admet migrate` lays one out as run folders.
+
+## Migrating a project
+
+```text
+admet migrate experiment.admetp              # into the home's data folder
+admet migrate experiment.admetp --into D:\admet\data --copy
+```
+
+Every protocol run of the project becomes a run folder, `runs/<date>_<name>/`,
+named by the run's tag or its protocol and the time it began: its summary becomes
+`run.json`, with its step events; its fluidics readings and the camera's QC rows
+become one `run.csv`, the QC rows put on the readings' clock; its step videos move
+into the folder. A video recorded by hand becomes a recording run of its own. The
+videos are moved, which is quick on the same disk; `--copy` copies them and leaves
+the project whole. The analyze registry of the home watches the folder afterwards
+and lists every video, so they appear on 1. Files at once. A run already laid out
+is left alone, so a migration can be run again after a stop.
 
 `admet control` no longer writes projects. It records one folder per run into the
 admet home's `data/runs/` and keeps the rig's settings in `control/rig.json`; see
@@ -49,5 +66,5 @@ still finds them.
 
 ## Older projects
 
-ADMET reads only the current project format. Projects from earlier versions are
-not read through compatibility code; convert them first.
+ADMET reads only run folders. Projects from earlier versions are not read through
+compatibility code; migrate them first, as above.
