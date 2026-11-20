@@ -131,7 +131,8 @@ class MatrixChangeTests(unittest.TestCase):
             self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
             self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
             names = [column["name"] for column in analyse_columns(view.analyse_fields)]
-            self.assertEqual(names, ["active", "sample_id", "source", "engine", "fps", "k_sigma", "analyzed"])
+            self.assertEqual(names, ["active", "sample_id", "protocol", "run_time", "step", "source", "engine", "fps",
+                                     "k_sigma", "analyzed"])
             row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
                               crop_text="full", analyzed="")
             self.assertEqual((row["k_sigma"], row["microns_per_pixel"], row["fps"]), (4.0, 1.1, None))
@@ -225,8 +226,11 @@ class RegistryTests(unittest.TestCase):
 
             view._add_root(data)
 
-            at = f"{run.run_id[9:11]}:{run.run_id[11:13]}"                      # the run's time tells runs apart
-            self.assertEqual([row.sample_id for row in view.matrix], [f"Oil 3 {at} step 1", f"Oil 3 {at} step 2"])
+            at = f"{run.run_id[9:11]}:{run.run_id[11:13]}"
+            self.assertEqual([row.sample_id for row in view.matrix], ["Oil 3", "Oil 3"])   # the sample is the grouping
+            self.assertEqual([(row.protocol, row.run_time[11:], row.step) for row in view.matrix],
+                             [("Oil 3", at, "step 1"), ("Oil 3", at, "step 2")])      # the rest, fields of their own
+            self.assertEqual(view.matrix[0].origin, f"Oil 3 · {view.matrix[0].run_time} · step 1")
             self.assertEqual({row.run for row in view.matrix}, {str(run.path.resolve())})
             self.assertEqual(view._row_key(view.matrix[0])[0], run.run_id)
             self.assertEqual(store.roots(), [str(data.resolve())])
@@ -237,7 +241,8 @@ class RegistryTests(unittest.TestCase):
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n}
                                              for i, n in enumerate([*names, "oil_3_step03_x.avi"])]})
             view._rescan()
-            self.assertEqual([row.sample_id for row in view.matrix][-1], f"Oil 3 {at} step 3")
+            self.assertEqual([(row.sample_id, row.step) for row in view.matrix][-1], ("Oil 3", "step 3"))
+            self.assertEqual(_make_view(store).matrix[-1].step, "step 3")             # kept with the list
             self.assertEqual(len(_make_view(store).matrix), 3)                         # the list persists
             self.assertIn("runs in", view._refs.get("topbar_text", "runs in") or "runs in")
 
@@ -349,6 +354,59 @@ class LiveRowTests(unittest.TestCase):
             self.assertEqual([folder for folder, _label in view._live_runs()], [view.matrix[0].run])
             view.matrix[0].run = ""
             self.assertEqual(view._live_rows(), [])                                      # a loose file has no live line
+
+
+class NamedSetTests(unittest.TestCase):
+    def test_a_set_keeps_the_ticked_files_and_their_names_and_brings_them_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            data = Path(tmp) / "data"
+            run_with_videos(data, "Oil 3", videos=3)
+            view = _make_view(store)
+            view._add_root(data)
+            view._notify = lambda *a, **k: None
+            a, b, c = view.matrix
+            a.sample_id, b.sample_id = "oil A rep 1", "oil A rep 2"
+            c.active = False
+
+            view._save_set("Oil A")
+
+            self.assertEqual(view.current_set, "Oil A")
+            self.assertEqual(list(store.sets()), ["Oil A"])
+            self.assertEqual([f["sample_id"] for f in store.sets()["Oil A"]["files"]], ["oil A rep 1", "oil A rep 2"])
+            a.sample_id, c.active = "renamed", True
+            a.active = False
+            view._load_set("Oil A")
+            self.assertEqual([(row.sample_id, row.active) for row in view.matrix],
+                             [("oil A rep 1", True), ("oil A rep 2", True), ("Oil 3", False)])
+            self.assertEqual(_make_view(store).current_set, "Oil A")                   # remembered
+            view._save_set("")                                                           # a name is needed
+            self.assertEqual(list(store.sets()), ["Oil A"])
+            view._choose_set(SimpleNamespace(value=None))
+            self.assertEqual(view.current_set, "")
+            view._set_current_set("Oil A")
+            view._delete_set()
+            self.assertEqual((store.sets(), view.current_set), ({}, ""))
+            self.assertEqual([row.active for row in view.matrix], [True, True, False])  # the files stay as they are
+
+    def test_a_set_says_when_one_of_its_files_is_not_listed_any_more(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            data = Path(tmp) / "data"
+            run_with_videos(data, "oil", videos=2)
+            view = _make_view(store)
+            view._add_root(data)
+            notices = []
+            view._notify = lambda text, kind: notices.append((kind, text))
+            view._save_set("both")
+            view.matrix.pop()
+
+            view._load_set("both")
+
+            self.assertEqual(notices[-1][0], "warning")
+            self.assertIn("1 of its files not listed", notices[-1][1])
+            view._load_set("nothing")
+            self.assertIn("No set", notices[-1][1])
 
 
 class StoredResultTests(unittest.TestCase):

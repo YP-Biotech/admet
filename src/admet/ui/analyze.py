@@ -97,6 +97,14 @@ class MatrixRow:
     plotted: bool = True               # ticked on 3. Results: in the plots and the export
     settings: dict[str, Any] = field(default_factory=dict)
     run: str = ""                      # the run folder the file came from, when it did
+    protocol: str = ""                 # the run's tag or protocol
+    run_time: str = ""                 # when the run began, "2026-11-17 19:30"
+    step: str = ""                     # the step of the run the file is of
+
+    @property
+    def origin(self) -> str:
+        """Where the file is from, in words: protocol, time and step."""
+        return " · ".join(part for part in (self.protocol, self.run_time, self.step) if part)
 
     @property
     def run_name(self) -> str:
@@ -137,6 +145,7 @@ class AnalyzeWorkflowView:
         # The setting columns the Analyse table shows, as chosen last time.
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
+        self.current_set = str(self.store.view_setting("current_set", "") or "")   # the named set in use
         # The kinds of data 3. Results uses, as chosen last time: the engines' analyses and the rig's live QC.
         chosen = self.store.view_setting("results_data", list(RESULT_DATA))
         self.results_data: set[str] = {kind for kind in RESULT_DATA if kind in (chosen or [])}
@@ -226,7 +235,7 @@ class AnalyzeWorkflowView:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(self.analyse_fields),
                                    tuple(row.uid for row in self.matrix), self._running,
-                                   tuple(sorted(self.results_data)))
+                                   tuple(sorted(self.results_data)), self.current_set)
 
     def _mount_stage(self) -> None:
         for key in ("action_box_body", "action_panel_body", "main_body", "log_body"):
@@ -500,6 +509,7 @@ class AnalyzeWorkflowView:
         from nicegui import ui
 
         with ui.column().classes("panel w-full gap-2 p-3"):
+            self._render_sets_bar()
             table = ui.table(columns=files_columns(), rows=self._files_rows(), row_key="uid").classes(
                 "slim-table matrix-table w-full").props("dense flat hide-bottom")
             self._register_table("files", table)
@@ -508,6 +518,94 @@ class AnalyzeWorkflowView:
             table.on("rowClick", self._select_row_event)
             self._refs["files_hint"] = ui.label("No files yet. Add files… to list videos or image folders."
                                                 ).classes("muted text-xs")
+
+    # -- named sets: a pick of files with their sample names, to come back to ------------------
+
+    def _render_sets_bar(self) -> None:
+        """Set: the saved picks; choosing one ticks its files and gives them their names. Save… keeps the
+        ticked files and their names under a name; Delete forgets the set chosen."""
+        from nicegui import ui
+
+        names = list(self.store.sets())
+        with ui.row().classes("items-center gap-2 no-wrap w-full"):
+            ui.label("Set").classes("text-xs muted")
+            select = ui.select(names, value=self.current_set if self.current_set in names else None,
+                               on_change=self._choose_set).props("dense outlined options-dense clearable").classes(
+                "sets-select")
+            self._refs["sets_select"] = select
+            ui.button("Save…", on_click=self._ask_set_name).props("dense flat no-caps")
+            ui.button("Delete", on_click=self._delete_set).props("dense flat no-caps").set_enabled(
+                self.current_set in names)
+
+    def _ask_set_name(self) -> None:
+        from nicegui import ui
+
+        with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label(f"Save the {len(self._listed())} ticked file(s) and their sample names as").classes("text-sm")
+            name = ui.input("Set name", value=self.current_set).props("dense outlined autofocus").classes("w-64")
+            name.on("keydown.enter", lambda _e: (dialog.close(), self._save_set(name.value)))
+            with ui.row().classes("gap-2"):
+                ui.button("Save", on_click=lambda: (dialog.close(), self._save_set(name.value))).props("dense no-caps")
+                ui.button("Cancel", on_click=dialog.close).props("dense flat no-caps")
+        dialog.open()
+
+    def _save_set(self, name: Any) -> None:
+        name = str(name or "").strip()
+        if not name:
+            self._notify("A set needs a name.", "warning")
+            return
+        files = [{"path": row.source_path, "sample_id": row.sample_id} for row in self._listed()]
+        if not files:
+            self._notify("Tick the files to keep in the set first.", "warning")
+            return
+        self.store.save_set(name, files)
+        self._set_current_set(name)
+        self._log(f"set: saved '{name}' with {len(files)} file(s)")
+        self._notify(f"Set '{name}' saved: {_count(len(files), 'file')}.", "success")
+        self._refresh(force_mount=True)
+
+    def _choose_set(self, event: Any) -> None:
+        name = getattr(event, "value", None)
+        if not name:
+            self._set_current_set("")
+            self._refresh(force_mount=True)
+            return
+        self._load_set(str(name))
+
+    def _load_set(self, name: str) -> None:
+        """Tick exactly the set's files and give them the set's sample names; a file of the set that is not
+        listed any more is said so."""
+        chosen = self.store.sets().get(name)
+        if chosen is None:
+            self._notify(f"No set '{name}'.", "warning")
+            return
+        wanted = {str(Path(f["path"]).resolve()): str(f.get("sample_id") or "") for f in chosen.get("files", [])}
+        found = 0
+        for row in self.matrix:
+            sample = wanted.get(str(Path(row.source_path).resolve()))
+            row.active = sample is not None
+            if sample is not None:
+                row.sample_id = sample or row.sample_id
+                found += 1
+        missing = len(wanted) - found
+        self._set_current_set(name)
+        self._log(f"set: '{name}' loaded, {found} file(s) ticked" + (f", {missing} not listed" if missing else ""))
+        self._notify(f"Set '{name}': {_count(found, 'file')} ticked" + (f", {missing} of its files not listed." if missing
+                                                                       else "."), "warning" if missing else "success")
+        self._refresh(force_mount=True)
+
+    def _delete_set(self) -> None:
+        name = self.current_set
+        if not name or not self.store.delete_set(name):
+            return
+        self._set_current_set("")
+        self._log(f"set: '{name}' deleted")
+        self._notify(f"Set '{name}' deleted; the files stay as they are.", "secondary")
+        self._refresh(force_mount=True)
+
+    def _set_current_set(self, name: str) -> None:
+        self.current_set = name
+        self.store.set_view_setting("current_set", name)
 
     def _files_rows(self) -> list[dict[str, Any]]:
         return [files_row(row, count=self._count_text(row), analyzed=self._analyzed_at(row),
@@ -1226,7 +1324,8 @@ class AnalyzeWorkflowView:
                 continue
             key = (result.run, result.source_path) if result is not None else (live.run, live.source_path)
             rows.append({"uid": row.uid, "active": row.plotted,
-                         **aggregated_cells(row.sample_id, styles.get(key), result, live, active=row.plotted)})
+                         **aggregated_cells(row.sample_id, styles.get(key), result, live, active=row.plotted,
+                                            origin=row.origin)})
         return rows
 
     def _live_qc(self, row: MatrixRow):
@@ -1246,7 +1345,7 @@ class AnalyzeWorkflowView:
         for row in self._shown():
             live = self._live_qc(row)
             if live is not None:
-                lives.append(replace(live, sample_id=row.sample_id))
+                lives.append(replace(live, sample_id=row.sample_id, step=row.step))
         return lives
 
     def _render_results_plots(self) -> None:
@@ -1415,10 +1514,11 @@ class AnalyzeWorkflowView:
         settings = self._engine_settings(row)
         source = Path(row.source_path)
         stored = load_stored_result(self.store.result_dir(source, settings), source_path=source, engine=row.engine,
-                                    sample_id=row.sample_id, run=row.run)
+                                    sample_id=row.sample_id, run=row.run, step=row.step)
         if stored is None and row.engine == "cellpose" and settings.get("frame_limit"):
             stored = load_stored_result(self.store.result_dir(source, {**settings, "frame_limit": None}),
-                                        source_path=source, engine=row.engine, sample_id=row.sample_id, run=row.run)
+                                        source_path=source, engine=row.engine, sample_id=row.sample_id, run=row.run,
+                                        step=row.step)
         if stored is not None and row.engine == "opencv" and stale_window(stored.metadata):
             return None
         return stored
@@ -1695,13 +1795,16 @@ class AnalyzeWorkflowView:
                 engine = str(entry.get("engine") or infer_engine(Path(entry["path"])))
             except ValueError:
                 continue
+            run = str(entry.get("run") or "")
+            origin = {key: str(entry.get(key) or "") for key in ("protocol", "run_time", "step")}
+            if run and not any(origin.values()):
+                origin = _run_origin(run, Path(entry["path"]).name)      # listed before these were fields
             rows.append(MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=engine,
                                   sample_id=str(entry.get("sample_id") or Path(entry["path"]).stem),
                                   cache_policy=str(entry.get("cache_policy") or "use"),
                                   active=bool(entry.get("active", True)), to_run=bool(entry.get("to_run", True)),
                                   plotted=bool(entry.get("plotted", True)),
-                                  settings=dict(entry.get("settings") or {}),
-                                  run=str(entry.get("run") or "")))
+                                  settings=dict(entry.get("settings") or {}), run=run, **origin))
         for row in rows:
             self._prefill_settings(row)
         self._saved_matrix = self._matrix_record(rows)
@@ -1711,7 +1814,8 @@ class AnalyzeWorkflowView:
     def _matrix_record(rows: list[MatrixRow]) -> list[dict[str, Any]]:
         return [{"path": row.source_path, "engine": row.engine, "sample_id": row.sample_id,
                  "cache_policy": row.cache_policy, "active": row.active, "to_run": row.to_run, "plotted": row.plotted,
-                 "settings": dict(row.settings), "run": row.run}
+                 "settings": dict(row.settings), "run": row.run, "protocol": row.protocol, "run_time": row.run_time,
+                 "step": row.step}
                 for row in rows]
 
     def _save_matrix(self) -> None:
@@ -1749,7 +1853,9 @@ class AnalyzeWorkflowView:
             if str(Path(entry["path"]).resolve()) in known:
                 continue
             row = MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=str(entry["engine"]),
-                            sample_id=str(entry["sample_id"]), run=str(entry.get("run") or ""))
+                            sample_id=str(entry["sample_id"]), run=str(entry.get("run") or ""),
+                            protocol=str(entry.get("protocol") or ""), run_time=str(entry.get("run_time") or ""),
+                            step=str(entry.get("step") or ""))
             self._prefill_settings(row)
             self.matrix.append(row)
         if self.matrix and not self.selected_uid:
@@ -1973,6 +2079,22 @@ def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, s
     scale_of = {key: tuple(reading["scale"])} if reading.get("scale") else {}
     settings_of = {key: dict(reading["read"])} if reading.get("read") else {}
     return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of, settings_of))
+
+
+def _run_origin(run_dir: str, video_name: str) -> dict[str, str]:
+    """A file's protocol, time and step from its run folder, for a file listed before these were fields."""
+    from admet.core.registry import run_time, step_label
+    from admet.core.runs import Run
+
+    record = Run(run_dir).read()
+    protocol = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
+                   or record.get("name") or Path(run_dir).name[16:] or Path(run_dir).name)
+    videos = [v for v in record.get("artifacts", {}).get("videos", []) if isinstance(v, dict) and v.get("video_path")]
+    if isinstance(record.get("recording"), dict) and record["recording"].get("video_path"):
+        videos.append(record["recording"])
+    mine = next((v for v in videos if Path(str(v["video_path"])).name == video_name), None)
+    return {"protocol": protocol, "run_time": run_time(run_dir),
+            "step": step_label(mine, len(videos)) if mine is not None else ""}
 
 
 @lru_cache(maxsize=64)
@@ -2551,6 +2673,7 @@ def _style() -> str:
       border-radius: 6px; }
     .matrix-table th .col-actions { display: flex; gap: 2px; }
     .columns-select { max-width: 760px; }
+    .sets-select { min-width: 220px; max-width: 360px; }
     .matrix-num { text-align: right; }
     .results-wrap { overflow-x: auto; }
     table.results { border-collapse: collapse; width: 100%; font-size: 12px; }

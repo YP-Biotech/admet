@@ -38,6 +38,9 @@ def files_columns() -> list[dict[str, Any]]:
     return [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
+        {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
+        {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
+        {"name": "step", "label": "Step", "field": "step", "align": "left"},
         {"name": "source", "label": "File", "field": "source", "align": "left"},
         {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
         {"name": "count", "label": "Frames / images", "field": "count", "align": "right"},
@@ -57,6 +60,9 @@ def analyse_columns(fields) -> list[dict[str, Any]]:
     columns = [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
+        {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
+        {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
+        {"name": "step", "label": "Step", "field": "step", "align": "left"},
         {"name": "source", "label": "File", "field": "source", "align": "left"},
         {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
     ]
@@ -87,6 +93,9 @@ def files_row(row: Any, *, count: str, analyzed: str, removable: bool) -> dict[s
         "uid": row.uid,
         "active": row.active,
         "sample_id": row.sample_id,
+        "protocol": row.protocol,
+        "run_time": row.run_time,
+        "step": row.step,
         "source": Path(row.source_path).name or row.source_path,
         "engine": row.engine,
         "count": count,
@@ -101,6 +110,9 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
         "uid": row.uid,
         "active": row.to_run,                 # the tick of 2. Analyse: run it
         "sample_id": row.sample_id,
+        "protocol": row.protocol,
+        "run_time": row.run_time,
+        "step": row.step,
         "source": Path(row.source_path).name or row.source_path,
         "engine": row.engine,
         "range": range_text,

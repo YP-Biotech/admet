@@ -84,22 +84,42 @@ class RegistryTests(unittest.TestCase):
             added = registry.scan(data)
 
             def at(run_id):
-                return f"{run_id[9:11]}:{run_id[11:13]}"
-            self.assertEqual([entry["sample_id"] for entry in added],
-                             [f"cap {at(by_hand.run_id)}", f"Oil 3 {at(run.run_id)} step 1", f"Oil 3 {at(run.run_id)} step 2"])
+                return f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]} {run_id[9:11]}:{run_id[11:13]}"
+            self.assertEqual([entry["sample_id"] for entry in added], ["cap", "Oil 3", "Oil 3"])   # the grouping
+            self.assertEqual([(entry["protocol"], entry["run_time"], entry["step"]) for entry in added],
+                             [("cap", at(by_hand.run_id), ""), ("Oil 3", at(run.run_id), "step 1"),
+                              ("Oil 3", at(run.run_id), "step 2")])                     # fields of their own
             self.assertEqual({entry["run"] for entry in added}, {str(run.path.resolve()), str(by_hand.path.resolve())})
             self.assertTrue(all(entry["engine"] == "opencv" for entry in added))
             self.assertEqual(registry.scan(), [])                                     # nothing new the second time
             (run.path / "oil_3_step03_x.avi").write_bytes(b"new")
             run.update(artifacts={"videos": [{"step": i + 1, "video_path": n} for i, n in enumerate(
                 [*names, "oil_3_step03_x.avi"])]})
-            self.assertEqual([e["sample_id"] for e in registry.scan()], [f"Oil 3 {at(run.run_id)} step 3"])
+            self.assertEqual([(e["sample_id"], e["step"]) for e in registry.scan()], [("Oil 3", "step 3")])
             run.update(artifacts={"videos": [{"step": 1, "step_name": "set01_rep01", "video_path": "oil_3_r1.avi"},
                                              {"step": 2, "step_name": "set01_rep02", "video_path": "oil_3_r2.avi"}]})
             for video in ("oil_3_r1.avi", "oil_3_r2.avi"):
                 (run.path / video).write_bytes(b"v")
-            self.assertEqual([e["sample_id"] for e in registry.scan()],                  # a step's own name
-                             [f"Oil 3 {at(run.run_id)} set01_rep01", f"Oil 3 {at(run.run_id)} set01_rep02"])
+            self.assertEqual([e["step"] for e in registry.scan()], ["set01_rep01", "set01_rep02"])   # a step's own name
+
+    def test_a_named_set_is_kept_and_forgotten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Registry(Path(tmp) / "analyze")
+            registry.save_set("oil", [{"path": Path(tmp) / "a.avi", "sample_id": "oil rep 1"},
+                                      {"path": Path(tmp) / "b.avi", "sample_id": "oil rep 2"}, {"path": ""}])
+            registry.save_set("water", [{"path": Path(tmp) / "c.avi"}])
+
+            sets = Registry(Path(tmp) / "analyze").sets()
+
+            self.assertEqual(list(sets), ["oil", "water"])
+            self.assertEqual([f["sample_id"] for f in sets["oil"]["files"]], ["oil rep 1", "oil rep 2"])
+            self.assertEqual(sets["water"]["files"][0]["path"], str((Path(tmp) / "c.avi").resolve()))
+            self.assertTrue(sets["oil"]["created_at"])
+            registry.save_set("oil", [{"path": Path(tmp) / "a.avi", "sample_id": "oil"}])         # written over
+            self.assertEqual(len(registry.sets()["oil"]["files"]), 1)
+            self.assertTrue(registry.delete_set("water"))
+            self.assertFalse(registry.delete_set("water"))
+            self.assertEqual(list(registry.sets()), ["oil"])
 
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:

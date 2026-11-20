@@ -133,7 +133,8 @@ class Registry:
         return next((entry for entry in self.sources() if _canonical(entry["path"]) == text), None)
 
     def add_source(self, path: str | Path, *, engine: str = "", sample_id: str = "", run: str | Path | None = None,
-                   settings: dict[str, Any] | None = None) -> dict[str, Any] | None:
+                   settings: dict[str, Any] | None = None, protocol: str = "", run_time: str = "",
+                   step: str = "") -> dict[str, Any] | None:
         """Know a file; None when it was known already."""
         source = Path(path).expanduser().resolve()
         record = self.read()
@@ -141,7 +142,8 @@ class Registry:
             return None
         entry = {"path": str(source), "engine": engine or infer_engine(source), "sample_id": sample_id or source.stem,
                  "cache_policy": "use", "active": True, "settings": dict(settings or {}),
-                 "run": str(Path(run).resolve()) if run else "", "added_at": _now()}
+                 "run": str(Path(run).resolve()) if run else "", "protocol": protocol, "run_time": run_time,
+                 "step": step, "added_at": _now()}
         record["sources"].append(entry)
         self.write(record)
         return dict(entry)
@@ -187,11 +189,8 @@ class Registry:
                 if not isinstance(record, dict):
                     continue
                 run_dir = record_path.parent
-                name = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
-                           or record.get("name") or run_dir.name)
-                stamp = run_dir.name[:15]
-                if re.fullmatch(r"\d{8}_\d{6}", stamp):
-                    name = f"{name} {stamp[9:11]}:{stamp[11:13]}"            # the run's time tells runs apart
+                protocol = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
+                               or record.get("name") or run_dir.name)
                 videos = [video for video in record.get("artifacts", {}).get("videos", [])
                           if isinstance(video, dict) and video.get("video_path")]
                 if isinstance(record.get("recording"), dict) and record["recording"].get("video_path"):
@@ -200,17 +199,40 @@ class Registry:
                     path = run_dir / Path(str(video["video_path"])).name
                     if not path.is_file():
                         continue
-                    step, step_name = video.get("step"), str(video.get("step_name") or "").strip()
-                    if step_name and len(videos) > 1:
-                        sample = f"{name} {step_name}"                      # "oil 19:30 set01_rep01": its replicate
-                    elif step is not None and len(videos) > 1:
-                        sample = f"{name} step {step}"
-                    else:
-                        sample = name
-                    entry = self.add_source(path, engine="opencv", sample_id=sample, run=run_dir)
+                    # The sample is the grouping, the user's to name: it starts as the run's tag or protocol.
+                    # The protocol, the run's time and the step are fields of their own.
+                    entry = self.add_source(path, engine="opencv", sample_id=protocol, run=run_dir,
+                                            protocol=protocol, run_time=run_time(run_dir),
+                                            step=step_label(video, len(videos)))
                     if entry is not None:
                         added.append(entry)
         return added
+
+    # -- named sets: a pick of files with their sample names, to come back to ---------------------
+    def sets(self) -> dict[str, dict[str, Any]]:
+        sets = self.read().get("sets")
+        return {str(name): dict(entry) for name, entry in sets.items() if isinstance(entry, dict)} \
+            if isinstance(sets, dict) else {}
+
+    def save_set(self, name: str, files: list[dict[str, Any]]) -> None:
+        """Keep a pick of files with their sample names under NAME; the same name is written over."""
+        record = self.read()
+        sets = record.get("sets") if isinstance(record.get("sets"), dict) else {}
+        sets[str(name)] = {"created_at": _now(),
+                           "files": [{"path": _canonical(f["path"]), "sample_id": str(f.get("sample_id") or "")}
+                                     for f in files if f.get("path")]}
+        record["sets"] = sets
+        self.write(record)
+
+    def delete_set(self, name: str) -> bool:
+        record = self.read()
+        sets = record.get("sets") if isinstance(record.get("sets"), dict) else {}
+        if str(name) not in sets:
+            return False
+        del sets[str(name)]
+        record["sets"] = sets
+        self.write(record)
+        return True
 
     # -- what the screen remembers -------------------------------------------------------
     def view_setting(self, key: str, default: Any = None) -> Any:
@@ -226,6 +248,23 @@ class Registry:
     # -- results ------------------------------------------------------------------------
     def result_dir(self, source: str | Path, settings: dict[str, Any] | None = None) -> Path:
         return self.results_dir / content_key(source, settings)
+
+
+def run_time(run_dir: str | Path) -> str:
+    """When a run folder's run began, from its name: "2026-11-17 19:30"; empty when the name has no stamp."""
+    stamp = Path(run_dir).name[:15]
+    if re.fullmatch(r"\d{8}_\d{6}", stamp):
+        return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}"
+    return ""
+
+
+def step_label(video: dict[str, Any], videos: int) -> str:
+    """The step a video is of, by its name when the protocol gave one, else by number; empty for a lone video."""
+    name = str(video.get("step_name") or "").strip()
+    if name:
+        return name
+    step = video.get("step")
+    return f"step {step}" if step is not None and videos > 1 else ""
 
 
 def _canonical(path: Any) -> str:

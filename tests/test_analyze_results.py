@@ -329,6 +329,12 @@ class ChartTests(unittest.TestCase):
         whole = ["dropseq_1n 16:43", "dropseq_3n 19:30 step 1"]                   # too short to cut at a word: kept whole
         self.assertEqual(short_names(whole), {name: name for name in whole})
         self.assertEqual(short_names(["only"]), {"only": "only"})
+        stamped = _result(run="20261117_193050_dropseq_3n", sample_id="oil", step="set01_rep01")
+        self.assertEqual((stamped.protocol, stamped.run_time), ("dropseq_3n", "2026-11-17 19:30"))
+        steps = [_result(run="20261117_193050_dropseq_3n", sample_id="oil", source_path=f"/{n}.avi", step=f"set01_rep0{n}")
+                 for n in (1, 2)]
+        self.assertEqual([s["name"] for s in timeline_chart([replace(r, arrivals_s=(0.0, 0.1)) for r in steps])["series"]],
+                         ["oil set01_rep01", "oil set01_rep02"])                         # the step beside the sample
         chart = cv_chart([_result(sample_id=names[0], source_path="/1.avi", diameters=(1.0, 2.0)),
                           _result(sample_id=names[1], source_path="/2.avi", diameters=(1.0, 2.0))])
         self.assertEqual(chart["xAxis"]["data"], ["step01_20261113_183825", "step02_20261113_184149"])
@@ -366,8 +372,8 @@ class ExportTests(unittest.TestCase):
 
             self.assertEqual(sorted(archive.namelist()), ["droplets/study_s_opencv.csv", "summary.csv"])
             summary = archive.read("summary.csv").decode().splitlines()
-            self.assertTrue(summary[0].startswith("run,sample,engine"))
-            self.assertIn("study,s,opencv", summary[1])
+            self.assertTrue(summary[0].startswith("run,protocol,time,step,sample,engine"))
+            self.assertIn("study,study,,,s,opencv", summary[1])                      # no stamp: the run as named
             droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
             self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,bbox_x,bbox_width,equivalent_diameter,area")
             self.assertEqual(len(droplets), 10)
