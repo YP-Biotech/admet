@@ -34,8 +34,8 @@ The file list comes back as you left it.
 
 | Stage | What you do there |
 |---|---|
-| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's name; **Add files…** takes single videos and image folders. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here, and Use all in the table's header ticks or clears every file on any stage. |
-| **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. |
+| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's name; **Add files…** takes single videos and image folders. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here. Each later stage has a Use of its own: on 2. Analyse it says which files to run, on 3. Results which are in the plots and the export; an unticked file stays in the table, greyed, and a file not run still shows its live QC on 3. Results. Use all in a table's header ticks or clears every file of that stage. |
+| **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. **Stop** ends a run at its next step: the files already finished keep their results, the one in hand is left unfinished and runs again next time. |
 | **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 
 Image folders are analysed with Cellpose and videos with OpenCV; both go through the
@@ -106,7 +106,9 @@ the stored rows stay as found, and *Clear corrections* drops them.
 
 ## Results
 
-The stage is one page with one table, in the Action Panel: one line per file
+The stage is one page with one table, in the Action Panel. **Data** above it
+chooses what the stage takes in, OpenCV, Cellpose and Live QC, for every table,
+plot and export; the choice is remembered. The table has one line per file
 with droplets, diameter, CV and rate, the rig's live number under the
 analysis's, the recording's state in the rig's colour, and Use. Below it come
 the plots, in sections that are there when they have data; the table's ticks
