@@ -7,8 +7,8 @@ import statistics
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QPlainTextEdit,
+    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
+    QLineEdit, QPlainTextEdit,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -17,7 +17,12 @@ from admet.ui.tables import GridTable, SummaryLabel, fit_table_height
 from admet.core.engine import Param, ParamKind
 from admet.engines.acquisition.fluidics.config import STABILITY_DURATION_S, STABILITY_TOLERANCE_UL_MIN
 from admet.workflows.control import builtin_document
-from admet.workflows.json_protocol import loads, parameter_declarations, parameter_text, resolve, template_documents
+from admet.workflows.json_protocol import (
+    RUN_FIELDS, loads, parameter_declarations, parameter_text, resolve, template_documents,
+)
+
+RUN_LABELS = {"name": "Run", "set": "Set"}
+RUN_HINTS = {"name": "the protocol's name", "set": "none"}
 
 
 def value_text(value, unit=""):
@@ -308,40 +313,6 @@ class Measurements(QWidget):
             del self.pending[run_id]
 
 
-class PlanDialog(QDialog):
-    """Plan's question: the run's name and the set it joins, the group analyze puts its videos in."""
-
-    def __init__(self, parent, name: str, group: str):
-        super().__init__(parent)
-        self.setWindowTitle("Plan")
-        root = QVBoxLayout(self)
-        hint = QLabel("The name tags the run: its record, its recordings and the lists in Review and "
-                      "Calculations carry it. The set is the group the run's recordings start in on "
-                      "analyze, where its files are named <set>_rep1, <set>_rep2, …; leave it empty for none.")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
-        form = QFormLayout()
-        self.name = QLineEdit(name)
-        self.group = QLineEdit(group)
-        self.group.setPlaceholderText("none")
-        form.addRow("Run", self.name)
-        form.addRow("Set", self.group)
-        root.addLayout(form)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-        self.name.selectAll()
-
-    @classmethod
-    def ask(cls, parent, name: str, group: str) -> tuple[str, str] | None:
-        """(name, set) as typed, or None when the operator backs out."""
-        dialog = cls(parent, name, group)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return dialog.name.text(), dialog.group.text()
-
-
 class ProtocolEditor(QWidget):
     """Only the new definition/preview content; transport and logs stay in the window."""
 
@@ -353,13 +324,13 @@ class ProtocolEditor(QWidget):
         self.plan = None
         self.dirty = True
         self.parameter_editors = {}
+        self.run_editors = {}                  # the run's name and set, the first rows of the parameter table
         self.parameter_table = None
         self._table_digest = None
         self._edit_generation = 0
         self._executing = False
         self._last_sequence = 0
         self._step_started: dict[int, float] = {}
-        self.run_name = ""                     # the name the operator gave the run at the last Plan
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self.editor = QPlainTextEdit()
@@ -437,16 +408,26 @@ class ProtocolEditor(QWidget):
             self.parameter_table.deleteLater()
             self.parameter_table = None
         self.parameter_editors = {}
+        self.run_editors = {}
         try:
             document = loads(self.editor.toPlainText())
         except (ValueError, TypeError):
             return
         declarations = parameter_declarations(document)
-        if not declarations:
-            return
+        run = document.get("run") if isinstance(document.get("run"), dict) else {}
         from admet.ui.control import NumericParamEdit
 
         def make_editor(param):
+            if param.name.startswith("run."):
+                key = param.name[4:]
+                widget = QLineEdit(str(run.get(key) or ""))
+                widget.setPlaceholderText(document.get("name", "") if key == "name" else RUN_HINTS[key])
+                widget.setMaxLength(80)
+                widget.textEdited.connect(self.edited)
+                widget.editingFinished.connect(lambda key=key, widget=widget: self.set_run_field(key, widget.text()))
+                self.run_editors[key] = widget
+                widget.setEnabled(not self._executing)
+                return widget
             value = document["parameter_values"][param.name]
             if param.kind == ParamKind.FLOAT:
                 widget = NumericParamEdit(param, value)
@@ -476,11 +457,32 @@ class ProtocolEditor(QWidget):
             return widget
 
         kinds = {"number": ParamKind.FLOAT, "text": ParamKind.TEXT, "boolean": ParamKind.BOOLEAN, "choice": ParamKind.CHOICE}
-        params = [Param(name, declaration["label"], kinds[declaration["type"]], default=declaration["default"],
-                        minimum=declaration.get("min"), maximum=declaration.get("max"))
-                  for name, declaration in declarations.items()]
+        params = [Param("run." + key, RUN_LABELS[key], ParamKind.TEXT, default="") for key in RUN_FIELDS]
+        params += [Param(name, declaration["label"], kinds[declaration["type"]], default=declaration["default"],
+                         minimum=declaration.get("min"), maximum=declaration.get("max"))
+                   for name, declaration in declarations.items()]
         self.parameter_table = self.window._param_table(params, editor_factory=make_editor)
         self.parameter_box.addWidget(self.parameter_table)
+
+    def set_run_field(self, key, value):
+        """The run's name or set, into the document's run block; an empty value takes the field out."""
+        document = json.loads(self.editor.toPlainText())
+        run = dict(document.get("run") or {}) if isinstance(document.get("run"), dict) else {}
+        value = value.strip()
+        if (run.get(key) or "") == value:
+            return
+        if value:
+            run[key] = value
+        else:
+            run.pop(key, None)
+        if run:
+            document["run"] = run
+        else:
+            document.pop("run", None)
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(json.dumps(document, indent=2, ensure_ascii=False))
+        self.editor.blockSignals(False)
+        self.edited()
 
     def set_parameter(self, name, value):
         # Keep other pending cells intact; validation of all resolved steps happens on Build/Save.
@@ -515,6 +517,8 @@ class ProtocolEditor(QWidget):
             if isinstance(widget, QLineEdit) and not isinstance(widget, NumericParamEdit):
                 if json.loads(self.editor.toPlainText()).get("parameter_values", {}).get(name) != widget.text():
                     self.set_parameter(name, widget.text())
+        for key, widget in self.run_editors.items():
+            self.set_run_field(key, widget.text())                        # a value typed but not yet left
         return loads(self.editor.toPlainText())
 
     def populate_templates(self):
@@ -546,34 +550,16 @@ class ProtocolEditor(QWidget):
         except Exception as exc:
             self.error(exc)
             return
-        tag = group = ""
-        if not self.builtin:
-            named = self.ask_run_name()
-            if named is None:
-                return
-            tag, group = named
-            self.window._rename_protocol_stage(self.stage.id, tag)      # the step is the run from now on
+        name = str((document.get("run") or {}).get("name") or "") if not self.builtin else ""
+        if name:
+            self.window._rename_protocol_stage(self.stage.id, name)     # the step is the run from now on
         generation = self._edit_generation
 
         def received(plan):
             if generation == self._edit_generation:
                 self.add_plan(plan)
 
-        self.submit(lambda: self.backend.preview(self.stage.id, document, tag, group), received)
-
-    def ask_run_name(self):
-        """The run's name and its set, asked before every Plan; the step takes the name and the window
-        keeps the set for the next run. None when the operator backs out."""
-        import re
-
-        default = self.run_name or re.sub(r"^\d+\.\s*", "", self.stage.label)
-        answer = PlanDialog.ask(self, default, getattr(self.window, "run_set", ""))
-        if answer is None:
-            return None
-        name, group = answer
-        self.run_name = name.strip() or default
-        self.window.run_set = group.strip()
-        return self.run_name, self.window.run_set
+        self.submit(lambda: self.backend.preview(self.stage.id, document), received)
 
     def add_plan(self, plan):
         self.plan = plan
@@ -644,7 +630,7 @@ class ProtocolEditor(QWidget):
             self.editor.hide()
         if not self.builtin:
             self.library.setEnabled(not active)
-        for widget in self.parameter_editors.values():
+        for widget in (*self.parameter_editors.values(), *self.run_editors.values()):
             widget.setEnabled(not active)
 
     def pipeline_event(self, event):

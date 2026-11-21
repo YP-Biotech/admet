@@ -1,8 +1,8 @@
 # Protocol format
 
-A protocol is a JSON document: a name, ordered steps, and optionally parameters,
-measurements and calculations. Saving and planning never move anything; only
-executing a reviewed plan does.
+A protocol is a JSON document: a name, ordered steps, and optionally a run block,
+parameters, measurements and calculations. Saving and planning never move anything;
+only executing a reviewed plan does.
 
 ```json
 {
@@ -69,6 +69,24 @@ channel in the step stops at the same moment, whatever it has delivered.
 
 `pressure_limits_mbar` sets software trips per channel. They are off unless set.
 See [Safety](../control/safety#pressure-trips).
+
+## Run
+
+What the run will be called and which set it joins, apart from the protocol's name:
+
+```json
+"run": {"name": "Oil 3", "set": "oil"}
+```
+
+Both are optional text of up to 80 characters; a missing or empty one is none. The
+**name** tags the run: its folder is named after it, its record, the record of each
+recording and the lists in Review and Calculations carry it, and in `admet control`
+the step takes it at Plan; without one the run is named after the protocol. The
+**set** is the group the run belongs to, one condition or one experiment across
+runs: the record and the recordings carry it, Review lists it, and `admet analyze`
+puts the run's videos into that set when it scans them, named `<set>_rep1`,
+`<set>_rep2`, … (see [Sets](../analyze/overview#sets)). In `admet control` the two
+are the first rows of the parameter table.
 
 ## Measurements
 

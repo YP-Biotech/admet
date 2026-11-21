@@ -266,6 +266,28 @@ def normalize(document):
         return resolved
     result = deepcopy(document)
     result["parameter_values"] = parameter_values(document)
+    result.pop("run", None)
+    if "run" in resolved:
+        result["run"] = resolved["run"]
+    return result
+
+
+RUN_FIELDS = ("name", "set")
+
+
+def run_fields(value):
+    """The run block as kept: the run's name and its set, text, trimmed, empty ones dropped."""
+    if not isinstance(value, dict) or set(value) - set(RUN_FIELDS):
+        raise ValueError("run must be an object with name and/or set")
+    result = {}
+    for key in RUN_FIELDS:
+        if key not in value:
+            continue
+        text = value[key]
+        if not isinstance(text, str) or len(text) > 80:
+            raise ValueError(f"run {key} must be text of at most 80 characters")
+        if text.strip():
+            result[key] = text.strip()
     return result
 
 
@@ -325,7 +347,7 @@ def _normalize_resolved(document):
 
     if not isinstance(document, dict):
         raise ValueError("protocol must be a JSON object")
-    unknown = set(document) - {"name", "steps", "calculations", "measurements"}
+    unknown = set(document) - {"name", "steps", "calculations", "measurements", "run"}
     if unknown:
         raise ValueError(f"unknown protocol fields: {', '.join(sorted(unknown))}")
     name = document.get("name")
@@ -386,6 +408,10 @@ def _normalize_resolved(document):
     if len(expanded) > 1000:
         raise ValueError("expanded protocol exceeds 1000 steps")
     result = {"name": name, "steps": normalized}
+    if "run" in document:
+        run = run_fields(document["run"])
+        if run:
+            result["run"] = run
     if "measurements" in document:
         result["measurements"] = measurement_fields(document["measurements"], len(expanded))
     calculations = normalize_calculations(document, normalized, result.get("measurements", {}))

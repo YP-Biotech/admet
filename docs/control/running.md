@@ -8,16 +8,17 @@ plan; the runs it executed stay. Steps are not kept between sessions.
 ## Plan, review, execute
 
 1. **Select** a protocol from the selector. Its parameters appear in the
-   *Parameter / Value* table; the JSON can be edited too.
-2. **Plan** first asks for the run's name and its set. The name, proposed from
-   the step's, tags the run: the step takes it, and its record, the record of each
-   recording and the lists in Review and Calculations carry it. The set is the
-   group the run belongs to, one condition or one experiment across runs; it is
-   written into the run's record and each recording's, Review lists it, and
-   `admet analyze` puts the run's videos into that set when it scans them, named
-   `<set>_rep1`, `<set>_rep2`, … (see [Sets](../analyze/overview#sets)), so the
-   grouping is done once, at the rig. The set given last is proposed for the
-   next run; leave it empty for none. Then Plan resolves the parameters and freezes the
+   *Parameter / Value* table; the JSON can be edited too. The table's first two
+   rows are the protocol's [run block](../protocols/format#run): **Run**, what
+   this run is called (the protocol's name when empty), and **Set**, the group it
+   belongs to, one condition or one experiment across runs. The name tags the
+   run: the step takes it at Plan, and its record, the record of each recording
+   and the lists in Review and Calculations carry it. The set is written into the
+   run's record and each recording's, Review lists it, and `admet analyze` puts
+   the run's videos into that set when it scans them, named `<set>_rep1`,
+   `<set>_rep2`, … (see [Sets](../analyze/overview#sets)), so the grouping is
+   done once, at the rig.
+2. **Plan** resolves the parameters and freezes the
    steps. Nothing moves and nothing is recorded. The plan table shows, per step:
    **STEP · UNIT ID · TYPE · TARGET · TRIGGER & ETA · END · CONFIRM**.
    Lines inside one row run at the same time. The action bar sums the step count,
