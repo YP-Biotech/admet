@@ -5,9 +5,12 @@
     records/camera/run_<id>.qc.csv            ->  run.csv too, the QC rows put on the polling clock
     records/camera/run_<id>_stepNN_<stamp>.avi -> the run folder, moved (or copied)
 
-A video of no protocol run is a recording of its own. A run already laid out is left alone, so
-a project can be migrated again after a stop. The analyze registry, when given, watches the
-folder and lists every video.
+A video named after a run, run_<id>_<stamp>.avi, belongs to that run even when its summary
+does not list it. A video of no protocol run is a recording of its own. Only completed runs are
+laid out: a failed or unfinished run stays in the project with its files. A run already laid out
+is left alone, so a project can be migrated again after a stop. The analyze registry, when
+given, watches the folder and lists every video. The project's rig settings go into the home's
+rig.json only when asked, so one project's rig is the one kept.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from admet.core.home import RIG_KEYS
 from admet.core.runs import RUNS_DIR, Run, run_name
 
 STAMP = re.compile(r"_(\d{8}_\d{6})\.csv$")
@@ -28,10 +32,12 @@ STAMP = re.compile(r"_(\d{8}_\d{6})\.csv$")
 
 @dataclass
 class Migration:
-    """What a migration did: the run folders made, the ones found there already, the videos moved."""
+    """What a migration did: the run folders made, the ones found there already, the videos moved,
+    the runs left in the project because they never completed."""
     into: Path
     made: list[Path] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    left: dict[str, str] = field(default_factory=dict)       # run folder -> its state
     videos: int = 0
     registered: int = 0
 
@@ -39,9 +45,26 @@ class Migration:
         lines = [f"{len(self.made)} run(s) laid out in {self.into / RUNS_DIR}, {self.videos} video(s) moved"]
         if self.skipped:
             lines.append(f"{len(self.skipped)} run(s) there already, left alone")
+        if self.left:
+            states = sorted(set(self.left.values()))
+            counts = ", ".join(f"{sum(1 for s in self.left.values() if s == state)} {state}" for state in states)
+            lines.append(f"{len(self.left)} run(s) not completed left in the project: {counts}")
         if self.registered:
             lines.append(f"{self.registered} video(s) listed for analyze")
         return lines
+
+
+def rig_settings(project: str | Path) -> dict[str, Any]:
+    """The project's rig settings as the home keeps them: the keys of rig.json found in its manifest."""
+    project = Path(project)
+    try:
+        manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{project} is not a project: no manifest.json") from exc
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+    if not isinstance(metadata, dict):
+        return {}
+    return {key: metadata[key] for key in RIG_KEYS if metadata.get(key) not in (None, "", [], {})}
 
 
 def migrate_project(project: str | Path, into: str | Path, *, copy: bool = False, registry: Any = None) -> Migration:
@@ -65,7 +88,15 @@ def migrate_project(project: str | Path, into: str | Path, *, copy: bool = False
             continue
         artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
         videos = [v for v in artifacts.get("videos", []) if isinstance(v, dict) and v.get("video_path")]
+        listed = {Path(str(v["video_path"])).name for v in videos}
+        for path in sorted((project / "records" / "camera").glob(f"{run_dir.name}_*.avi")):
+            if path.name not in listed:                      # named after the run, unlisted: the run's own
+                videos.append({"video_path": f"records/camera/{path.name}"})
         of_protocols.update(str(v["video_path"]) for v in videos)
+        state = str(summary.get("state") or "")
+        if state != "completed":
+            report.left[run_dir.name] = state or "unknown"
+            continue
         _lay_out_protocol_run(project, run_dir, summary, artifacts, videos, runs_dir, report, copy)
     for entry in _loose_recordings(project, of_protocols):
         _lay_out_recording(project, entry, runs_dir, report, copy)

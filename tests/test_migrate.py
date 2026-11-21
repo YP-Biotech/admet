@@ -57,10 +57,26 @@ def old_project(root: Path) -> Path:
         writer = csv.writer(handle)
         writer.writerow(["timestamp", "elapsed_s", "pressure_0_mbar", "flow_0_ul_min"])
         writer.writerow(["19:05:00.000", "10.000", "900", "100"])
-    (project / "manifest.json").write_text(json.dumps({"project_id": "study", "files": [
+    (project / "records" / "protocols" / "run_bad").mkdir()                       # failed, with a video of its own
+    (project / "records" / "protocols" / "run_bad" / "summary.json").write_text(json.dumps({
+        "plan_id": "plan_2", "state": "failed", "executed_at": "2026-11-17T17:00:00+02:00", "run_id": "run_bad",
+        "normalized_settings": {"protocol": {"name": "Oil 4", "steps": []}}, "artifacts": {}}))
+    (project / "records" / "camera" / "run_bad_20261117_170005.avi").write_bytes(b"RIFF failed video")
+    (project / "records" / "protocols" / "run_stuck").mkdir()                     # never finished: a record only
+    (project / "records" / "protocols" / "run_stuck" / "summary.json").write_text(json.dumps({
+        "plan_id": "plan_3", "run_id": "run_stuck", "state": "executing"}))
+    (project / "records" / "camera" / "run_abc_20261117_164340.avi").write_bytes(b"RIFF unlisted")   # the run's, unlisted
+    (project / "manifest.json").write_text(json.dumps({"project_id": "study", "metadata": {
+        "acquisition_mode": "camera_fluidics", "calibration": {"oil_l": {"profile": "p1"}},
+        "profiles": [{"id": "p1", "name": "gen_oil_l", "liquid": "oil", "calibration": "IPA", "unit": "L",
+                      "scale": 0.6, "square": 0.0, "cube": 0.0}],
+        "optics": {"microns_per_pixel": 2.5, "method": "walls"}, "qt_checkup": {"conditions": {}},
+        "analysis_setup": {"matrix": []}, "cache_root": "C:\\cache"}, "files": [
         {"id": "summary", "role": "protocol_run", "path": "records/protocols/run_abc/summary.json"},
         {"id": "video-1", "role": "control_video", "path": "records/camera/run_abc_step01_20261117_164331.avi",
          "metadata": {"step": 1}},
+        {"id": "video-3", "role": "control_video", "path": "records/camera/run_bad_20261117_170005.avi"},
+        {"id": "video-4", "role": "control_video", "path": "records/camera/run_abc_20261117_164340.avi"},
         {"id": "video-2", "role": "control_video", "path": "records/camera/by_hand_20261116_190500.avi",
          "metadata": {"started_at": "2026-11-16T19:05:00", "stopped_at": "2026-11-16T19:05:30",
                       "fluidics_csv": "records/fluidics/by_hand_20261116_190500.csv", "acquisition_fps": 1000.0}},
@@ -78,7 +94,11 @@ class MigrateTests(unittest.TestCase):
 
             self.assertEqual([folder.name for folder in report.made],
                              ["20261117_164326_oil_3", "20261116_190500_by_hand"])
-            self.assertEqual((report.videos, report.skipped, report.registered), (2, [], 2))
+            self.assertEqual((report.videos, report.skipped, report.registered), (3, [], 3))
+            self.assertEqual(report.left, {"run_bad": "failed", "run_stuck": "executing"})   # not laid out
+            self.assertIn("2 run(s) not completed left in the project: 1 executing, 1 failed", report.lines())
+            self.assertTrue((project / "records" / "camera" / "run_bad_20261117_170005.avi").is_file())   # stays
+            self.assertFalse((Path(tmp) / "data" / "runs" / "20261117_170000_oil_4").exists())
             run = Run(Path(tmp) / "data" / "runs" / "20261117_164326_oil_3")
             record = run.read()
             self.assertEqual((record["kind"], record["name"], record["state"], record["run_id"]),
@@ -86,10 +106,12 @@ class MigrateTests(unittest.TestCase):
             self.assertEqual(record["normalized_settings"]["protocol"]["name"], "Oil 3")
             self.assertEqual(record["artifacts"]["fluidics_csv"], "run.csv")
             self.assertEqual(record["artifacts"]["polling_origin_monotonic"], 1000.0)
-            video, = record["artifacts"]["videos"]
+            video, unlisted = record["artifacts"]["videos"]
             self.assertEqual((video["video_path"], video["step_name"], video["encoded"]),
                              ("run_abc_step01_20261117_164331.avi", "set01_rep01", True))
+            self.assertEqual(unlisted, {"video_path": "run_abc_20261117_164340.avi", "encoded": True})   # named after the run
             self.assertTrue((run.path / "run_abc_step01_20261117_164331.avi").is_file())
+            self.assertTrue((run.path / "run_abc_20261117_164340.avi").is_file())
             self.assertFalse((project / "records" / "camera" / "run_abc_step01_20261117_164331.avi").exists())  # moved
             self.assertEqual([e["sequence"] for e in record["events"]], [1, 3])          # the tick between is not kept
             with run.csv_path.open(newline="") as handle:
@@ -102,7 +124,7 @@ class MigrateTests(unittest.TestCase):
             self.assertEqual(rows[3]["pressure_0_mbar"], "")
             self.assertEqual([run["name"] for run in RunStore(Path(tmp) / "data").list()], ["Oil 3", "by_hand"])   # as control names runs
             self.assertEqual(sorted(entry["sample_id"] for entry in registry.sources()),
-                             ["Oil 3 16:43", "by_hand 19:05"])                           # the protocol's name, its time
+                             ["Oil 3 16:43", "Oil 3 16:43 set01_rep01", "by_hand 19:05"])   # the protocol's name, its time
 
     def test_a_video_recorded_by_hand_is_a_recording_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,8 +164,31 @@ class MigrateTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertEqual(len(list((home / "data" / "runs").iterdir())), 2)
-            self.assertEqual(len(Registry(home / "analyze").sources()), 2)
+            self.assertEqual(len(Registry(home / "analyze").sources()), 3)
+            self.assertFalse((home / "control" / "rig.json").exists())                  # the rig only when asked
             self.assertEqual(main(["migrate", str(Path(tmp) / "nowhere"), "--home", str(home)]), 1)
+
+    def test_the_rig_settings_go_into_the_home_only_when_asked(self):
+        from admet.core.home import AdmetHome
+        from admet.core.migrate import rig_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = old_project(Path(tmp))
+            home = Path(tmp) / "home"
+            settings = rig_settings(project)
+            self.assertEqual(sorted(settings), ["acquisition_mode", "calibration", "optics", "profiles", "qt_checkup"])
+            self.assertNotIn("analysis_setup", settings)                                  # analyze's, not the rig's
+            AdmetHome(home).ensure().update_rig(profiles=[{"id": "old"}], liquids=[{"id": "brine"}])
+
+            self.assertEqual(main(["migrate", str(project), "--home", str(home), "--copy", "--rig"]), 0)
+
+            rig = AdmetHome(home).rig()
+            self.assertEqual(rig["calibration"], {"oil_l": {"profile": "p1"}})
+            self.assertEqual([p["name"] for p in rig["profiles"]], ["gen_oil_l"])          # written over
+            self.assertEqual(rig["liquids"], [{"id": "brine"}])                           # not in the project: kept
+            self.assertEqual((rig["acquisition_mode"], rig["optics"]["microns_per_pixel"]), ("camera_fluidics", 2.5))
+            with self.assertRaises(ValueError):
+                rig_settings(Path(tmp) / "nowhere")
 
 
 if __name__ == "__main__":

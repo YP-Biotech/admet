@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--into", help="the data folder to lay the runs out in (default: the home's data folder)")
     migrate.add_argument("--copy", action="store_true", help="copy the videos instead of moving them")
     migrate.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
+    migrate.add_argument("--rig", action="store_true",
+                         help="take the project's rig settings into the home's rig.json (one project's rig is kept)")
 
     sdk = sub.add_parser(
         "install-sdk", help="download Fluigent's SDK from its official GitHub into ADMET's vendor folder"
@@ -83,17 +85,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "migrate":
         from admet.core.home import AdmetHome
-        from admet.core.migrate import migrate_project
+        from admet.core.migrate import migrate_project, rig_settings
         from admet.core.registry import Registry
 
         home = AdmetHome.resolve(args.home).ensure()
         try:
             report = migrate_project(args.project, args.into or home.data_dir, copy=args.copy,
                                      registry=Registry(home.analyze_dir))
-        except (OSError, ValueError) as exc:
+            lines = report.lines()
+            if args.rig:
+                settings = rig_settings(args.project)
+                home.update_rig(**settings)
+                lines.append(f"rig settings taken into {home.rig_path}: {', '.join(sorted(settings)) or 'none found'}")
+        except (OSError, ValueError, KeyError) as exc:
             print(f"Could not migrate {args.project}: {exc}", file=sys.stderr)
             return 1
-        print("\n".join(report.lines()))
+        print("\n".join(lines))
         return 0
 
     if args.command == "install-sdk":
