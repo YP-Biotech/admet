@@ -217,6 +217,7 @@ class RunStore:
                 "run_id": record_path.parent.name,
                 "directory": str(record_path.parent),
                 "name": record.get("tag") or protocol.get("name") or record.get("name") or record_path.parent.name,
+                "set": str(record.get("set") or ""),
                 "kind": record.get("kind", "protocol"),
                 "state": record.get("state", ""),
                 "at": record.get("executed_at") or record.get("started_at") or "",
