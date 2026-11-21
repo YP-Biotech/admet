@@ -1,8 +1,35 @@
 # Projects
 
 A project is a folder ending in `.admetp`, the format earlier versions recorded
-into. Neither `admet control` nor `admet analyze` writes one any more; `admet
-migrate` will convert them into run folders.
+into. Neither `admet control` nor `admet analyze` writes or reads one any more;
+`admet migrate` lays one out as run folders.
+
+## Migrating a project
+
+```text
+admet migrate experiment.admetp              # into the home's data folder
+admet migrate experiment.admetp --into D:\admet\data --copy
+admet migrate experiment.admetp --rig        # and take its rig settings into the home
+```
+
+Every completed protocol run of the project becomes a run folder,
+`runs/<date>_<name>/`, named by the run's tag or its protocol and the time it
+began: its summary becomes `run.json`, with its step events; its fluidics readings
+and the camera's QC rows become one `run.csv`, the QC rows put on the readings'
+clock, the readings found by the run's name when the summary's path is stale; its step videos move into the folder, and so does a video named after the
+run, `run_<id>_<stamp>.avi`, that its summary never listed. A video recorded by
+hand becomes a recording run of its own. A run that failed or never finished is
+not laid out: it stays in the project with its files, and the report counts it.
+The videos are moved, which is quick on the same disk and copies nothing;
+`--copy` copies them and leaves the project whole. The analyze registry of the
+home watches the folder afterwards and lists every video, so they appear on
+1. Files at once. A run already laid out is left alone, so a migration can be run
+again after a stop.
+
+The rig's settings are not taken along unless asked: `--rig` puts the project's
+acquisition mode, calibration, profiles, liquids, optics and preflight checkup into
+the home's `control/rig.json`, over what is there. Migrate the project whose rig is
+the current one with `--rig`, the others without, and the home keeps one rig.
 
 `admet control` no longer writes projects. It records one folder per run into the
 admet home's `data/runs/` and keeps the rig's settings in `control/rig.json`; see
@@ -49,5 +76,5 @@ still finds them.
 
 ## Older projects
 
-ADMET reads only the current project format. Projects from earlier versions are
-not read through compatibility code; convert them first.
+ADMET reads only run folders. Projects from earlier versions are not read through
+compatibility code; migrate them first, as above.
