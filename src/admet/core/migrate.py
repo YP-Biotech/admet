@@ -111,6 +111,8 @@ def _lay_out_protocol_run(project: Path, run_dir: Path, summary: dict[str, Any],
     protocol = (summary.get("normalized_settings") or {}).get("protocol") or {}
     name = run_name(summary.get("tag") or protocol.get("name") or run_dir.name)
     fluidics = project / str(artifacts.get("fluidics_csv")) if artifacts.get("fluidics_csv") else None
+    if fluidics is None or not fluidics.is_file():           # the summary's path is stale: the file is named after the run
+        fluidics = next(iter(sorted((project / "records" / "fluidics").glob(f"{run_dir.name}_*.csv"))), fluidics)
     stamp = _stamp(fluidics, summary.get("executed_at") or summary.get("created_at"))
     folder = runs_dir / f"{stamp}_{name}"
     if (folder / "run.json").is_file():

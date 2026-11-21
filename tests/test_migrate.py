@@ -57,6 +57,15 @@ def old_project(root: Path) -> Path:
         writer = csv.writer(handle)
         writer.writerow(["timestamp", "elapsed_s", "pressure_0_mbar", "flow_0_ul_min"])
         writer.writerow(["19:05:00.000", "10.000", "900", "100"])
+    (project / "records" / "protocols" / "run_old").mkdir()                       # its summary names a file that is gone
+    (project / "records" / "protocols" / "run_old" / "summary.json").write_text(json.dumps({
+        "plan_id": "plan_0", "state": "completed", "executed_at": "2026-11-15T10:00:00+02:00", "run_id": "run_old",
+        "normalized_settings": {"protocol": {"name": "Oil 2", "steps": []}},
+        "artifacts": {"fluidics_csv": "C:\\old\\run_old.csv", "recording_closed": True}}))
+    with (project / "records" / "fluidics" / "run_old_20261115_100000.csv").open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "elapsed_s", "pressure_0_mbar", "flow_0_ul_min"])
+        writer.writerow(["10:00:00.000", "1.000", "700", "70"])
     (project / "records" / "protocols" / "run_bad").mkdir()                       # failed, with a video of its own
     (project / "records" / "protocols" / "run_bad" / "summary.json").write_text(json.dumps({
         "plan_id": "plan_2", "state": "failed", "executed_at": "2026-11-17T17:00:00+02:00", "run_id": "run_bad",
@@ -93,8 +102,10 @@ class MigrateTests(unittest.TestCase):
             report = migrate_project(project, Path(tmp) / "data", registry=registry)
 
             self.assertEqual([folder.name for folder in report.made],
-                             ["20261117_164326_oil_3", "20261116_190500_by_hand"])
+                             ["20261117_164326_oil_3", "20261115_100000_oil_2", "20261116_190500_by_hand"])
             self.assertEqual((report.videos, report.skipped, report.registered), (3, [], 3))
+            with (Path(tmp) / "data" / "runs" / "20261115_100000_oil_2" / "run.csv").open(newline="") as handle:
+                self.assertEqual(list(csv.DictReader(handle))[0]["flow_0_ul_min"], "70")   # found by the run's name
             self.assertEqual(report.left, {"run_bad": "failed", "run_stuck": "executing"})   # not laid out
             self.assertIn("2 run(s) not completed left in the project: 1 executing, 1 failed", report.lines())
             self.assertTrue((project / "records" / "camera" / "run_bad_20261117_170005.avi").is_file())   # stays
@@ -122,7 +133,8 @@ class MigrateTests(unittest.TestCase):
                              ("run_abc_step01_20261117_164331", "505.000"))             # 16:43:31 on the readings' clock
             self.assertEqual(rows[4]["elapsed_s"], "506.000")
             self.assertEqual(rows[3]["pressure_0_mbar"], "")
-            self.assertEqual([run["name"] for run in RunStore(Path(tmp) / "data").list()], ["Oil 3", "by_hand"])   # as control names runs
+            self.assertEqual([run["name"] for run in RunStore(Path(tmp) / "data").list()],
+                             ["Oil 3", "by_hand", "Oil 2"])                             # as control names runs, newest first
             self.assertEqual(sorted(entry["sample_id"] for entry in registry.sources()),
                              ["Oil 3 16:43", "Oil 3 16:43 set01_rep01", "by_hand 19:05"])   # the protocol's name, its time
 
@@ -149,9 +161,9 @@ class MigrateTests(unittest.TestCase):
             first = migrate_project(project, Path(tmp) / "data", copy=True)
             again = migrate_project(project, Path(tmp) / "data", copy=True)
 
-            self.assertEqual(len(first.made), 2)
+            self.assertEqual(len(first.made), 3)
             self.assertEqual((again.made, sorted(again.skipped), again.videos),
-                             ([], ["20261116_190500_by_hand", "20261117_164326_oil_3"], 0))
+                             ([], ["20261115_100000_oil_2", "20261116_190500_by_hand", "20261117_164326_oil_3"], 0))
             with self.assertRaises(ValueError):
                 migrate_project(Path(tmp) / "nowhere", Path(tmp) / "data")
 
@@ -163,7 +175,7 @@ class MigrateTests(unittest.TestCase):
             code = main(["migrate", str(project), "--home", str(home), "--copy"])
 
             self.assertEqual(code, 0)
-            self.assertEqual(len(list((home / "data" / "runs").iterdir())), 2)
+            self.assertEqual(len(list((home / "data" / "runs").iterdir())), 3)
             self.assertEqual(len(Registry(home / "analyze").sources()), 3)
             self.assertFalse((home / "control" / "rig.json").exists())                  # the rig only when asked
             self.assertEqual(main(["migrate", str(Path(tmp) / "nowhere"), "--home", str(home)]), 1)

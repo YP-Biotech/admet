@@ -16,7 +16,7 @@ Every completed protocol run of the project becomes a run folder,
 `runs/<date>_<name>/`, named by the run's tag or its protocol and the time it
 began: its summary becomes `run.json`, with its step events; its fluidics readings
 and the camera's QC rows become one `run.csv`, the QC rows put on the readings'
-clock; its step videos move into the folder, and so does a video named after the
+clock, the readings found by the run's name when the summary's path is stale; its step videos move into the folder, and so does a video named after the
 run, `run_<id>_<stamp>.avi`, that its summary never listed. A video recorded by
 hand becomes a recording run of its own. A run that failed or never finished is
 not laid out: it stays in the project with its files, and the report counts it.
