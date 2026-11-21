@@ -1,5 +1,6 @@
 """The Review runs page: recorded pressure and flow from saved CSVs, offscreen."""
 
+import json
 import os
 import shutil
 import tempfile
@@ -27,6 +28,8 @@ class ReviewTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.run = archive(tmp.name, "gravimetry")
+        record = self.run / "run.json"
+        record.write_text(json.dumps({**json.loads(record.read_text()), "set": "oil"}))   # planned into a set
 
     def test_a_recorded_run_reads_its_channels_and_step_marks(self):
         run = project_run(self.run, "gravimetry")
@@ -59,6 +62,7 @@ class ReviewTests(unittest.TestCase):
         shutil.copy(self.run / "run.csv", loaded)
         panel.add_files([str(loaded)])
         self.assertEqual(panel.table.rowCount(), 2)                         # the project run, then the file
+        self.assertEqual([panel.table.item(r, 3).text() for r in (0, 1)], ["oil", ""])   # the run's set; a file has none
         panel.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
 
         self.assertEqual(len(panel.shown_runs()), 2)
@@ -262,8 +266,8 @@ class DropletQCTests(unittest.TestCase):
         self.assertTrue(any(getattr(item, "qc_item", False) for item in panel.droplet_plot.items()))   # the band
         self.assertEqual(len(panel.cv_plot.listDataItems()), 2)                 # SETTLING, then STABLE
         self.assertEqual(qc_cells(run.qc), ("22 230", "1170", "2.7 STABLE"))
-        self.assertEqual([panel.table.item(0, c).text() for c in (6, 7, 8)], ["22 230", "1170", "2.7 STABLE"])
-        self.assertEqual(panel.table.horizontalHeaderItem(8).text(), "CV, %")
+        self.assertEqual([panel.table.item(0, c).text() for c in (7, 8, 9)], ["22 230", "1170", "2.7 STABLE"])
+        self.assertEqual(panel.table.horizontalHeaderItem(9).text(), "CV, %")
 
         panel.align.setCurrentIndex(1)                                           # stacked: the step from 0
         self.assertEqual(len(panel.droplet_plot.listDataItems()), 2)

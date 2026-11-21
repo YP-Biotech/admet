@@ -279,6 +279,7 @@ class DesktopBackendTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "start Live"):
                 self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.assertFalse(self.backend.engine.recording_active)
+        recorded["run"] = {"name": "oil 3", "set": "oil"}
         plan = self.backend.preview("experiment_1", recorded)
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.assertFalse(camera.recording)                                  # waiting at the gate: no video
@@ -296,9 +297,10 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertTrue((run / videos[0]["video_path"]).is_file())           # the video sits in the run's folder
         self.assertTrue((run / summary["artifacts"]["fluidics_csv"]).is_file())
         self.assertEqual([p for p in Path(self.backend.workdir).rglob("*.avi") if "runs" not in p.parts], [])
-        # The run's timeline is named in the run's record and in the recording's own record.
+        # The run's timeline, name and set are in the run's record and in the recording's own record.
         record = writers[-1].record
-        self.assertEqual((record["fluidics_csv"], record["run_id"]), ("run.csv", completed["run_id"]))
+        self.assertEqual((record["fluidics_csv"], record["run_id"], record["tag"], record["set"]),
+                         ("run.csv", completed["run_id"], "oil 3", "oil"))
 
     def test_a_camera_that_cannot_start_pauses_the_protocol_with_channels_at_zero(self):
         camera = self.camera_fake()
@@ -343,21 +345,23 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(completed["run_id"], result["run_id"])
         self.assertTrue((Path(self.backend.workdir) / "runs" / result["run_id"] / "run.json").exists())
 
-    def test_a_named_plan_tags_its_run_and_the_run_lists_carry_the_name(self):
+    def test_a_named_plan_tags_its_run_and_the_run_lists_carry_the_name_and_the_set(self):
         from admet.workflows.calculations import recorded_runs
 
         self.connect()
-        plan = self.backend.preview("experiment_1", definition(), tag="  oil 3 ")
-        self.assertEqual(plan["tag"], "oil 3")
+        plan = self.backend.preview("experiment_1", {**definition(), "run": {"name": "  oil 3 ", "set": " oil "}})
+        self.assertEqual((plan["tag"], plan["set"]), ("oil 3", "oil"))
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
         completed = self.wait_completed(plan["plan_id"])
 
         run = Path(self.backend.workdir) / "runs" / completed["run_id"]
-        self.assertEqual(json.loads((run / "run.json").read_text())["tag"], "oil 3")
+        record = json.loads((run / "run.json").read_text())
+        self.assertEqual((record["tag"], record["set"]), ("oil 3", "oil"))
         self.assertTrue(run.name.endswith("_oil_3"))                      # the folder carries the name
-        self.assertEqual(recorded_runs(self.backend.workdir)[0]["name"], "oil 3")
-        self.assertEqual(self.backend.preview("experiment_1", definition())["tag"], "")   # unnamed: the protocol's name
+        self.assertEqual([(r["name"], r["set"]) for r in recorded_runs(self.backend.workdir)], [("oil 3", "oil")])
+        unnamed = self.backend.preview("experiment_1", definition())
+        self.assertEqual((unnamed["tag"], unnamed["set"]), ("", ""))      # unnamed: the protocol's name, no set
         self.assertEqual(self.backend.measurement_runs(), [])             # nothing to type in this one
 
     def test_density_completion_closes_recording_without_running_calculations(self):

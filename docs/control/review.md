@@ -3,9 +3,9 @@
 The **Review runs** stage plots the pressure and flow of finished runs. It reads the
 saved files only; it needs no device and changes nothing on the rig.
 
-- The **runs table** lists the recorded runs in the data folder, newest first, with when they
-  were recorded, how they ended and how long they ran. Tick a run to plot it; its
-  line style appears in the *Line* column.
+- The **runs table** lists the recorded runs in the data folder, newest first, with the
+  set each was planned into, when they were recorded, how they ended and how long
+  they ran. Tick a run to plot it; its line style appears in the *Line* column.
 - **Load file…**, in the action bar, adds any fluidics CSV with the same columns, for example an older
   DropleGen log. Loaded files stay in the table until ADMET closes.
 - **Channels** hides or shows Oil L, Cells M and Beads M. Each channel keeps the

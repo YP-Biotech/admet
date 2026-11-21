@@ -431,12 +431,12 @@ class Admet:
         settings = _fill_defaults(op, dict(settings or {}))
         return op.run(self, settings)
 
-    def plan_protocol(self, operation_id: str, settings: dict[str, Any] | None = None, *,
-                      tag: str = "") -> dict[str, Any]:
+    def plan_protocol(self, operation_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
         """Validate and freeze a protocol proposal without performing an engine action.
 
-        The tag is the run's name as the operator gave it; the run's record, its recordings
-        and the lists of runs carry it."""
+        The protocol's run block names the plan: the tag is the run's name as the operator
+        gave it, which the run's record, its recordings and the lists of runs carry; the set
+        is the group the run belongs to, the one analyze puts its videos in."""
         from admet.engines.acquisition.pipeline import expand_protocol_steps
         from admet.workflows.operations import REQUIREMENTS, build_protocol_steps
 
@@ -453,6 +453,8 @@ class Admet:
         }
         channels = self._cached_channel_mapping()
         steps = expand_protocol_steps(build_protocol_steps(op, normalized, channels=channels))
+        protocol = normalized.get("protocol") if isinstance(normalized.get("protocol"), dict) else {}
+        run = protocol.get("run") if isinstance(protocol.get("run"), dict) else {}
         described_steps = [_planned_step(index, step) for index, step in enumerate(steps, 1)]
         video_steps = [step["number"] for step in described_steps if step["record_s"]]
         if video_steps:
@@ -474,7 +476,8 @@ class Admet:
         plan = {
             "plan_id": plan_id,
             "operation_id": operation_id,
-            "tag": str(tag or "").strip(),
+            "tag": str(run.get("name") or ""),
+            "set": str(run.get("set") or ""),
             "state": "planned",
             "created_at": _now_iso(),
             "normalized_settings": normalized,
@@ -565,7 +568,7 @@ class Admet:
                     # folder. Every recording's record names the run's timeline file, so its slice
                     # of it is one cut by time.
                     engine.arm_step_video(run.path, run.name, {
-                        "run_id": run.run_id, "tag": plan.get("tag", ""),
+                        "run_id": run.run_id, "tag": plan.get("tag", ""), "set": plan.get("set", ""),
                         "protocol": str(plan.get("name") or plan.get("protocol_name") or plan.get("operation_id") or ""),
                         "fluidics_csv": TIMELINE,
                     })

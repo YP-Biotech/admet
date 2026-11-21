@@ -1,5 +1,6 @@
 """Experiment steps: Plan asks for the run's name, and an added step can be taken out again."""
 
+import json
 import os
 import tempfile
 import time
@@ -54,37 +55,42 @@ class ExperimentStepTests(unittest.TestCase):
                 return editor.plan
         self.fail("no plan arrived")
 
-    def test_plan_asks_for_the_runs_name_and_the_plan_carries_it(self):
+    def test_the_run_and_set_rows_of_the_parameter_table_name_the_plan_and_the_step(self):
         window = self.window
         index = self.stage_index("experiment_1")
         window._select_stage(index)
         editor = window._protocol_editor(window.workflow.stages[index])
         editor.set_document(DOCUMENT)
-        asked = []
+        self.pump(0.05)
 
-        def ask(parent, title, label, **kwargs):
-            asked.append((title, label, kwargs.get("text")))
-            return "Oil 3", True
+        self.assertEqual([editor.parameter_table.item(0, c).text() for c in (0, 2)], ["Run", "Set"])
+        self.assertEqual(editor.run_editors["name"].placeholderText(), "steps_test")        # unnamed: the protocol's
+        editor.run_editors["name"].setText("Oil 3")
+        editor.run_editors["name"].editingFinished.emit()
+        editor.run_editors["set"].setText(" oil ")
+        editor.run_editors["set"].editingFinished.emit()
+        self.assertEqual(json.loads(editor.editor.toPlainText())["run"], {"name": "Oil 3", "set": "oil"})
+        editor.build_plan()
+        plan = self.wait_plan(editor)
 
-        with patch("admet.ui.protocols.QInputDialog.getText", side_effect=ask):
-            editor.build_plan()
-            plan = self.wait_plan(editor)
-
-        self.assertEqual(plan["tag"], "Oil 3")
-        self.assertEqual(asked[0][2], "Experiment 1")                        # the step's own name is proposed
-        self.assertIn("tags the run", asked[0][1])
-        self.assertEqual(window.workflow.stages[index].label, "Oil 3")       # and the step takes the name typed
+        self.assertEqual((plan["tag"], plan["set"]), ("Oil 3", "oil"))
+        self.assertEqual(window.workflow.stages[index].label, "Oil 3")       # the step takes the run's name
         self.assertEqual(window.toc_rows[index]["label"].text(), f"{index + 1}. Oil 3")
         self.assertIs(editor.stage, window.workflow.stages[index])
-        with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", False)):
-            editor.build_plan()
-            self.pump(0.3)
-        self.assertEqual(editor.plan["plan_id"], plan["plan_id"])              # backing out plans nothing
-        with patch("admet.ui.protocols.QInputDialog.getText", return_value=("", True)):
-            editor.build_plan()
-            again = self.wait_plan(editor, previous_id=plan["plan_id"])
-        self.assertEqual(again["tag"], "Oil 3")                               # an empty name keeps the last one
-        self.assertEqual(window.workflow.stages[index].label, "Oil 3")
+        editor.run_editors["set"].setText("")
+        editor.run_editors["set"].editingFinished.emit()
+        self.assertEqual(json.loads(editor.editor.toPlainText())["run"], {"name": "Oil 3"})   # an empty set is none
+        editor.run_editors["name"].setText("")
+        editor.run_editors["name"].editingFinished.emit()
+        self.assertNotIn("run", json.loads(editor.editor.toPlainText()))                    # nothing left: no block
+        editor.build_plan()
+        again = self.wait_plan(editor, previous_id=plan["plan_id"])
+        self.assertEqual((again["tag"], again["set"]), ("", ""))
+        self.assertEqual(window.workflow.stages[index].label, "Oil 3")       # the step keeps its name
+        editor.run_editors["name"].setText("Oil 4")                           # typed, not left: Plan takes it too
+        editor.build_plan()
+        third = self.wait_plan(editor, previous_id=again["plan_id"])
+        self.assertEqual((third["tag"], window.workflow.stages[index].label), ("Oil 4", "Oil 4"))
 
     def test_an_added_step_can_be_removed_and_its_plan_goes_with_it(self):
         window = self.window
@@ -97,9 +103,8 @@ class ExperimentStepTests(unittest.TestCase):
         self.assertIsNone(window.toc_rows[0]["remove"])                       # stock stages have no cross
         editor = window._protocol_editor(stage)
         editor.set_document(DOCUMENT)
-        with patch("admet.ui.protocols.QInputDialog.getText", return_value=("Oil 3", True)):
-            editor.build_plan()
-            self.wait_plan(editor)
+        editor.build_plan()
+        self.wait_plan(editor)
         self.assertIn(stage.id, self.api._previews)
 
         with patch("admet.ui.control.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
