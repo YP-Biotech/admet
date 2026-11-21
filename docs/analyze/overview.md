@@ -34,7 +34,7 @@ The file list comes back as you left it.
 
 | Stage | What you do there |
 |---|---|
-| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's name; **Add files…** takes single videos and image folders. Tick **Use** on the ones to run and name the samples. The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here. Each later stage has a Use of its own: on 2. Analyse it says which files to run, on 3. Results which are in the plots and the export; an unticked file stays in the table, greyed, and a file not run still shows its live QC on 3. Results. Use all in a table's header ticks or clears every file of that stage. |
+| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's protocol, time and step; **Add files…** takes single videos and image folders. Tick **Use** on the ones to take on and put them into sets; the sample name is built from the set and the replicate unless you write one over it, and the set is the group a file belongs to, see [Sets](#sets). The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here. Each later stage has a Use of its own: on 2. Analyse it says which files to run, on 3. Results which are in the plots and the export; an unticked file stays in the table, greyed, and a file not run still shows its live QC on 3. Results. Use all in a table's header ticks or clears every file of that stage. |
 | **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. **Stop** ends a run at its next step: the files already finished keep their results, the one in hand is left unfinished and runs again next time. |
 | **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 
@@ -43,11 +43,34 @@ same three stages.
 
 ## The file list
 
-Each row is one file with its sample name, engine and when it was last analysed.
-**Use** decides which files run and which results are shown; **✕** takes a file off
-the list (its stored results stay). **Rescan** at the top lists videos that arrived
-in the watched folders since. The list and every file's settings are kept in the
-registry, so the screen comes back as you left it.
+Each row is one file with its sample name, its set, the run's protocol, time and
+replicate, its engine and when it was last analysed. A run is one execution of a
+protocol, unique by its id; its step videos are its **replicates**, numbered from
+the step's name (`set01_rep02` is the second; a protocol runs one set, so its steps
+are replicates) or its number. The **sample** name is built: `<set>_rep<n>` for a
+file in a set, the n-th of the set by run time and replicate, else the protocol with
+the replicate (`dropseq_3n_rep2`), or the file's name. Type a name over it to say
+otherwise; clear the field to have it built again. The protocol, the time and the
+replicate stay in columns of their own however the file is named. **Use**
+decides which files go on, and a shift-click on a Use box ticks or clears every file
+between it and the box clicked last, on any stage; **✕** takes a file off the list (its
+stored results stay). **Rescan** at the top lists videos that arrived in the watched folders since.
+The list and every file's settings are kept in the registry, so the screen comes
+back as you left it.
+
+## Sets
+
+A set is the group a file belongs to, a field of its own beside the sample: one
+condition, one experiment, the controls. Type it in the **Set** column, or tick the
+files and **Assign…** them to a set, named anew or chosen; **Clear** takes the ticked
+files out of theirs. Choosing a set from **Set** above the list ticks exactly its
+files. The set is kept with the file list.
+
+A set names its files: `<set>_rep1`, `<set>_rep2`, … in the order of their runs and
+replicates, unless a name is written over. Sets carry through to 3. Results: the
+table groups its lines by set with the set in a column, every file of a set shares
+the set's hue in the plots with a shade per file, and the summary CSV has set and
+replicate columns. A file in no set is grouped by its sample name alone.
 
 ## Setting a video up
 
@@ -130,14 +153,11 @@ choose for all of them:
   told by the line pattern, then the droplet rate and CV the rig measured, each
   recording in its sample's colour.
 
-Every series has a colour and pattern of its own. Files whose sample names end in
-a replicate marker (`oil rep 2`, `oil_rep02`, `oil r2`, `oil #2`, `oil step 2`) are
-replicates of one group and wear shades of one hue; a run's step videos are named
-by their steps (`dropseq_3n 19:30 set01_rep01`), so a protocol's replicates come
-out as such. Rename the samples on 1. Files to group them as you see fit.
-**Export CSV** downloads a zip with a summary (the live numbers in its last
-columns) and every droplet row per file; **Export plots** downloads every
-plot on the page as PNG.
+Every series has a colour and pattern of its own. Files of one set wear shades of
+the set's hue, one per file. Without a set, files whose sample names end in a
+replicate marker (`oil_rep2`, `oil #2`), as the built names do, are replicates of
+one group and share its hue. Put files into sets on 1. Files to group them as you
+see fit.
 
 ## Where results go
 

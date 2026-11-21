@@ -33,6 +33,8 @@ class StoredResult:
     result_dir: Path
     metadata: dict[str, Any]           # result.json: the summary, when it was analysed, the settings it ran with
     run: str = ""                      # the run folder the source came from, if any
+    replicate: int | None = None       # which replicate of its run the source is, if any
+    set: str = ""                      # the set the source is in, if any
 
     @property
     def rows_path(self) -> Path:
@@ -77,6 +79,8 @@ class FileResult:
     droplets: int
     rate_hz: float
     speed_mm_s: float
+    replicate: int | None = None                           # which replicate of its run the file is, if any
+    set: str = ""                                          # the set the file is in, if any
     rate_note: str = ""                                    # how the rate was had, when not from the gate
     expected_hz: float = 0.0                               # from the dispersed flow and the droplet size
     dispersed_ul_min: float = 0.0
@@ -89,6 +93,19 @@ class FileResult:
     timed_diameters: tuple[tuple[float, float], ...] = ()            # s from the first frame, µm, per tracked droplet
     spans: tuple[tuple[float, float, float], ...] = ()               # droplet id, first frame, last frame
     inclusion_counts: tuple[int, ...] = ()
+
+    @property
+    def protocol(self) -> str:
+        """The run's tag or protocol, from its folder's name."""
+        name = self.run
+        return name[16:] if len(name) > 16 and name[8] == "_" and name[:8].isdigit() and name[9:15].isdigit() else name
+
+    @property
+    def run_time(self) -> str:
+        name = self.run
+        if len(name) >= 15 and name[8] == "_" and name[:8].isdigit() and name[9:15].isdigit():
+            return f"{name[:4]}-{name[4:6]}-{name[6:8]} {name[9:11]}:{name[11:13]}"
+        return ""
 
     @property
     def mean_diameter(self) -> float:
@@ -116,7 +133,7 @@ class FileResult:
 
 
 def load_stored_result(result_dir: Path, *, source_path: Path, engine: str, sample_id: str,
-                       run: str = "") -> StoredResult | None:
+                       run: str = "", replicate: int | None = None, group: str = "") -> StoredResult | None:
     """The stored analysis in a results folder, if the folder holds a finished one."""
     result_dir = Path(result_dir)
     if not (result_dir / "result.json").is_file() or not (result_dir / "rows.jsonl").is_file():
@@ -128,7 +145,7 @@ def load_stored_result(result_dir: Path, *, source_path: Path, engine: str, samp
     if not isinstance(metadata, dict):
         return None
     return StoredResult(source_path=Path(source_path), engine=engine, sample_id=sample_id, result_dir=result_dir,
-                        metadata=metadata, run=run)
+                        metadata=metadata, run=run, replicate=replicate, set=group)
 
 
 def stale_window(metadata: dict[str, Any]) -> bool:
@@ -366,6 +383,8 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
         run=stored.run_name,
         sample_id=stored.sample_id or str(job.get("sample_id") or key[1]),
         engine=engine,
+        replicate=stored.replicate,
+        set=stored.set,
         source_path=acc["source"],
         file_id=key[1] if key[1] != "sample" else stored.file_id,
         analyzed_at=local_time(analyzed_at) if analyzed_at else "",
@@ -472,6 +491,8 @@ class LiveQC:
     run: str = ""                    # the run folder's name
     source_path: str = ""
     sample_id: str = ""              # the file's, given by the view
+    replicate: int | None = None     # which replicate of its run the file is, given by the view
+    set: str = ""                    # the set the file is in, given by the view
     # Burst by burst: s since the first burst, droplets counted, rate /s, diameter, CV %.
     points: tuple[tuple[float, float, float, float, float], ...] = ()
 
@@ -550,7 +571,8 @@ def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True)
 
 
 RESULT_FIELDS = ("sample", "droplets", "inclusions", "diameter", "area", "cv", "rate", "speed", "analysed")
-RESULT_LABELS = {"sample": "Sample", "droplets": "Droplets", "inclusions": "Inclusions", "diameter": "Diameter, µm",
+RESULT_LABELS = {"sample": "Sample", "set": "Set", "droplets": "Droplets", "inclusions": "Inclusions",
+                 "diameter": "Diameter, µm",
                  "area": "Area, µm²", "cv": "CV, %", "rate": "Rate, /s", "speed": "Speed, mm/s",
                  "analysed": "Analysed"}
 
@@ -657,12 +679,14 @@ def _names(results: list[Any]) -> dict[tuple[str, str, str, str], str]:
 
 
 def plot_styles(items: Sequence[Any], listed: Sequence[str] | None = None) -> dict[tuple[str, str], SeriesStyle]:
-    """A style per file among the items: its sample's group hue and replicate shade (see series_style).
+    """A style per file among the items: its group's hue and its replicate's shade (see series_style).
 
-    Two files given one sample name are replicates of it. LISTED is every sample name on the screen,
-    in order, so a group keeps its hue whichever files are ticked.
+    A file's group is its set when it has one, else what its sample name says: two files given one
+    sample name are replicates of it. LISTED is every file's set or sample name on the screen, in
+    order, so a group keeps its hue whichever files are ticked.
     """
     labels: dict[tuple[str, str], str] = {}
+    groups: dict[str, str] = {}
     seen: dict[str, int] = {}
     for item in items:
         key = _file_key(item)
@@ -671,7 +695,9 @@ def plot_styles(items: Sequence[Any], listed: Sequence[str] | None = None) -> di
         n = seen.get(item.sample_id, 0) + 1
         seen[item.sample_id] = n
         labels[key] = item.sample_id if n == 1 else f"{item.sample_id} #{n}"
-    styles = series_styles(list(labels.values()), listed=list(listed or []))
+        if getattr(item, "set", ""):
+            groups[labels[key]] = item.set
+    styles = series_styles(list(labels.values()), listed=list(listed or []), groups=groups)
     return {key: styles[label] for key, label in labels.items()}
 
 
@@ -1085,12 +1111,13 @@ def _thin(points: list, limit: int) -> list:
     return points[::step] + [points[-1]]
 
 
-AGGREGATED_FIELDS = ("sample", "droplets", "diameter", "cv", "rate", "analysed")
+AGGREGATED_FIELDS = ("sample", "set", "droplets", "diameter", "cv", "rate", "analysed")
 
 
 def aggregated_cells(name: str, style: SeriesStyle | None, result: FileResult | None, live: LiveQC | None,
-                     *, active: bool = True) -> dict[str, str]:
-    """One file's line of the aggregated table: the analysis's number, with the rig's live one under it."""
+                     *, active: bool = True, origin: str = "") -> dict[str, str]:
+    """One file's line of the aggregated table: the analysis's number, with the rig's live one under it.
+    ORIGIN says where the file is from, protocol, time and step, under the sample."""
     off = "" if active else " results-off"
     colour = style.color if style is not None else "var(--text-disabled)"
 
@@ -1099,9 +1126,12 @@ def aggregated_cells(name: str, style: SeriesStyle | None, result: FileResult | 
         return f'<div class="results-cell{off}">{inner}</div>'
 
     unit = live.diameter_unit if live is not None else "um"
+    group = (result.set if result is not None else live.set if live is not None else "") or ""
     return {
+        "set": cell(html.escape(group) if group else "—"),
         "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}',
-                       html.escape(result.engine if result is not None else "not analysed")),
+                       html.escape(" · ".join(part for part in (origin, result.engine if result is not None else
+                                                                 "not analysed") if part))),
         "droplets": cell(f"{result.droplets}" if result is not None else "—",
                          f"{live.count:,.0f} live".replace(",", " ") if live is not None else ""),
         "diameter": cell(f"{result.mean_diameter:.1f} ± {result.std_diameter:.1f}"
@@ -1179,13 +1209,15 @@ def _summary_csv(results: list[FileResult], live: dict[tuple[str, str, str], Liv
     """One line per result; the live QC of the same video, when the rig measured one, in the last columns."""
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["run", "sample", "engine", "source", "analysed_at", "frames", "droplets", "inclusions",
+    writer.writerow(["run", "protocol", "time", "replicate", "sample", "set", "engine", "source", "analysed_at", "frames",
+                     "droplets", "inclusions",
                      "mean_diameter_um", "sd_diameter_um", "cv_percent", "mean_area_um2", "sd_area_um2",
                      "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings",
                      "live_rate_hz", "live_diameter", "live_diameter_unit", "live_cv_percent", "live_state"])
     for result in results:
         measured = (live or {}).get((result.run, result.engine, result.source_path))
-        writer.writerow([result.run, result.sample_id, result.engine, result.source_path, result.analyzed_at,
+        writer.writerow([result.run, result.protocol, result.run_time, result.replicate or "", result.sample_id, result.set,
+                         result.engine, result.source_path, result.analyzed_at,
                          result.frames, result.droplets, result.inclusions,
                          _fmt(result.mean_diameter, 3), _fmt(result.std_diameter, 3), _fmt(result.cv_percent, 3),
                          _fmt(result.mean_area, 2), _fmt(result.std_area, 2), _fmt(result.rate_hz, 3),
