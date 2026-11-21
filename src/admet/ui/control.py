@@ -402,7 +402,6 @@ class ControlWindow(QMainWindow):
         self._load_rig_calibration(apply=False)
         self._load_optics()
         self.protocol_editors = {}
-        self.run_set = ""                      # the set the last planned run joined; proposed for the next
         self._last_protocol_log = None
         self.last_result: RunResult | None = None
         self.last_metadata: dict[str, Any] = {}

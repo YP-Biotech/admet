@@ -279,7 +279,8 @@ class DesktopBackendTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "start Live"):
                 self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.assertFalse(self.backend.engine.recording_active)
-        plan = self.backend.preview("experiment_1", recorded, tag="oil 3", set_name="oil")
+        recorded["run"] = {"name": "oil 3", "set": "oil"}
+        plan = self.backend.preview("experiment_1", recorded)
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.assertFalse(camera.recording)                                  # waiting at the gate: no video
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 0.1})
@@ -348,7 +349,7 @@ class DesktopBackendTests(unittest.TestCase):
         from admet.workflows.calculations import recorded_runs
 
         self.connect()
-        plan = self.backend.preview("experiment_1", definition(), tag="  oil 3 ", set_name=" oil ")
+        plan = self.backend.preview("experiment_1", {**definition(), "run": {"name": "  oil 3 ", "set": " oil "}})
         self.assertEqual((plan["tag"], plan["set"]), ("oil 3", "oil"))
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
