@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from admet.core.registry import Registry, content_key, infer_engine, replicate_of
+from admet.core.registry import Registry, content_key, infer_engine, protocol_set, replicate_of
 from admet.core.runs import RunStore
 
 
@@ -105,6 +105,38 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual([e["replicate"] for e in registry.scan()], [1, 2])          # set01_rep02: the second
             self.assertEqual(replicate_of({"step": 1, "step_name": "Record"}, 1), None)   # a lone video
             self.assertEqual(replicate_of({"step": 2, "step_name": "collect"}, 3), 2)
+
+    def test_a_run_without_a_set_is_put_in_one_by_its_protocol_and_setpoints(self):
+        parameterised = {"name": "dropseq_3n", "parameters": {"oil_value": ["Oil", 300], "cells_value": ["Cells", 40]},
+                         "parameter_values": {"oil_value": 246.0, "cells_value": 69},
+                         "steps": [{"name": "prime", "sensor_setpoints": {"0": 100}, "trigger_type": "time",
+                                    "trigger_params": {"duration_s": 1}},
+                                   {"name": "set01_rep01", "sensor_setpoints": {"0": "oil_value", "1": "cells_value",
+                                                                                "2": "cells_value"},
+                                    "trigger_type": "time", "trigger_params": {"duration_s": 1}, "record": True}]}
+        self.assertEqual(protocol_set({"normalized_settings": {"protocol": parameterised}}), "dropseq_3n o246 c69 b69")
+        literal = {"name": "dropseq", "steps": [
+            {"name": "run", "pressure_setpoints": {"0": 1300, "1": 540}, "sensor_setpoints": {"2": 0},
+             "trigger_type": "time", "trigger_params": {"duration_s": 1}},
+            {"name": "stop", "trigger_type": "time", "trigger_params": {"duration_s": 1}}]}
+        self.assertEqual(protocol_set({"normalized_settings": {"protocol": literal}}), "dropseq o1300mbar c540mbar b0")
+        self.assertEqual(protocol_set({"tag": "Oil 3", "normalized_settings": {"protocol": literal}}), "Oil 3 o1300mbar c540mbar b0")
+        self.assertEqual(protocol_set({"normalized_settings": {"protocol": {"name": "wash", "steps": []}}}), "wash")
+        self.assertEqual(protocol_set({"kind": "recording"}), "")                       # by hand: no protocol
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            store = RunStore(data)
+            run = store.begin({"plan_id": "p", "tag": "", "operation_id": "run_json_protocol",
+                               "normalized_settings": {"protocol": literal}})
+            (run.path / "v.avi").write_bytes(b"v")
+            run.update(state="completed", artifacts={"videos": [{"step": 1, "video_path": "v.avi"}]})
+            chosen = store.begin({"plan_id": "q", "tag": "", "set": "controls", "operation_id": "run_json_protocol",
+                                  "normalized_settings": {"protocol": literal}})
+            (chosen.path / "w.avi").write_bytes(b"w")
+            chosen.update(state="completed", artifacts={"videos": [{"step": 1, "video_path": "w.avi"}]})
+            registry = Registry(Path(tmp) / "analyze")
+            self.assertEqual(sorted(e["set"] for e in registry.scan(data)),
+                             ["controls", "dropseq o1300mbar c540mbar b0"])             # the planned set wins
 
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:

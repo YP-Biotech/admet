@@ -202,11 +202,12 @@ class Registry:
                         continue
                     # The protocol, the run's time and the replicate are fields of their own; the sample name
                     # is built from them and the file's set unless the user writes one over it. The set is
-                    # the one the run was planned with in control, until the user puts the file elsewhere.
+                    # the one the run was planned with in control, else the protocol with its setpoints,
+                    # until the user puts the file elsewhere.
                     entry = self.add_source(path, engine="opencv", sample_id="", run=run_dir,
                                             protocol=protocol, run_time=run_time(run_dir),
                                             replicate=replicate_of(video, len(videos)),
-                                            group=str(record.get("set") or ""))
+                                            group=str(record.get("set") or "") or protocol_set(record))
                     if entry is not None:
                         added.append(entry)
         return added
@@ -225,6 +226,49 @@ class Registry:
     # -- results ------------------------------------------------------------------------
     def result_dir(self, source: str | Path, settings: dict[str, Any] | None = None) -> Path:
         return self.results_dir / content_key(source, settings)
+
+
+CHANNEL_LETTERS = ("o", "c", "b")           # oil, cells, beads: the rig's channels 0, 1, 2
+
+
+def protocol_set(record: dict[str, Any]) -> str:
+    """The set a run belongs to by what it did: its protocol and the oil, cells and beads setpoints of
+    its recording step, "dropseq_3n o300 c40 b40"; a pressure setpoint says so, "o600mbar". The
+    recording step is the first that records, else the first with a setpoint; nothing known is ""."""
+    from admet.workflows.json_protocol import resolve
+
+    protocol = (record.get("normalized_settings") or {}).get("protocol")
+    if not isinstance(protocol, dict):
+        return ""
+    name = str(record.get("tag") or protocol.get("name") or "").strip()
+    try:
+        steps = resolve(protocol).get("steps", [])
+    except (TypeError, ValueError):
+        steps = [s for s in protocol.get("steps", []) if isinstance(s, dict)]
+    with_setpoints = [s for s in steps if s.get("sensor_setpoints") or s.get("pressure_setpoints")]
+    recording = [s for s in with_setpoints if s.get("record") is True]
+    step = (recording or with_setpoints or [None])[0]
+    if step is None:
+        return name
+    parts = []
+    for index, letter in enumerate(CHANNEL_LETTERS):
+        flow = _setpoint(step.get("sensor_setpoints"), index)
+        pressure = _setpoint(step.get("pressure_setpoints"), index)
+        if flow is not None:
+            parts.append(f"{letter}{flow:g}")
+        elif pressure is not None:
+            parts.append(f"{letter}{pressure:g}mbar")
+    return " ".join([name, *parts]).strip()
+
+
+def _setpoint(setpoints: Any, index: int) -> float | None:
+    if not isinstance(setpoints, dict):
+        return None
+    value = setpoints.get(str(index))
+    try:
+        return float(value) if value is not None and not isinstance(value, bool) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def run_time(run_dir: str | Path) -> str:
