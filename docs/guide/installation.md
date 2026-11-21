@@ -74,8 +74,5 @@ controller (Fluigent page → *Simulated Hardware*). The camera is not simulated
 `admet analyze` watches the folders of runs you add on its Files page, or the one
 given with `--data`; it keeps its registry and results in the home's `analyze/`.
 
-Older `.admetp` projects are read in this order, until they are migrated:
-
-1. the `ADMET_PROJECTS_ROOT` environment variable,
-3. a `projects/` folder in the current directory,
-4. the current directory.
+Older `.admetp` projects are not read; `admet migrate <project>` lays one out as
+run folders in the home's data folder, see [Projects](projects#migrating-a-project).
