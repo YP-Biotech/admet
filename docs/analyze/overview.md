@@ -61,8 +61,11 @@ back as you left it.
 ## Sets
 
 A set is the group a file belongs to, a field of its own beside the sample: one
-condition, one experiment, the controls. A run planned with a set in `admet
-control` brings it along: its videos start in that set when they are scanned.
+condition, one experiment, the controls. A run's videos start in a set when they
+are scanned: the set the run was planned with in `admet control`, else the run's
+protocol with the oil, cells and beads setpoints of its recording step, written
+`dropseq_3n o300 c40 b40`, a pressure setpoint as `o600mbar`. Runs of one protocol
+at the same setpoints thus fall into one set on their own, whatever day they ran.
 Type a set in the **Set** column, or tick the files and **Assign…** them to a set,
 named anew or chosen; **Clear** takes the ticked files out of theirs. Choosing a
 set from **Set** above the list ticks exactly its files. The set is kept with the
