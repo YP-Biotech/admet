@@ -21,8 +21,8 @@ def _commands() -> dict:
 
 
 class SurfaceTests(unittest.TestCase):
-    def test_the_command_line_is_control_analyze_describe_check_migrate_and_install_sdk(self):
-        self.assertEqual(set(_commands()), {"control", "analyze", "describe", "check", "migrate", "install-sdk"})
+    def test_the_command_line_is_control_analyze_describe_migrate_and_install_sdk(self):
+        self.assertEqual(set(_commands()), {"control", "analyze", "describe", "migrate", "install-sdk"})
 
     def test_analyze_serves_on_every_interface_by_default(self):
         args = build_parser().parse_args(["analyze"])

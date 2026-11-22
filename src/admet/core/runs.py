@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from admet.core.session import write_atomic
+from admet.core.files import write_atomic
 
 RECORD = "run.json"
 TIMELINE = "run.csv"

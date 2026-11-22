@@ -16,11 +16,13 @@ uv run --extra analyze admet analyze --host 127.0.0.1 --data /srv/admet/runs
 |---|---|---|
 | `--host` | `0.0.0.0` | Address to listen on; the default is every interface |
 | `--port` | `8080` | Port to listen on |
-| `--data` | none | A folder of runs to watch: a data folder, or the export folder on the server |
-| `--home` | `ADMET_HOME` or `~/.admet` | The admet home whose `analyze/` room holds the registry and the results |
+| `--data` | none | Another folder of runs to watch beside the home's data folder, for example the export folder on the server |
+| `--home` | `ADMET_HOME` or `~/.admet` | The admet home whose data folder is watched and whose `analyze/` room holds the registry and the results |
 
-Analyze keeps its own room in the home: `analyze/registry.json` lists the folders
-it watches and every file it knows with its sample name, engine and settings;
+Analyze watches the home's data folder from the start, so every run the rig
+recorded is listed without a step of your own. It keeps its own room in the home:
+`analyze/registry.json` lists the folders it watches and every file it knows with
+its sample name, engine and settings;
 `analyze/results/` holds one folder per file and detection settings, named by a
 digest of the file's content and those settings, so the same video analysed the
 same way is never analysed twice and a copy of the file finds its result.

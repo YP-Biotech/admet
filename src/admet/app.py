@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analyze.add_argument("--host", default="0.0.0.0", help="address to listen on (default: every interface)")
     analyze.add_argument("--port", type=int, default=8080)
-    analyze.add_argument("--data", help="a folder of runs to watch: a data folder, or an export folder on the server")
+    analyze.add_argument("--data", help="another folder of runs to watch beside the home's data folder, "
+                                        "for example the export folder on the server")
     analyze.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
 
     describe = sub.add_parser(
@@ -33,10 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="an operation or engine id; omit for everything",
     )
-
-    check = sub.add_parser("check", help="say what would stop a project from saving; --fix mends it")
-    check.add_argument("project", help="the .admetp project folder")
-    check.add_argument("--fix", action="store_true", help="take dangling file names out of the items")
 
     migrate = sub.add_parser("migrate", help="lay an old .admetp project out as run folders, as control records now")
     migrate.add_argument("project", help="the .admetp project folder")
@@ -71,17 +68,6 @@ def main(argv: list[str] | None = None) -> int:
         from admet.core.service import Admet
 
         return _attempt(lambda: Admet().describe(args.target))
-
-    if args.command == "check":
-        from admet.core.check import check_project, mend_project
-
-        report = mend_project(args.project) if args.fix else check_project(args.project)
-        print("\n".join(report.lines()))
-        if args.fix and not report.clean and not report.unreadable:
-            print(f"mended; the manifest as it was is kept as {report.manifest.with_suffix('.json.bak').name}")
-        elif not report.clean and not report.unreadable:
-            print("Run again with --fix to take these names out of the items.")
-        return 0 if report.clean or args.fix else 1
 
     if args.command == "migrate":
         from admet.core.home import AdmetHome
@@ -119,20 +105,31 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
+def analyze_registry(home: str | None = None, data: str | None = None):
+    """The registry of the home's analyze room. It watches the home's data folder from the start, what the
+    rig records, and any other folder given; both are scanned for videos that arrived since."""
+    from admet.core.home import AdmetHome
+    from admet.core.registry import Registry
+
+    resolved = AdmetHome.resolve(home).ensure()
+    store = Registry(resolved.analyze_dir)
+    store.add_root(resolved.data_dir)
+    store.scan(resolved.data_dir)
+    if data:
+        store.add_root(data)
+        store.scan(data)
+    return store
+
+
 def run_analyze_server(host: str, port: int, *, data: str | None = None, home: str | None = None) -> int:
     """One server for every browser that connects; each visit gets its own view of one registry."""
     from nicegui import ui
 
-    from admet.core.home import AdmetHome
-    from admet.core.registry import Registry
     from admet.engines import create_engine_registry
     from admet.ui.analyze import render_workflow
     from admet.workflows import create_analyze_workflow
 
-    store = Registry(AdmetHome.resolve(home).ensure().analyze_dir)
-    if data:
-        store.add_root(data)
-        store.scan(data)
+    store = analyze_registry(home, data)
     registry = create_engine_registry("analyze")
 
     def root() -> None:

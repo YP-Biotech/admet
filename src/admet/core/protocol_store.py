@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from admet.workflows.json_protocol import load, normalize
-from admet.core.session import write_atomic
+from admet.core.files import write_atomic
 
 
 def write_json(path, payload):

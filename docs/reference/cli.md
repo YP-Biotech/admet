@@ -3,30 +3,51 @@
 Everything starts from one command, `admet`.
 
 ```text
-admet control  [--project PATH]
-admet analyze  [--host HOST] [--port PORT] [--projects DIR]
+admet control  [--home PATH]
+admet analyze  [--host HOST] [--port PORT] [--data DIR] [--home PATH]
+admet migrate  PROJECT [--into DIR] [--copy] [--rig] [--home PATH]
 admet describe [TARGET]
 admet install-sdk [--version TAG] [--force]
 ```
 
 ## admet control
 
-Opens the control desktop. `--project` opens an existing `.admetp` project.
-Requires the `control` extra.
+Opens the control desktop. It keeps the rig's settings and records every run in
+the admet home, `~/.admet` unless `ADMET_HOME` or `--home` says otherwise; see
+[the home](../control/overview#the-home). Requires the `control` extra.
 
 ```bash
-uv run --extra control admet control --project ~/experiments/today.admetp
+uv run --extra control admet control
+uv run --extra control admet control --home D:\admet
 ```
 
 ## admet analyze
 
-Serves project analysis over the network. Requires the `analyze` extra.
+Serves the analysis over the network. It watches the home's data folder from the
+start, so every run the rig recorded is listed; `--data` adds another folder of
+runs, for example the export folder on the server. Requires the `analyze` extra.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--host` | `0.0.0.0` | Address to listen on (every interface) |
 | `--port` | `8080` | Port |
-| `--projects` | `ADMET_PROJECTS_ROOT`, else `./projects`, else `.` | Folder with the projects |
+| `--data` | none | Another folder of runs to watch beside the home's data folder |
+| `--home` | `ADMET_HOME` or `~/.admet` | The home whose data folder is watched and whose `analyze/` room keeps the registry and the results |
+
+```bash
+uv run --extra analyze admet analyze
+uv run --extra analyze admet analyze --home /Volumes/data/admet --port 9000
+```
+
+## admet migrate
+
+Lays an old `.admetp` project out as run folders in the home's data folder; see
+[Projects](../guide/projects#migrating-a-project).
+
+```bash
+uv run admet migrate experiment.admetp
+uv run admet migrate experiment.admetp --rig        # and take its rig settings into the home
+```
 
 ## admet describe
 
@@ -52,5 +73,5 @@ uv run admet install-sdk --force            # replace an SDK already there
 
 | Variable | Meaning |
 |---|---|
-| `ADMET_PROJECTS_ROOT` | Default folder holding projects |
+| `ADMET_HOME` | The admet home, instead of `~/.admet` |
 | `ADMET_FLUIGENT_SDK_PATH` | The Python folder of a Fluigent SDK to use (the one containing `Fluigent/SDK`); it takes precedence over the vendored copy |

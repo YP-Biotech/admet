@@ -66,13 +66,16 @@ or Linux PC to drive a Fluigent rig.
 Without hardware, `admet control` can still connect to a **simulated** Fluigent
 controller (Fluigent page → *Simulated Hardware*). The camera is not simulated.
 
-## Where projects live
+## Where the data lives
 
 `admet control` keeps its things in the admet home, `~/.admet` unless
 `ADMET_HOME` or `--home` says otherwise; see [the home](../control/overview#the-home).
+Every run it records is a folder under the home's `data/runs/`.
 
-`admet analyze` watches the folders of runs you add on its Files page, or the one
-given with `--data`; it keeps its registry and results in the home's `analyze/`.
+`admet analyze` watches the home's data folder from the start, so the runs are
+listed without a step of your own; a folder added on its Files page, or given
+with `--data`, is watched beside it. Its registry and results live in the home's
+`analyze/`.
 
 Older `.admetp` projects are not read; `admet migrate <project>` lays one out as
 run folders in the home's data folder, see [Projects](projects#migrating-a-project).

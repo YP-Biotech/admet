@@ -138,6 +138,22 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(sorted(e["set"] for e in registry.scan(data)),
                              ["controls", "dropseq o1300mbar c540mbar b0"])             # the planned set wins
 
+    def test_the_homes_data_folder_is_watched_from_the_start(self):
+        from admet.app import analyze_registry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            run, _ = run_with_videos(home / "data", "oil")                            # what the rig recorded
+            elsewhere, _ = run_with_videos(Path(tmp) / "export", "cap", videos=1)
+
+            store = analyze_registry(str(home))
+            self.assertEqual(store.roots(), [str((home / "data").resolve())])
+            self.assertEqual(len(store.sources()), 2)                                  # listed with no folder added
+            again = analyze_registry(str(home), str(Path(tmp) / "export"))
+            self.assertEqual(again.roots(), [str((home / "data").resolve()), str((Path(tmp) / "export").resolve())])
+            self.assertEqual(len(again.sources()), 3)
+            self.assertEqual(len(analyze_registry(str(home)).sources()), 3)            # remembered, nothing doubled
+
     def test_an_export_folder_and_a_single_run_scan_too(self):
         with tempfile.TemporaryDirectory() as tmp:
             run, _ = run_with_videos(Path(tmp) / "data", "oil")

@@ -6,8 +6,7 @@ Use it to script runs or to build your own front end.
 ```python
 from admet.core.service import Admet
 
-admet = Admet()
-admet.create_project("experiment.admetp")
+admet = Admet()                    # the home: ~/.admet, or ADMET_HOME, or Admet(home=...)
 admet.do("connect_fluidics", {"simulated": True})
 try:
     admet.do("apply_corrections")
@@ -49,7 +48,7 @@ without guards; it is meant for experts.
 ```python
 from admet.workflows.calculations import calculate_run, saved_results, result_view
 
-payload = calculate_run("experiment.admetp/records/protocols/run_<id>", "gravimetry")
+payload = calculate_run("~/.admet/data/runs/20261118_183000_gravimetry", "gravimetry")
 view = result_view(payload)       # sections of facts, tables and notes
 ```
 

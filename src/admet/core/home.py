@@ -2,7 +2,7 @@
 
     ~/.admet/            ADMET_HOME overrides it
       control/rig.json   the rig's settings: calibration, profiles, liquids, optics, acquisition mode
-      data/              what the rig records; the place analyze is pointed at
+      data/              what the rig records; analyze watches it from the start
       analyze/           what analyze makes: its sources, sets, results and cache
 
 A machine that runs control and analyze needs nothing moved; another machine's data folder is
