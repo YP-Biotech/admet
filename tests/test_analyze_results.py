@@ -54,7 +54,7 @@ def _result(**overrides) -> FileResult:
     return FileResult(**values)
 
 
-def _stored(root: Path = Path("/p/study.admetp")) -> StoredResult:
+def _stored(root: Path = Path("/p/study")) -> StoredResult:
     """A video's stored analysis, as the runner leaves it: its rows and summary in a results folder."""
     return StoredResult(source_path=root / "media" / "v.avi", engine="opencv", sample_id="s",
                         result_dir=root.parent / "results" / "k1",
@@ -64,7 +64,7 @@ def _stored(root: Path = Path("/p/study.admetp")) -> StoredResult:
 
 
 def _imaging(**metadata) -> StoredResult:
-    return StoredResult(source_path=Path("/p/study.admetp/media/imgs"), engine="cellpose", sample_id="imgs",
+    return StoredResult(source_path=Path("/p/study/media/imgs"), engine="cellpose", sample_id="imgs",
                         result_dir=Path("/p/results/k2"), metadata={"file_id": "f2", **metadata})
 
 
@@ -97,11 +97,11 @@ class FileResultTests(unittest.TestCase):
         self.assertEqual(result.analyzed_at[:10], "2026-11-13")
         self.assertEqual(result.settings["k_sigma"], 4)
         self.assertEqual(result.settings["fps"], 100.0)
-        self.assertEqual(result.source_path, "/p/study.admetp/media/v.avi")
+        self.assertEqual(result.source_path, "/p/study/media/v.avi")
         self.assertIn("µm/px 2", settings_summary(result.settings))
 
     def test_the_scale_and_fps_of_the_day_apply_without_a_new_run(self):
-        scales = {("opencv", "/p/study.admetp/media/v.avi"): (4.0, 200.0)}
+        scales = {("opencv", "/p/study/media/v.avi"): (4.0, 200.0)}
 
         result, = file_results(_stored(), _rows(), scales=scales)
 
@@ -121,7 +121,7 @@ class FileResultTests(unittest.TestCase):
         self.assertAlmostEqual(expected_rate_hz(80.0, 124.0), 1336, delta=2)   # 1.333 µL/s over 1.0 nL
         self.assertEqual(expected_rate_hz(80.0, 0.0), 0.0)
 
-        scales = {("opencv", "/p/study.admetp/media/v.avi"): (2.0, 100.0, 80.0)}
+        scales = {("opencv", "/p/study/media/v.avi"): (2.0, 100.0, 80.0)}
         result, = file_results(_stored(), _rows(), scales=scales)
 
         self.assertEqual(result.dispersed_ul_min, 80.0)
@@ -146,7 +146,7 @@ class FileResultTests(unittest.TestCase):
                     {"engine": "opencv", "item_id": "cells", "file_id": file_id, "kind": "detection",
                      "values": {"frame": 1, "droplet_id": 1, "centroid_x": 5.0, "centroid_y": 5.0,
                                 "equivalent_diameter": 30, "area": 700}}]
-            stored = StoredResult(source_path=Path("/p/study.admetp") / source, engine="opencv", sample_id="cells",
+            stored = StoredResult(source_path=Path("/p/study") / source, engine="opencv", sample_id="cells",
                                   result_dir=Path("/p/results") / file_id, metadata={"file_id": file_id})
             results.extend(file_results(stored, rows))
 
@@ -188,7 +188,7 @@ class FileResultTests(unittest.TestCase):
                             "diameter_um": 140.0, "area_um2": 15000.0, "inclusions": 1}}
                 for droplet in (0, 1, 2)]
         run = _imaging(droplet_count=3)
-        fixes = {("cellpose", "/p/study.admetp/media/imgs"): {"1:0": {"disabled": True}, "1:2": {"inclusions": 2}}}
+        fixes = {("cellpose", "/p/study/media/imgs"): {"1:0": {"disabled": True}, "1:2": {"inclusions": 2}}}
 
         result, = file_results(run, rows, fixes)
 
@@ -385,7 +385,7 @@ class ChartTests(unittest.TestCase):
 class ExportTests(unittest.TestCase):
     def test_csv_export_zips_a_summary_and_every_droplet_row(self):
         with tempfile.TemporaryDirectory() as tmp:
-            stored = _stored(Path(tmp) / "study.admetp")
+            stored = _stored(Path(tmp) / "study")
             stored.rows_path.parent.mkdir(parents=True)
             stored.rows_path.write_text("\n".join(json.dumps(row) for row in _rows()))
             results = file_results(stored, _rows())
@@ -404,7 +404,7 @@ class ExportTests(unittest.TestCase):
         rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
                  "values": {"frame": 1, "droplet_id": droplet, "inclusions": 1}} for droplet in (0, 1)]
         with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "study.admetp"
+            project = Path(tmp) / "study"
             stored = StoredResult(source_path=project / "media" / "imgs", engine="cellpose", sample_id="imgs",
                                   result_dir=Path(tmp) / "results" / "k2", metadata={"file_id": "f2"},
                                   run=str(Path(tmp) / "study"))

@@ -77,20 +77,6 @@ def _admet(tmp: str) -> tuple[Admet, RecordingEngine]:
 
 
 class HomeTests(unittest.TestCase):
-    def test_a_failed_save_leaves_a_project_index_readable(self):
-        from admet.core.project import ProjectStore
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = ProjectStore.create(Path(tmp) / "safe", "safe")
-            before = (store.path / "manifest.json").read_text()
-
-            with self.assertRaises(TypeError):
-                store.update_metadata(unwritable=object())
-
-            self.assertEqual((store.path / "manifest.json").read_text(), before)
-            ProjectStore(store.path)
-            self.assertEqual(list(store.path.glob(".manifest.json.*")), [])
-
     def test_a_recording_closed_by_emergency_stop_is_listed(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)

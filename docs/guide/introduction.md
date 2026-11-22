@@ -6,7 +6,7 @@ microfluidics rig, records what happens on it, and analyses the results. It has 
 | Command | What it does | Touches the rig |
 |---|---|---|
 | `admet control` | Desktop app (Qt). Connects the flow units and camera, runs protocols, records runs, calculates results. | Yes |
-| `admet analyze` | Web server (NiceGUI). Opens projects from the lab network and analyses videos and images. | No |
+| `admet analyze` | Web server (NiceGUI). Lists the recorded runs for the lab network and analyses their videos and images. | No |
 | `admet describe` | Lists the operations and engines the Python API offers. | No |
 
 ## The rig
@@ -42,8 +42,8 @@ A typical session in `admet control`:
 7. On **Calculations**, calculate results from the finished runs.
 8. **Wash**, then **Cleanup** to release the devices.
 
-`admet analyze` then reads the recorded videos and images, today from an
-`.admetp` [project](./projects), soon from the data folder itself.
+`admet analyze` then reads the recorded videos and images from the home's data
+folder, where every run is a folder of its own.
 
 ## What ADMET does not do
 

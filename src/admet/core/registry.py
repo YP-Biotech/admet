@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from admet.core.runs import RECORD
-from admet.core.session import write_atomic
+from admet.core.files import write_atomic
 
 REGISTRY = "registry.json"
 RESULTS_DIR = "results"

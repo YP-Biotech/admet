@@ -19,7 +19,7 @@ from typing import Any
 from admet.core.engine import EngineRegistry, action_spec
 from admet.core.registry import content_key, infer_engine
 from admet.core.run import JsonlRunSink, RunJob, RunResult
-from admet.core.session import write_atomic
+from admet.core.files import write_atomic
 
 __all__ = ["AnalysisStop", "AnalysisStopped", "AnalyzeBatchReport", "AnalyzeBatchRunner", "AnalyzeJobReport",
            "AnalyzeTarget", "SHUTDOWN", "infer_engine", "running_batches"]

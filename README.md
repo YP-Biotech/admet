@@ -7,7 +7,7 @@
 <p align="center">
   <b>Automatic Droplet Management Extended Toolkit</b><br>
   Drive a Fluigent rig and camera, record every run, and analyse the droplets
-  from one project folder.
+  from one data folder.
 </p>
 
 ---
@@ -19,7 +19,7 @@ ADMET is one Python package with two apps:
   and calculates results such as fluid density, gravimetry, dead volume and
   viscosity.
 - **`admet analyze`** — a web server for the lab network that reads the same
-  projects and analyses them: OpenCV droplet tracking for videos, Cellpose for
+  runs and analyses them: OpenCV droplet tracking for videos, Cellpose for
   images. It never touches the rig.
 
 <p align="center">
@@ -54,9 +54,9 @@ connecting. For live use, install the Fluigent and Basler drivers and
 
 ## Features
 
-- **Projects** — one `.admetp` folder per experiment: protocols as they ran,
-  fluidics and video recordings, typed-in measurements and every calculated
-  result, each fingerprinted so a changed input marks it outdated.
+- **Runs** — one folder per run in the home's data folder: the protocol as it
+  ran, the fluidics timeline, the step videos, typed-in measurements and every
+  calculated result, each fingerprinted so a changed input marks it outdated.
 - **Protocols as JSON** — steps, parameters with expressions, gates,
   measurements and calculations in one file. Plans are previewed before anything
   moves; runs can be paused, skipped and resumed.
@@ -77,9 +77,9 @@ make docs-dev      # http://localhost:5173
 
 | Topic | |
 |---|---|
-| [Installation](docs/guide/installation.md) | Windows control PC, drivers, project folders |
+| [Installation](docs/guide/installation.md) | Windows control PC, drivers, where the data lives |
 | [admet control](docs/control/overview.md) | The workflow, calibration, protocols, safety |
-| [admet analyze](docs/analyze/overview.md) | Serving and analysing projects |
+| [admet analyze](docs/analyze/overview.md) | Serving and analysing the runs |
 | [Protocol format](docs/protocols/format.md) | Writing your own protocols |
 | [Calculations](docs/calculations/gravimetry.md) | How each result is calculated |
 | [Python API](docs/reference/python-api.md) | Scripting runs |
