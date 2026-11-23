@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from admet.core.engine import EngineRegistry
 from admet.core.registry import Registry
+from admet.core.runs import RunStore
 from admet.ui.analyze import (
     IMAGING_DEFAULTS,
     AnalyzeWorkflowView,
@@ -38,7 +39,7 @@ class WorkflowShapeTests(unittest.TestCase):
 
         self.assertEqual([stage.id for stage in workflow.stages], ["files", "analyse", "results"])
         self.assertEqual([action.label for action in workflow.stages[1].actions],
-                         ["Run all ticked", "Run selected", "Stop", "Reset ticked", "Reset file settings"])
+                         ["Analyse all", "Run selected", "Stop", "Reset ticked", "Reset file settings"])
         self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export CSV", "Export plots"])
 
 
@@ -131,14 +132,13 @@ class MatrixChangeTests(unittest.TestCase):
             self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
             self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
             names = [column["name"] for column in analyse_columns(view.analyse_fields)]
-            self.assertEqual(names, ["active", "sample_id", "condition", "protocol", "run_time", "replicate", "source",
-                                     "engine", "fps", "k_sigma", "analyzed"])
+            self.assertEqual(names, ["active", "sample_id", "source", "fps", "k_sigma", "status"])
             row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
-                              crop_text="full", analyzed="")
+                              crop_text="full", status="new")
             self.assertEqual((row["k_sigma"], row["microns_per_pixel"], row["fps"]), (4.0, 1.1, None))
             self.assertEqual((row["frame_limit"], row["frame_limit_applies"], row["k_sigma_applies"]), (None, False, True))
             image = analyse_row(_row(engine="cellpose", sample="i", px_to_um=2.0, detect_inclusions=True),
-                                range_text="all", crop_text="—", analyzed="")
+                                range_text="all", crop_text="—", status="new")
             self.assertEqual((image["microns_per_pixel"], image["detect_inclusions"], image["fps_applies"]), (2.0, True, False))
             view._handle_matrix_change(SimpleNamespace(args={"uid": view.matrix[0].uid if view.matrix else "", "field": "k_sigma", "value": "3"}))
 
@@ -375,8 +375,8 @@ class SetTests(unittest.TestCase):
 
             view._assign_condition("Oil A")
 
-            self.assertEqual([row.condition for row in view.matrix], ["Oil A", "Oil A", ""])
-            self.assertEqual((view.current_condition, view._condition_names()), ("Oil A", ["Oil A"]))
+            self.assertEqual([row.condition for row in view.matrix], ["Oil A", "Oil A", "Oil 3"])   # c keeps the run's
+            self.assertEqual((view.current_condition, view._condition_names()), ("Oil A", ["Oil A", "Oil 3"]))
             self.assertEqual(_make_view(store).matrix[0].condition, "Oil A")                  # kept with the list
             view._assign_condition("")                                                          # a name is needed
             self.assertEqual(b.condition, "Oil A")
@@ -522,7 +522,8 @@ class DownstreamTests(unittest.TestCase):
         view.state = replace(view.state, index=0)                                        # 1. Files
         view._handle_matrix_change(SimpleNamespace(args={"uid": b.uid, "field": "active", "value": False}))
         self.assertEqual((b.active, b.to_run), (False, True))
-        self.assertEqual([row["sample_id"] for row in view._files_rows()], ["a", "b", "c"])  # listed on Files
+        self.assertEqual([row["rep"] for row in view._files_rows() if row["kind"] == "sample"],
+                         ["a", "b", "c"])                                                  # listed on Files
         view.state = replace(view.state, index=1)
         self.assertEqual([row["sample_id"] for row in view._analyse_rows()], ["a", "c"])  # gone from Analyse
         self.assertIsNone(view._selected_row())                                           # and the editor
@@ -602,6 +603,140 @@ class ResultsDataTests(unittest.TestCase):
             self.assertEqual(view._result_sections(), ["aggregated", "live"])
             view.matrix.append(_row(engine="cellpose", sample="imgs"))
             self.assertEqual(view._result_sections(), ["aggregated", "live"])             # listed, not analysed
+
+
+
+class SampleTests(unittest.TestCase):
+    """A sample is a collection point: the files that share one, listed under their condition."""
+
+    def _view_with_runs(self, tmp: Path):
+        store = Registry(tmp / "analyze")
+        data = tmp / "data"
+        first, _ = run_with_videos(data, "Oil 3", videos=2)
+        second, _ = run_with_videos(data, "Oil 3", videos=1)
+        folder = tmp / "plate3_A1"
+        folder.mkdir()
+        (folder / "a01f001d4.tif").write_bytes(b"i")
+        view = _make_view(store)
+        view._notify = lambda *a, **k: None
+        view._add_root(data)
+        view._append_source(folder)
+        return view, store, folder
+
+    def test_files_are_listed_as_samples_under_their_condition_and_a_folder_waits_unassigned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            view, _store, folder = self._view_with_runs(Path(tmp))
+
+            samples = view._samples()
+            self.assertEqual([(s["name"], s["condition"], s["primary"].rep) for s in samples],
+                             [("Oil 3_rep1", "Oil 3", "rep 1"), ("Oil 3_rep2", "Oil 3", "rep 2"),
+                              ("Oil 3_rep3", "Oil 3", "rep 3")])                      # numbered across the two runs
+            rows = view._files_rows()
+            self.assertEqual([r["kind"] for r in rows], ["condition", "sample", "sample", "sample", "condition", "unassigned"])
+            self.assertEqual((rows[0]["alias"], rows[0]["count"], rows[0]["active"], rows[0]["mixed"]),
+                             ("Oil 3", "3 samples", True, False))
+            self.assertEqual((rows[1]["rep"], rows[1]["images"], rows[1]["live"]), ("rep 1", "", ""))
+            self.assertEqual((rows[4]["alias"], rows[4]["fixed"]), ("Unassigned", True))
+            self.assertEqual(rows[5]["images"], "plate3_A1")
+            self.assertEqual([o["label"] for o in rows[5]["options"]],
+                             ["Oil 3 · rep 1", "Oil 3 · rep 2", "Oil 3 · rep 3", "new sample…"])
+            self.assertTrue(view.matrix[-1].unassigned)
+            self.assertEqual([r["sample_id"] for r in view._analyse_rows()],
+                             ["Oil 3", "rep 1", "rep 2", "rep 3", "plate3_A1"])              # the condition line first
+            self.assertEqual([r["kind"] for r in view._analyse_rows()][:2], ["condition", "file"])
+
+    def test_a_folder_joins_a_sample_from_the_picker_or_becomes_one_of_its_own(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            view, store, folder = self._view_with_runs(Path(tmp))
+            loose = view.matrix[-1]
+
+            view._handle_assign(SimpleNamespace(args={"uid": loose.uid, "sample": "Oil 3_rep2"}))
+
+            self.assertEqual((loose.sample_id, loose.condition, loose.name), ("Oil 3_rep2", "Oil 3", "Oil 3_rep2"))
+            second = next(s for s in view._samples() if s["name"] == "Oil 3_rep2")
+            self.assertEqual([Path(r.source_path).name for r in second["folders"]], ["plate3_A1"])   # in the sample
+            rows = view._files_rows()
+            self.assertEqual([r["kind"] for r in rows], ["condition", "sample", "sample", "sample"])  # nothing unassigned
+            self.assertEqual(rows[2]["images"], "plate3_A1")
+            self.assertEqual(next(r.sample_id for r in _make_view(store).matrix if r.engine == "cellpose"),
+                             "Oil 3_rep2")                                                           # kept with the list
+            view._new_sample(loose, " plate alone ")
+            self.assertEqual((loose.sample_id, loose.condition), ("plate alone", ""))
+            self.assertEqual([r["alias"] for r in view._files_rows() if r["kind"] == "condition"],
+                             ["Oil 3", "No condition"])
+            self.assertEqual([r["rep"] for r in view._files_rows() if r["kind"] == "sample"][-1], "plate alone")
+
+    def test_ticks_notes_and_aliases_act_on_the_samples_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            view, store, _folder = self._view_with_runs(Path(tmp))
+            by = {row.name: row for row in view.matrix[:3]}
+            a, b, c = by["Oil 3_rep1"], by["Oil 3_rep2"], by["Oil 3_rep3"]
+
+            view._handle_files_tick(SimpleNamespace(args={"uid": "sample:Oil 3_rep2", "value": False}))
+            self.assertEqual([r.active for r in (a, b, c)], [True, False, True])
+            rows = view._files_rows()
+            self.assertEqual((rows[0]["active"], rows[0]["mixed"]), (True, True))                  # some of its samples
+            view._handle_files_tick(SimpleNamespace(args={"uid": "condition:Oil 3", "value": False}))
+            self.assertEqual([r.active for r in (a, b, c)], [False, False, False])
+            view._handle_files_tick(SimpleNamespace(args={"uid": "sample:Oil 3_rep1", "value": True}))
+            view._handle_files_tick(SimpleNamespace(args={"uid": "sample:Oil 3_rep3", "value": True, "shift": True}))
+            self.assertEqual([r.active for r in (a, b, c)], [True, True, True])                   # the range between
+            view._handle_note(SimpleNamespace(args={"uid": "sample:Oil 3_rep1", "value": " second chip "}))
+            self.assertEqual(a.note, "second chip")
+            self.assertEqual(next(r.note for r in _make_view(store).matrix if r.name == "Oil 3_rep1"), "second chip")
+            view._handle_alias(SimpleNamespace(args={"uid": "condition:Oil 3", "value": "Oil 300"}))
+            self.assertEqual({r.condition for r in (a, b, c)}, {"Oil 300"})
+            self.assertEqual([r.name for r in (a, b, c)], ["Oil 300_rep1", "Oil 300_rep2", "Oil 300_rep3"])
+            condition = view._files_rows()[0]
+            self.assertEqual((condition["alias"], condition["auto"]), ("Oil 300", "Oil 3"))        # the derived one beside
+            self.assertEqual(view._analyse_rows()[0]["auto"], "Oil 3")
+
+    def test_the_facts_tell_how_the_droplets_were_made_from_the_run_or_the_video(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Registry(Path(tmp) / "analyze")
+            data = Path(tmp) / "data"
+            run = RunStore(data).begin({"plan_id": "p", "tag": "", "operation_id": "run_json_protocol",
+                                        "normalized_settings": {"protocol": {"name": "dropseq", "steps": [
+                                            {"name": "collect", "sensor_setpoints": {"0": 300, "1": 40},
+                                             "pressure_setpoints": {"2": 600}, "trigger_type": "time",
+                                             "trigger_params": {"duration_s": 1}, "record": True}]}}})
+            (run.path / "v.avi").write_bytes(b"v")
+            run.update(state="completed", artifacts={"videos": [{"step": 1, "video_path": "v.avi"}]})
+            view = _make_view(store)
+            view._add_root(data)
+            row = view.matrix[0]
+
+            self.assertEqual(row.condition, "dropseq o300 c40 b600mbar")
+            self.assertEqual(view._condition_facts(row), [("Condition", "dropseq o300 c40 b600mbar"), ("Protocol", "dropseq"),
+                                                          ("Oil L", "flow 300 µL/min"), ("Cells M", "flow 40 µL/min"),
+                                                          ("Beads M", "pressure 600 mbar")])
+            record = {"channels": [{"index": 0, "label": "Oil L", "mode": "flow", "flow_ul_min": 250.0},
+                                   {"index": 1, "label": "Cells M", "mode": "pressure", "pressure_mbar": 310.0}]}
+            with patch("admet.ui.analyze._video_record", return_value=record):
+                self.assertEqual(view._condition_facts(row)[2:], [("Oil L", "flow 250 µL/min"),
+                                                                 ("Cells M", "pressure 310 mbar")])   # the video's own
+            self.assertEqual(view._details(row)[0], ("Run", run.run_id))
+
+    def test_a_files_status_is_new_done_or_stale(self):
+        from unittest.mock import patch
+
+        view = _make_view()
+        row = _row(sample="v")
+        view.matrix = [row]
+        with patch.object(view, "_stored_result", return_value=None):
+            self.assertEqual(view._file_status(row), "new")
+            row.last_result = "abc"
+            self.assertEqual(view._file_status(row), "stale")
+            view._running, view._running_uids = True, {row.uid}
+            self.assertEqual(view._file_status(row), "running")
+            view._running, view._running_uids = False, set()
+        with patch.object(view, "_stored_result", return_value=object()):
+            self.assertEqual(view._file_status(row), "done")
+        row.last_result = "abc"
+        with patch.object(view, "_stored_result", return_value=None):
+            self.assertIn("dot-stale", view._analyse_row(row)["status"])
 
 
 if __name__ == "__main__":

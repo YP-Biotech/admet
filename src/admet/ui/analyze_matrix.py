@@ -36,19 +36,99 @@ FIELD_KINDS["px_to_um"] = ParamKind.FLOAT
 
 
 def files_columns() -> list[dict[str, Any]]:
+    """The Files list: one row per sample under its condition, a file shown as a chip in its column."""
     return [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
-        {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
-        {"name": "condition", "label": "Set", "field": "condition", "align": "left"},
-        {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
-        {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
-        {"name": "replicate", "label": "Rep.", "field": "replicate", "align": "left"},
-        {"name": "source", "label": "File", "field": "source", "align": "left"},
-        {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
-        {"name": "count", "label": "Frames / images", "field": "count", "align": "right"},
-        {"name": "analyzed", "label": "Analysed", "field": "analyzed", "align": "left"},
-        {"name": "remove", "label": "", "field": "remove", "align": "center"},
+        {"name": "sample", "label": "Sample", "field": "rep", "align": "left"},
+        {"name": "video", "label": "Video", "field": "video", "align": "left"},
+        {"name": "images", "label": "Images", "field": "images", "align": "left"},
+        {"name": "live", "label": "Live", "field": "live", "align": "left"},
+        {"name": "note", "label": "Note", "field": "note", "align": "left"},
     ]
+
+
+def condition_row(key: str, alias: str, auto: str, count: str, *, active: bool, mixed: bool,
+                  fixed: bool = False) -> dict[str, Any]:
+    """A condition's line in the Files list: its alias to type over, the derived condition when the alias
+    differs from it, how many samples it holds. FIXED is the Unassigned group, which has no tick and no alias."""
+    return {"uid": f"condition:{key}", "kind": "condition", "alias": alias, "auto": auto, "count": count,
+            "active": active, "mixed": mixed, "fixed": fixed}
+
+
+def sample_row(name: str, rep: str, *, active: bool, mixed: bool, video: str, images: str, live: str,
+               note: str, file_uids: list[str]) -> dict[str, Any]:
+    """A sample's line: its files as chips, the live QC that came with its video, its note."""
+    return {"uid": f"sample:{name}", "kind": "sample", "rep": rep, "active": active, "mixed": mixed,
+            "video": video, "images": images, "live": live, "note": note, "file_uids": list(file_uids)}
+
+
+def unassigned_row(uid: str, folder: str, options: list[dict[str, str]]) -> dict[str, Any]:
+    """An image folder with no sample yet, and the samples it can join."""
+    return {"uid": uid, "kind": "unassigned", "images": folder, "options": options}
+
+
+FILES_BODY = """
+<q-tr :props="props" :class="'kind-' + props.row.kind" @click="$parent.$emit('pick', {uid: props.row.uid})">
+  <template v-if="props.row.kind === 'condition'">
+    <q-td class="text-center">
+      <q-checkbox v-if="!props.row.fixed" dense :model-value="props.row.mixed ? null : props.row.active"
+        @click.stop @mousedown.stop
+        @update:model-value="(val, evt) => $parent.$emit('tick', {uid: props.row.uid, value: !!val, shift: !!(evt && evt.shiftKey)})" />
+    </q-td>
+    <q-td colspan="5">
+      <div class="cond-line">
+        <q-input v-if="!props.row.fixed" dense borderless class="alias-input" v-model="props.row.alias"
+          @click.stop @mousedown.stop
+          @blur="$parent.$emit('alias', {uid: props.row.uid, value: props.row.alias})"
+          @keyup.enter="$event.target.blur()" />
+        <span v-else class="cond-alias">{{ props.row.alias }}</span>
+        <span v-if="props.row.auto" class="cond-auto">{{ props.row.auto }}</span>
+        <span class="cond-auto">{{ props.row.count }}</span>
+      </div>
+    </q-td>
+  </template>
+  <template v-else-if="props.row.kind === 'sample'">
+    <q-td class="text-center">
+      <q-checkbox dense :model-value="props.row.mixed ? null : props.row.active"
+        @click.stop @mousedown.stop
+        @update:model-value="(val, evt) => $parent.$emit('tick', {uid: props.row.uid, value: !!val, shift: !!(evt && evt.shiftKey)})" />
+    </q-td>
+    <q-td class="sample-cell">{{ props.row.rep }}</q-td>
+    <q-td><span v-if="props.row.video" class="chip">&#9654; {{ props.row.video }}</span><span v-else class="chip off">no video</span></q-td>
+    <q-td><span v-if="props.row.images" class="chip">&#9635; {{ props.row.images }}</span><span v-else class="chip off">no images</span></q-td>
+    <q-td><span v-if="props.row.live" class="chip">&#9679; {{ props.row.live }}</span><span v-else class="muted">—</span></q-td>
+    <q-td>
+      <q-input dense borderless class="note-input" v-model="props.row.note" placeholder="—"
+        @click.stop @mousedown.stop
+        @blur="$parent.$emit('note', {uid: props.row.uid, value: props.row.note})"
+        @keyup.enter="$event.target.blur()" />
+    </q-td>
+  </template>
+  <template v-else>
+    <q-td></q-td>
+    <q-td class="muted">—</q-td>
+    <q-td class="muted">no video</q-td>
+    <q-td><span class="chip">&#9635; {{ props.row.images }}</span></q-td>
+    <q-td class="muted">—</q-td>
+    <q-td>
+      <q-select dense outlined options-dense emit-value map-options class="sample-picker"
+        :options="props.row.options" :model-value="null" label="pick a sample…"
+        @click.stop @mousedown.stop
+        @update:model-value="val => $parent.$emit('assign', {uid: props.row.uid, sample: val})" />
+    </q-td>
+  </template>
+</q-tr>
+"""
+
+
+def wire_files_list(table: Any, *, on_tick: Any, on_alias: Any, on_note: Any, on_assign: Any, on_pick: Any) -> None:
+    """The Files list draws its own rows: conditions, samples and unassigned folders look different."""
+    table.add_slot("body", FILES_BODY)
+    table.on("tick", on_tick)
+    table.on("alias", on_alias)
+    table.on("note", on_note)
+    table.on("assign", on_assign)
+    table.on("pick", on_pick)
 
 
 def analyse_fields(chosen) -> list[str]:
@@ -58,20 +138,16 @@ def analyse_fields(chosen) -> list[str]:
 
 
 def analyse_columns(fields) -> list[dict[str, Any]]:
-    """The Analyse table's columns: Use, the file, then the chosen setting columns, then when it was analysed."""
+    """The Analyse table's columns: Use, the sample, the file, the chosen setting columns, then its status.
+    Where the file came from is on 1. Files, under Details, not here."""
     columns = [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
-        {"name": "condition", "label": "Set", "field": "condition", "align": "left"},
-        {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
-        {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
-        {"name": "replicate", "label": "Rep.", "field": "replicate", "align": "left"},
         {"name": "source", "label": "File", "field": "source", "align": "left"},
-        {"name": "engine", "label": "Engine", "field": "engine", "align": "left"},
     ]
     columns += [{"name": field, "label": ANALYSE_COLUMN_LABELS[field], "field": field, "align": "left"}
                 for field in analyse_fields(fields)]
-    columns.append({"name": "analyzed", "label": "Analysed", "field": "analyzed", "align": "left"})
+    columns.append({"name": "status", "label": "Status", "field": "status", "align": "left"})
     return columns
 
 
@@ -91,30 +167,33 @@ def wire_results_table(table: Any, on_change: Any, html_fields: tuple[str, ...])
     table.on("matrix-change", on_change)
 
 
-def files_row(row: Any, *, count: str, analyzed: str, removable: bool) -> dict[str, Any]:
-    return {
-        "uid": row.uid,
-        "active": row.active,
-        "sample_id": row.sample_id,            # the name written over, empty when the built one stands
-        "name": row.name,                      # the name in force, shown where nothing is written over
-        "condition": row.condition,
-        "protocol": row.protocol,
-        "run_time": row.run_time,
-        "replicate": f"rep {row.replicate}" if row.replicate else "",
-        "source": Path(row.source_path).name or row.source_path,
-        "engine": row.engine,
-        "count": count,
-        "analyzed": analyzed or "—",
-        "remove": removable,
-    }
+STATUS_TITLES = {"new": "not run", "running": "running", "done": "analysed", "stale": "settings changed since"}
 
 
-def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> dict[str, Any]:
+def status_html(status: str, when: str = "") -> str:
+    """A dot for a file's state on 2. Analyse: grey not run, blue running, green done, amber stale."""
+    title = STATUS_TITLES.get(status, status) + (f", {when}" if when else "")
+    return f'<span class="dot dot-{status}" title="{title}"></span>'
+
+
+def analyse_condition_row(key: str, alias: str, auto: str) -> dict[str, Any]:
+    """A condition's line in the Analyse table: its name across the row, no cell to edit."""
+    cells: dict[str, Any] = {"uid": f"condition:{key}", "kind": "condition", "active": None, "sample_id": alias,
+                             "auto": auto, "engine": "", "range": "", "crop": "", "status": ""}
+    for field, _label, _kind, _applies in SETTING_FIELDS:
+        cells[field] = None
+        cells[f"{field}_applies"] = False
+    return cells
+
+
+def analyse_row(row: Any, *, range_text: str, crop_text: str, status: str, analyzed: str = "") -> dict[str, Any]:
     """A file's row: every setting it can carry (None and "<field>_applies" False where its engine has none)."""
     cells: dict[str, Any] = {
         "uid": row.uid,
+        "kind": "file",
         "active": row.to_run,                 # the tick of 2. Analyse: run it
-        "sample_id": row.name,
+        "sample_id": row.rep,                 # "rep 2" under its condition's line; the full name is on 1. Files
+        "auto": "",
         "condition": row.condition,
         "protocol": row.protocol,
         "run_time": row.run_time,
@@ -123,7 +202,7 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
         "engine": row.engine,
         "range": range_text,
         "crop": crop_text,
-        "analyzed": analyzed or "—",
+        "status": status_html(status, analyzed),
     }
     for field, _label, kind, applies in SETTING_FIELDS:
         takes = row.engine in applies
@@ -133,24 +212,23 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
     return cells
 
 
-def wire_files_table(table: Any, on_change: Any, on_remove: Any) -> None:
-    table.add_slot("body-cell-active", _bool_cell_slot("active"))
-    table.add_slot("body-cell-sample_id", _text_cell_slot("sample_id", placeholder="name"))
-    table.add_slot("body-cell-set", _text_cell_slot("condition"))
-    table.add_slot("body-cell-remove", """
-    <q-td :props="props">
-      <q-btn v-if="props.row.remove" flat dense round size="sm" icon="close" title="Remove from the list"
-        @click.stop="$parent.$emit('matrix-remove', {uid: props.row.uid})" />
-    </q-td>
-    """)
-    table.on("matrix-change", on_change)
-    table.on("matrix-remove", on_remove)
-
-
 def wire_analyse_table(table: Any, on_change: Any, fields) -> None:
     """Each setting column edits per row; a cell is dimmed when the row's engine has no such setting.
     The headers' controls are NiceGUI elements, added by the view into the header-cell slots."""
-    table.add_slot("body-cell-active", _bool_cell_slot("active"))
+    table.add_slot("body-cell-active", _bool_cell_slot("active", applies="props.row.kind !== 'condition'"))
+    table.add_slot("body-cell-sample_id", """
+    <q-td :props="props" :class="props.row.kind === 'condition' ? 'cond-cell' : 'sample-cell'">
+      <span :class="props.row.kind === 'condition' ? 'cond-alias' : ''">{{ props.row.sample_id }}</span>
+      <span v-if="props.row.auto" class="cond-auto">{{ props.row.auto }}</span>
+    </q-td>
+    """)
+    table.add_slot("body-cell-source", """
+    <q-td :props="props"><span v-if="props.row.kind !== 'condition'" class="chip"
+      :title="props.row.source">{{ props.row.engine === 'cellpose' ? '\u25A3' : '\u25B6' }} {{ props.row.source }}</span></q-td>
+    """)
+    table.add_slot("body-cell-status", """
+    <q-td :props="props"><div v-html="props.row.status"></div></q-td>
+    """)
     kinds = dict(FIELD_KINDS)
     for field in analyse_fields(fields):
         if field not in kinds:
@@ -212,7 +290,7 @@ def _required_number_slot(field: str, *, applies: str = "true", required: bool =
         @click.stop @mousedown.stop
         @blur="$parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: props.row.{field}}})"
         @keyup.enter="$event.target.blur()" />
-      <span v-else class="muted">—</span>
+      <span v-else-if="props.row.kind !== 'condition'" class="muted">—</span>
     </q-td>
     """
 
@@ -237,7 +315,7 @@ def _bool_cell_slot(field: str, *, applies: str = "true") -> str:
         @click.stop @mousedown.stop
         @update:model-value="(val, evt) => $parent.$emit('matrix-change', {{uid: props.row.uid, field: '{field}', value: val,
                                                                            shift: !!(evt && evt.shiftKey)}})" />
-      <span v-else class="muted">—</span>
+      <span v-else-if="props.row.kind !== 'condition'" class="muted">—</span>
     </q-td>
     """
 

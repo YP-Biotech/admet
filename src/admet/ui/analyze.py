@@ -15,6 +15,7 @@ import json
 import math
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -29,17 +30,20 @@ from admet.ui.analyze_matrix import (
     ANALYSE_COLUMN_LABELS,
     DEFAULT_ANALYSE_FIELDS,
     analyse_columns,
+    analyse_condition_row,
     analyse_fields,
     analyse_row,
     apply_setting,
     cast_matrix_value,
+    condition_row,
     files_columns,
-    files_row,
     matrix_field_kind,
     results_columns,
+    sample_row,
     setting_key,
+    unassigned_row,
     wire_analyse_table,
-    wire_files_table,
+    wire_files_list,
     wire_results_table,
 )
 from admet.ui.analyze_results import (
@@ -100,13 +104,29 @@ class MatrixRow:
     protocol: str = ""                 # the run's tag or protocol
     run_time: str = ""                 # when the run began, "2026-11-17 19:30"
     replicate: int | None = None       # which replicate of its run the file is
-    condition: str = ""                      # the generation condition of the file, the user's to give
+    condition: str = ""                # the generation condition of the file: derived from its run, or given
     built: str = ""                    # the sample name built for the file, from its condition and its place in it
+    derived_condition: str = ""        # the condition its run's record gives; the alias shows beside it when it differs
+    note: str = ""                     # anything the user wants to write down about the file
+    last_result: str = ""              # the key of the last result made for it, to tell stale from never run
 
     @property
     def name(self) -> str:
-        """The sample name in force: what was written over, else the built one, else the file's own."""
+        """The sample the file belongs to: the one it was put into, else the one built from its condition and
+        replicate, else the file's own name."""
         return self.sample_id or self.built or self.own_name
+
+    @property
+    def unassigned(self) -> bool:
+        """An image folder from no run that was not put into a sample yet."""
+        return self.engine == "cellpose" and not self.run and not self.sample_id
+
+    @property
+    def rep(self) -> str:
+        """How the sample reads under its condition: "rep 2" when its name was built, else the name itself."""
+        if self.condition and self.built and self.name == self.built and "_rep" in self.built:
+            return "rep " + self.built.rsplit("_rep", 1)[1]
+        return self.name
 
     @property
     def own_name(self) -> str:
@@ -156,6 +176,8 @@ class AnalyzeWorkflowView:
         self.selected_uid = ""
         self._saved_matrix: list[dict[str, Any]] | None = None
         self.matrix: list[MatrixRow] = self._load_matrix()
+        if self.matrix:
+            self.selected_uid = self.matrix[0].uid               # something to show below the list from the start
         # The setting columns the Analyse table shows, as chosen last time.
         self.analyse_fields: list[str] = analyse_fields(
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
@@ -167,6 +189,7 @@ class AnalyzeWorkflowView:
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
+        self._running_uids: set[str] = set()            # the files of the run in progress
         self._stop: AnalysisStop | None = None          # how the run in progress is told to stop
         self.show_overlay = True
         self.show_stages = False
@@ -524,48 +547,214 @@ class AnalyzeWorkflowView:
         from nicegui import ui
 
         with ui.column().classes("panel w-full gap-2 p-3"):
-            self._render_conditions_bar()
             table = ui.table(columns=files_columns(), rows=self._files_rows(), row_key="uid").classes(
-                "slim-table matrix-table w-full").props("dense flat hide-bottom")
+                "slim-table files-list w-full").props("dense flat hide-bottom")
             self._register_table("files", table)
-            wire_files_table(table, self._handle_matrix_change, self._handle_matrix_remove)
+            wire_files_list(table, on_tick=self._handle_files_tick, on_alias=self._handle_alias,
+                            on_note=self._handle_note, on_assign=self._handle_assign, on_pick=self._handle_pick)
             self._render_use_all_header(table)
-            table.on("rowClick", self._select_row_event)
-            self._refs["files_hint"] = ui.label("No files yet. Add files… to list videos or image folders."
-                                                ).classes("muted text-xs")
+            self._refs["files_hint"] = ui.label("No files yet. Add folder… lists a folder of runs; Add files… "
+                                                "single videos or image folders.").classes("muted text-xs")
+
+    # -- samples: collection points, the files that share one -----------------------------------
+
+    def _samples(self) -> list[dict[str, Any]]:
+        """The samples in the list's order: the files that share one name, under their condition. A sample's
+        files are its video, the image folders put into it, and the live QC that came with the video."""
+        groups: dict[str, list[MatrixRow]] = {}
+        for row in self.matrix:
+            if not row.unassigned:
+                groups.setdefault(row.name, []).append(row)
+        samples = []
+        for name, rows in groups.items():
+            videos = [row for row in rows if row.engine == "opencv"]
+            primary = videos[0] if videos else rows[0]
+            condition = primary.condition or next((row.condition for row in rows if row.condition), "")
+            samples.append({"name": name, "condition": condition, "rows": rows, "videos": videos,
+                            "folders": [row for row in rows if row.engine == "cellpose"], "primary": primary})
+        # Under a condition, the samples in the order their names were built: by run time, then replicate.
+        return sorted(samples, key=lambda s: (s["primary"].run_time, s["primary"].replicate or 0,
+                                              self.matrix.index(s["primary"])))
+
+    def _conditions(self) -> list[str]:
+        """The conditions in order of their first file; "" last, the samples with none."""
+        order = list(dict.fromkeys(sample["condition"] for sample in self._samples()))
+        return [c for c in order if c] + ([""] if "" in order else [])
+
+    def _condition_alias(self, condition: str) -> str:
+        return condition or "No condition"
+
+    def _condition_auto(self, condition: str) -> str:
+        """What the run's record says the condition is, shown beside the alias when they differ."""
+        derived = {row.derived_condition for row in self.matrix if row.condition == condition and row.derived_condition}
+        return next(iter(derived), "") if derived != {condition} else ""
+
+    def _sample_options(self) -> list[dict[str, str]]:
+        """What an unassigned folder can join: every sample, named by its condition and replicate, or a new one."""
+        options = [{"label": f"{self._condition_alias(s['condition'])} · {s['primary'].rep}", "value": s["name"]}
+                   for s in self._samples()]
+        return [*options, {"label": "new sample…", "value": NEW_SAMPLE}]
+
+    def _files_rows(self) -> list[dict[str, Any]]:
+        samples = self._samples()
+        rows: list[dict[str, Any]] = []
+        for condition in self._conditions():
+            mine = [s for s in samples if s["condition"] == condition]
+            files = [row for s in mine for row in s["rows"]]
+            ticked = [row.active for row in files]
+            rows.append(condition_row(condition, self._condition_alias(condition), self._condition_auto(condition),
+                                      _count(len(mine), "sample"), active=any(ticked), mixed=any(ticked) and not all(ticked)))
+            for sample in mine:
+                ticked = [row.active for row in sample["rows"]]
+                video = sample["videos"][0] if sample["videos"] else None
+                live = self._live_qc(video, any_data=True) if video is not None else None
+                rows.append(sample_row(
+                    sample["name"], sample["primary"].rep, active=any(ticked), mixed=any(ticked) and not all(ticked),
+                    video=_short_time(video.run_time) if video is not None else "",
+                    images=", ".join(Path(row.source_path).name for row in sample["folders"]),
+                    live=f"{live.rate_hz:,.0f}/s · {live.cv_percent:.1f} %".replace(",", " ") if live else "",
+                    note=sample["primary"].note, file_uids=[row.uid for row in sample["rows"]]))
+        loose = [row for row in self.matrix if row.unassigned]
+        if loose:
+            rows.append(condition_row("__unassigned__", "Unassigned", "image folders with no sample yet",
+                                      _count(len(loose), "folder"), active=False, mixed=False, fixed=True))
+            options = self._sample_options()
+            rows += [unassigned_row(row.uid, Path(row.source_path).name, options) for row in loose]
+        return rows
+
+    def _rows_of(self, uid: str) -> list[MatrixRow]:
+        """The files a list row stands for: a condition's, a sample's, or one file."""
+        if uid.startswith("condition:"):
+            key = uid[len("condition:"):]
+            return [row for row in self.matrix if row.condition == key and not row.unassigned]
+        if uid.startswith("sample:"):
+            name = uid[len("sample:"):]
+            return [row for row in self.matrix if row.name == name and not row.unassigned]
+        return [row for row in self.matrix if row.uid == uid]
+
+    def _handle_files_tick(self, event: Any) -> None:
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        uid, value = str(payload.get("uid") or ""), bool(payload.get("value"))
+        targets = self._rows_of(uid)
+        if not targets:
+            return
+        if payload.get("shift") and self._last_tick and uid.startswith("sample:") and self._last_tick.startswith("sample:"):
+            order = [f"sample:{s['name']}" for s in self._samples()]
+            if uid in order and self._last_tick in order:
+                first, last = sorted((order.index(uid), order.index(self._last_tick)))
+                targets = [row for key in order[first:last + 1] for row in self._rows_of(key)]
+        for target in targets:
+            target.active = value
+        self._last_tick = uid
+        self._after_tick()
+
+    def _after_tick(self) -> None:
+        self._save_matrix()
+        self._sync_use_all()
+        self._sync_action_box()
+        self._notify(self._stage_summary(), "primary")
+        self._mount_sidebar()
+        self._sync_tables()                              # past 1. Files the row greys out, or comes back
+        if self._stage_id() != "files":
+            self._remount_main()                         # the plots follow the ticked files
+
+    def _handle_alias(self, event: Any) -> None:
+        """A condition's alias typed over: every file of the condition takes the new name."""
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        uid, new = str(payload.get("uid") or ""), str(payload.get("value") or "").strip()
+        if not uid.startswith("condition:") or not new:
+            self._sync_tables()
+            return
+        old = uid[len("condition:"):]
+        if new == old:
+            return
+        self._rename_condition(old, new)
+
+    def _rename_condition(self, old: str, new: str) -> None:
+        for row in self.matrix:
+            if row.condition == old:
+                row.condition = new
+        self._save_matrix()
+        self._log(f"condition: '{old}' is now '{new}'")
+        self._refresh(force_mount=True)
+
+    def _handle_note(self, event: Any) -> None:
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        rows = self._rows_of(str(payload.get("uid") or ""))
+        if not rows:
+            return
+        primary = next((row for row in rows if row.engine == "opencv"), rows[0])
+        primary.note = str(payload.get("value") or "").strip()
+        self._save_matrix()
+
+    def _handle_assign(self, event: Any) -> None:
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        row = next((item for item in self.matrix if item.uid == str(payload.get("uid") or "")), None)
+        sample = str(payload.get("sample") or "")
+        if row is None or not sample:
+            return
+        if sample == NEW_SAMPLE:
+            self._ask_sample_name(row)
+            return
+        self._assign_sample(row, sample)
+
+    def _assign_sample(self, row: MatrixRow, sample: str) -> None:
+        """The folder joins the sample: it takes the sample's name and its condition."""
+        target = next((s for s in self._samples() if s["name"] == sample), None)
+        row.sample_id = sample
+        row.condition = target["condition"] if target is not None else ""
+        self._save_matrix()
+        self._log(f"sample: {Path(row.source_path).name} put into '{sample}'")
+        self._notify(f"{Path(row.source_path).name} is in {sample}.", "success")
+        self._refresh(force_mount=True)
+
+    def _ask_sample_name(self, row: MatrixRow) -> None:
+        from nicegui import ui
+
+        with ui.dialog() as dialog, ui.card().classes("gap-2"):
+            ui.label(f"A sample of its own for {Path(row.source_path).name}").classes("text-sm")
+            name = ui.input("Sample", value="").props("dense outlined autofocus").classes("w-64")
+            name.on("keydown.enter", lambda _e: (dialog.close(), self._new_sample(row, name.value)))
+            with ui.row().classes("gap-2"):
+                ui.button("Make", on_click=lambda: (dialog.close(), self._new_sample(row, name.value))).props("dense no-caps")
+                ui.button("Cancel", on_click=dialog.close).props("dense flat no-caps")
+        dialog.open()
+
+    def _new_sample(self, row: MatrixRow, name: Any) -> None:
+        name = str(name or "").strip()
+        if not name:
+            self._notify("A sample needs a name.", "warning")
+            return
+        self._assign_sample(row, name)
+
+    def _handle_pick(self, event: Any) -> None:
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        uid = str(payload.get("uid") or "")
+        if uid.startswith("condition:"):
+            return
+        rows = self._rows_of(uid)
+        if not rows:
+            return
+        primary = next((row for row in rows if row.engine == "opencv"), rows[0])
+        if primary.uid != self.selected_uid:
+            self.selected_uid = primary.uid
+            self._refresh()
 
     # -- generation conditions: how a file's droplets were made ----------------------------------
 
     def _condition_names(self) -> list[str]:
         """Every condition a listed file is in, in the list's order."""
         return list(dict.fromkeys(row.condition for row in self.matrix if row.condition))
-
-    def _render_conditions_bar(self) -> None:
-        """Condition: choosing one ticks exactly its files. Assign… puts the ticked files into a condition,
-        named anew or chosen; Clear takes the ticked files out of theirs."""
-        from nicegui import ui
-
-        names = self._condition_names()
-        with ui.row().classes("items-center gap-2 no-wrap w-full"):
-            ui.label("Condition").classes("text-xs muted")
-            ui.select(names, value=self.current_condition if self.current_condition in names else None,
-                      on_change=self._choose_condition).props("dense outlined options-dense clearable").classes("sets-select")
-            ui.button("Assign…", on_click=self._ask_condition_name).props("dense flat no-caps").set_enabled(
-                bool(self._listed()))
-            ui.button("Clear", on_click=self._clear_condition).props("dense flat no-caps").set_enabled(
-                any(row.condition for row in self._listed()))
-
-    def _ask_condition_name(self) -> None:
-        from nicegui import ui
-
-        with ui.dialog() as dialog, ui.card().classes("gap-2"):
-            ui.label(f"Put the {len(self._listed())} ticked file(s) into the condition").classes("text-sm")
-            name = ui.input("Condition", value=self.current_condition).props("dense outlined autofocus").classes("w-64")
-            name.on("keydown.enter", lambda _e: (dialog.close(), self._assign_condition(name.value)))
-            with ui.row().classes("gap-2"):
-                ui.button("Assign", on_click=lambda: (dialog.close(), self._assign_condition(name.value))).props("dense no-caps")
-                ui.button("Cancel", on_click=dialog.close).props("dense flat no-caps")
-        dialog.open()
 
     def _assign_condition(self, name: Any) -> None:
         """The ticked files go into the condition NAME, made on the spot when new."""
@@ -626,25 +815,14 @@ class AnalyzeWorkflowView:
         order = list(dict.fromkeys(row.condition for row in rows))
         return sorted(rows, key=lambda row: order.index(row.condition))
 
-    def _files_rows(self) -> list[dict[str, Any]]:
-        return [files_row(row, count=self._count_text(row), analyzed=self._analyzed_at(row),
-                          removable=True) for row in self.matrix]
-
-    def _count_text(self, row: MatrixRow) -> str:
-        source = Path(row.source_path)
-        if row.engine == "opencv":
-            size = _known_video_size(source)
-            return str(size[0]) if size else "unreadable"
-        return str(_image_count(source))
-
     def _render_file_facts(self) -> None:
         from nicegui import ui
 
         target = self._selected_row()
         with ui.column().classes("panel w-full gap-2 p-3"):
-            ui.label("Selected file").classes("section-title")
+            ui.label("Selected sample").classes("section-title")
             if target is None:
-                ui.label("Select a file in the list to see it." if self.matrix else
+                ui.label("Select a sample in the list to see it." if self.matrix else
                          "Nothing to show until files are added.").classes("muted text-xs")
                 return
             source = Path(target.source_path)
@@ -660,15 +838,58 @@ class AnalyzeWorkflowView:
                     else:
                         ui.html(self._image_preview_html(target)).classes("w-full")
                 with ui.column().classes("gap-1 min-w-0"):
-                    ui.label(target.name).classes("text-sm font-semibold")
-                    _path_label(target.source_path)
+                    ui.label(f"{self._condition_alias(target.condition)} · {target.rep}" if target.condition
+                             else target.name).classes("text-sm font-semibold")
                     for label, value in self._facts(target, source):
                         with ui.row().classes("facts-row no-wrap gap-2"):
                             ui.label(label).classes("muted text-xs facts-key")
                             ui.label(value).classes("text-xs")
+                    ui.label("Details").classes("muted text-xs font-semibold uppercase mt-2")
+                    for label, value in self._details(target):
+                        with ui.row().classes("facts-row no-wrap gap-2"):
+                            ui.label(label).classes("muted text-xs facts-key")
+                            ui.label(value).classes("text-xs muted")
+                    _path_label(target.source_path)
+
+    def _condition_facts(self, row: MatrixRow) -> list[tuple[str, str]]:
+        """How the droplets were made, from the record the video carries, else from the run's record."""
+        channels = (_video_record(Path(row.source_path)) or {}).get("channels") if row.engine == "opencv" else None
+        if not isinstance(channels, list) or not channels:
+            channels = _run_channels(row.run) if row.run else []
+        facts: list[tuple[str, str]] = []
+        if row.condition or row.protocol:
+            facts.append(("Condition", self._condition_alias(row.condition) if row.condition else "none"))
+        if row.protocol:
+            facts.append(("Protocol", row.protocol))
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            mode = str(channel.get("mode") or "flow")
+            value = channel.get("value", channel.get("flow_ul_min") if mode == "flow" else channel.get("pressure_mbar"))
+            if value is None:
+                continue
+            facts.append((str(channel.get("label") or f"Channel {channel.get('index')}"),
+                          f"{'pressure' if mode != 'flow' else 'flow'} {float(value):g} {'mbar' if mode != 'flow' else 'µL/min'}"))
+        return facts
+
+    def _details(self, row: MatrixRow) -> list[tuple[str, str]]:
+        """What is kept out of the way: where the file came from, by name."""
+        details: list[tuple[str, str]] = []
+        if row.run:
+            details.append(("Run", Path(row.run).name))
+        record = _video_record(Path(row.source_path)) if row.engine == "opencv" else None
+        if record and record.get("step_name"):
+            details.append(("Step", f"{record.get('step')} {record['step_name']}"
+                            + (f", part {record['part']}" if record.get("part", 1) > 1 else "")))
+        elif row.replicate:
+            details.append(("Replicate", str(row.replicate)))
+        details.append(("File", Path(row.source_path).name))
+        if row.note:
+            details.append(("Note", row.note))
+        return details
 
     def _facts(self, row: MatrixRow, source: Path) -> list[tuple[str, str]]:
-        facts: list[tuple[str, str]] = [("Engine", row.engine)]
+        facts: list[tuple[str, str]] = self._condition_facts(row)
         if row.engine == "opencv":
             size = _known_video_size(source)
             if size is None:
@@ -692,9 +913,6 @@ class AnalyzeWorkflowView:
                     facts.append(("Sensor pixel", f"{float(camera['pixel_size_um']):g} µm"))
                 if record.get("frames_dropped"):
                     facts.append(("Dropped", f"{record['frames_dropped']} frames (the disk fell behind)"))
-                if record.get("step_name"):
-                    facts.append(("Step", f"{record.get('step')} {record['step_name']}"
-                                  + (f", part {record['part']}" if record.get("part", 1) > 1 else "")))
         else:
             facts.append(("Images", str(_image_count(source))))
         analyzed = self._analyzed_at(row)
@@ -808,21 +1026,47 @@ class AnalyzeWorkflowView:
         self._mount_sidebar()
 
     def _analyse_rows(self) -> list[dict[str, Any]]:
-        rows = []
-        for row in self._listed():                   # only files ticked on 1. Files go on
-            if row.engine == "opencv":
-                size = _known_video_size(Path(row.source_path))
-                frames = size[0] if size else 0
-                start, end = _row_int(row, "start_frame", 0), _row_int(row, "end_frame", 0) or frames
-                range_text = f"{start}–{end}" if frames else "—"
-                crop_text = _crop_text(row, (size[1], size[2]) if size else None)
-            else:
-                limit = _row_int(row, "frame_limit", 0)
-                range_text = f"first {limit}" if limit else "all"
-                crop_text = "—"
-            rows.append(analyse_row(row, range_text=range_text, crop_text=crop_text,
-                                    analyzed=self._analyzed_at(row)))
+        """One row per listed file, under its condition's line, in the samples' order."""
+        rows: list[dict[str, Any]] = []
+        listed = {row.uid for row in self._listed()}             # only files ticked on 1. Files go on
+        shown = 0
+        for condition in self._conditions():
+            samples = [s for s in self._samples() if s["condition"] == condition]
+            files = [row for s in samples for row in [*s["videos"], *s["folders"]] if row.uid in listed]
+            if not files:
+                continue
+            if condition or shown:
+                rows.append(analyse_condition_row(condition, self._condition_alias(condition),
+                                                  self._condition_auto(condition)))
+            for row in files:
+                rows.append(self._analyse_row(row))
+                shown += 1
+        for row in self.matrix:                                  # unassigned folders, ticked: at the end
+            if row.unassigned and row.uid in listed:
+                rows.append(self._analyse_row(row))
         return rows
+
+    def _analyse_row(self, row: MatrixRow) -> dict[str, Any]:
+        if row.engine == "opencv":
+            size = _known_video_size(Path(row.source_path))
+            frames = size[0] if size else 0
+            start, end = _row_int(row, "start_frame", 0), _row_int(row, "end_frame", 0) or frames
+            range_text = f"{start}–{end}" if frames else "—"
+            crop_text = _crop_text(row, (size[1], size[2]) if size else None)
+        else:
+            limit = _row_int(row, "frame_limit", 0)
+            range_text = f"first {limit}" if limit else "all"
+            crop_text = "—"
+        return analyse_row(row, range_text=range_text, crop_text=crop_text, status=self._file_status(row),
+                           analyzed=self._analyzed_at(row))
+
+    def _file_status(self, row: MatrixRow) -> str:
+        """Where a file stands on 2. Analyse: new, running, done as set up now, or stale, its settings changed since."""
+        if self._running and row.uid in self._running_uids:
+            return "running"
+        if self._stored_result(row) is not None:
+            return "done"
+        return "stale" if row.last_result else "new"
 
     def _render_file_editor(self) -> None:
         from nicegui import ui
@@ -1353,10 +1597,10 @@ class AnalyzeWorkflowView:
                                             origin=row.origin)})
         return rows
 
-    def _live_qc(self, row: MatrixRow):
-        """The live QC the rig wrote for this video while recording it, when the file came from a run and
-        3. Results takes live data."""
-        if not row.run or row.engine != "opencv" or "live" not in self.results_data:
+    def _live_qc(self, row: MatrixRow, *, any_data: bool = False):
+        """The live QC the rig wrote for this video while recording it, when the file came from a run and,
+        unless ANY_DATA, 3. Results takes live data."""
+        if not row.run or row.engine != "opencv" or (not any_data and "live" not in self.results_data):
             return None
         try:
             mtime = (Path(row.run) / "run.csv").stat().st_mtime
@@ -1752,11 +1996,6 @@ class AnalyzeWorkflowView:
             if self._stage_id() != "files":
                 self._remount_main()                     # the plots follow the ticked files
             return
-        if field_name == "sample_id":
-            row.sample_id = str(value or "").strip()     # written over, or cleared for the built name
-            self._save_matrix()
-            self._sync_tables()
-            return
         if field_name == "condition":
             row.condition = str(value or "").strip()
             self._save_matrix()
@@ -1847,13 +2086,15 @@ class AnalyzeWorkflowView:
                                       "replicate": _int_or_none(entry.get("replicate"))}
             if run and (not any(origin.values()) or "replicate" not in entry):
                 origin = _run_origin(run, Path(entry["path"]).name)      # listed before these were fields
+            derived = _run_condition(run) if run else ""
             rows.append(MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=engine,
                                   sample_id=str(entry.get("sample_id") or ""),
                                   cache_policy=str(entry.get("cache_policy") or "use"),
                                   active=bool(entry.get("active", True)), to_run=bool(entry.get("to_run", True)),
                                   plotted=bool(entry.get("plotted", True)),
                                   settings=dict(entry.get("settings") or {}), run=run,
-                                  condition=str(entry.get("condition") or "") or (_run_condition(run) if run else ""),
+                                  condition=str(entry.get("condition") or "") or derived, derived_condition=derived,
+                                  note=str(entry.get("note") or ""), last_result=str(entry.get("last_result") or ""),
                                   **origin))
         for row in rows:
             self._prefill_settings(row)
@@ -1866,7 +2107,8 @@ class AnalyzeWorkflowView:
         return [{"path": row.source_path, "engine": row.engine, "sample_id": row.sample_id,
                  "cache_policy": row.cache_policy, "active": row.active, "to_run": row.to_run, "plotted": row.plotted,
                  "settings": dict(row.settings), "run": row.run, "protocol": row.protocol, "run_time": row.run_time,
-                 "replicate": row.replicate, "condition": row.condition}
+                 "replicate": row.replicate, "condition": row.condition, "note": row.note,
+                 "last_result": row.last_result}
                 for row in rows]
 
     def _save_matrix(self) -> None:
@@ -1904,10 +2146,13 @@ class AnalyzeWorkflowView:
         for entry in entries:
             if str(Path(entry["path"]).resolve()) in known:
                 continue
+            run = str(entry.get("run") or "")
+            derived = _run_condition(run) if run else ""
             row = MatrixRow(uid=_uid(), source_path=str(entry["path"]), engine=str(entry["engine"]),
-                            sample_id=str(entry.get("sample_id") or ""), run=str(entry.get("run") or ""),
+                            sample_id=str(entry.get("sample_id") or ""), run=run,
                             protocol=str(entry.get("protocol") or ""), run_time=str(entry.get("run_time") or ""),
-                            replicate=_int_or_none(entry.get("replicate")))
+                            replicate=_int_or_none(entry.get("replicate")),
+                            condition=str(entry.get("condition") or "") or derived, derived_condition=derived)
             self._prefill_settings(row)
             self.matrix.append(row)
         _name_rows(self.matrix)
@@ -1928,6 +2173,7 @@ class AnalyzeWorkflowView:
         # Taken now: the refresh below deletes the button whose slot this handler runs in.
         page = ui.context.client
         self._running = True
+        self._running_uids = {row.uid for row in rows}
         self._stop = AnalysisStop()
         self._run_progress = self._run_step_progress = 0.0
         self._notify(f"Analysing {_count(len(jobs), 'file')}…", "primary")
@@ -1944,9 +2190,16 @@ class AnalyzeWorkflowView:
         finally:
             timer.cancel()
             self._running = False
+            self._running_uids = set()
             self._stop = None
             self._run_progress = self._run_step_progress = 0.0
         _cached_results.cache_clear()
+        by_path = {str(Path(row.source_path).resolve()): row for row in rows}
+        for job in report.jobs:
+            row = by_path.get(str(Path(job.source_path).resolve()))
+            if row is not None and job.status in {"complete", "cached"} and job.result_dir:
+                row.last_result = Path(job.result_dir).name        # tells stale from never run, later
+        self._save_matrix()
         stopped = [job for job in report.jobs if job.status == "stopped"]
         failed = [job for job in report.jobs if job.status not in {"complete", "cached", "stopped"}]
         done = len(report.jobs) - len(failed) - len(stopped)
@@ -2134,6 +2387,34 @@ def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, s
     return tuple(file_results(stored, iter_rows(stored.rows_path), corrections, scale_of, settings_of))
 
 
+NEW_SAMPLE = "__new__"
+
+
+def _short_time(run_time: str) -> str:
+    """"2026-11-17 19:31" as "17 Nov 19:31"."""
+    try:
+        return datetime.strptime(run_time, "%Y-%m-%d %H:%M").strftime("%-d %b %H:%M")
+    except ValueError:
+        return run_time
+
+
+@lru_cache(maxsize=256)
+def _run_channels_of(run_dir: str, _mtime: float) -> tuple[dict[str, Any], ...]:
+    from admet.core.registry import condition_channels
+    from admet.core.runs import Run
+
+    return tuple(condition_channels(Run(run_dir).read()))
+
+
+def _run_channels(run_dir: str) -> list[dict[str, Any]]:
+    """Each channel as the run's recording step set it, from the run's record."""
+    try:
+        mtime = (Path(run_dir) / "run.json").stat().st_mtime
+    except OSError:
+        return []
+    return list(_run_channels_of(run_dir, mtime))
+
+
 def _run_condition(run_dir: str) -> str:
     """A run's generation condition from its record: the one it was planned with, else the protocol with
     its setpoints; for a file listed before conditions were derived."""
@@ -2173,6 +2454,9 @@ def _name_rows(rows: list[MatrixRow]) -> None:
     or its file name."""
     by_condition: dict[str, list[MatrixRow]] = {}
     for row in rows:
+        if row.sample_id and not row.run:       # a folder put into a sample by hand: its name is given, not numbered
+            row.built = ""
+            continue
         by_condition.setdefault(row.condition, []).append(row)
     for group, members in by_condition.items():
         if group:
@@ -2747,7 +3031,7 @@ def _style() -> str:
     .log-text { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text-muted); font-family: Menlo, Consolas, monospace; font-size: 12px; }
     .slim-table .q-table th, .slim-table .q-table td { height: 30px; padding: 2px 6px; font-size: 12px; white-space: nowrap; }
     .slim-table .q-table td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }       /* the sample */
-    .matrix-table .q-table td:nth-child(6) { white-space: normal; overflow-wrap: anywhere; }     /* the file name */
+    .matrix-table .q-table td:nth-child(3) .chip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }   /* the file */
     .matrix-table .q-table td { height: 38px; }
     .matrix-table .q-field__control { min-height: 28px; }
     .matrix-table .q-field { max-width: 104px; }
@@ -2761,7 +3045,26 @@ def _style() -> str:
       border-radius: 6px; }
     .matrix-table th .col-actions { display: flex; gap: 2px; }
     .columns-select { max-width: 760px; }
-    .sets-select { min-width: 220px; max-width: 360px; }
+    .files-list .q-table td { height: 36px; }
+    .files-list .q-table td:nth-child(2) { min-width: 0; white-space: nowrap; }
+    .files-list .q-table tr.kind-condition td { background: var(--bg-raised); }
+    .files-list .q-table tr.kind-sample { cursor: pointer; }
+    .files-list .q-table tr.kind-sample:hover td { background: rgba(34, 93, 130, 0.06); }
+    .cond-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .cond-alias, .alias-input .q-field__native { font-weight: 650; }
+    .alias-input { width: 440px; max-width: 60%; } .alias-input .q-field__control { min-height: 26px; }
+    .cond-auto { color: var(--text-muted); white-space: nowrap; }
+    .cond-cell { background: var(--bg-raised); }
+    .sample-cell { padding-left: 24px !important; }
+    .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border: 1px solid var(--border);
+            border-radius: 999px; background: var(--bg-control); margin-right: 6px; white-space: nowrap; }
+    .chip.off { color: var(--text-disabled); border-style: dashed; }
+    .note-input .q-field__control { min-height: 26px; } .note-input { max-width: 240px; }
+    .sample-picker { min-width: 200px; } .sample-picker .q-field__control { min-height: 30px; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--text-disabled); margin-right: 4px; }
+    .dot-done { background: var(--success-hover); } .dot-stale { background: var(--warning); }
+    .dot-running { background: var(--accent); animation: dot-pulse 1s infinite; }
+    @keyframes dot-pulse { 50% { opacity: 0.3; } }
     .matrix-num { text-align: right; }
     .results-wrap { overflow-x: auto; }
     table.results { border-collapse: collapse; width: 100%; font-size: 12px; }

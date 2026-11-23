@@ -154,7 +154,7 @@ class Registry:
 
     def add_source(self, path: str | Path, *, engine: str = "", sample_id: str = "", run: str | Path | None = None,
                    settings: dict[str, Any] | None = None, protocol: str = "", run_time: str = "",
-                   replicate: int | None = None, condition: str = "") -> dict[str, Any] | None:
+                   replicate: int | None = None, condition: str = "", note: str = "") -> dict[str, Any] | None:
         """Know a file; None when it was known already. SAMPLE_ID empty means the name is built;
         CONDITION is the generation condition the file starts in, the one its run was planned with."""
         source = Path(path).expanduser().resolve()
@@ -164,7 +164,8 @@ class Registry:
         entry = {"path": str(source), "engine": engine or infer_engine(source), "sample_id": sample_id,
                  "cache_policy": "use", "active": True, "settings": dict(settings or {}),
                  "run": str(Path(run).resolve()) if run else "", "protocol": protocol, "run_time": run_time,
-                 "replicate": replicate, "condition": str(condition or "").strip(), "added_at": _now()}
+                 "replicate": replicate, "condition": str(condition or "").strip(), "note": str(note or ""),
+                 "added_at": _now()}
         record["sources"].append(entry)
         self.write(record)
         return dict(entry)
@@ -249,18 +250,18 @@ class Registry:
 
 
 CHANNEL_LETTERS = ("o", "c", "b")           # oil, cells, beads: the rig's channels 0, 1, 2
+CHANNEL_LABELS = ("Oil L", "Cells M", "Beads M")
 
 
-def protocol_condition(record: dict[str, Any]) -> str:
-    """The generation condition of a run, by what it did: its protocol and the oil, cells and beads setpoints of
-    its recording step, "dropseq_3n o300 c40 b40"; a pressure setpoint says so, "o600mbar". The
-    recording step is the first that records, else the first with a setpoint; nothing known is ""."""
+def condition_channels(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each channel of the run's recording step as set: index, label, mode ("flow" or "pressure") and
+    value, in µL/min or mbar. The recording step is the first that records, else the first with a
+    setpoint; a run whose protocol is unknown has none."""
     from admet.workflows.json_protocol import resolve
 
     protocol = (record.get("normalized_settings") or {}).get("protocol")
     if not isinstance(protocol, dict):
-        return ""
-    name = str(record.get("tag") or protocol.get("name") or "").strip()
+        return []
     try:
         steps = resolve(protocol).get("steps", [])
     except (TypeError, ValueError):
@@ -269,15 +270,27 @@ def protocol_condition(record: dict[str, Any]) -> str:
     recording = [s for s in with_setpoints if s.get("record") is True]
     step = (recording or with_setpoints or [None])[0]
     if step is None:
-        return name
-    parts = []
-    for index, letter in enumerate(CHANNEL_LETTERS):
+        return []
+    channels = []
+    for index, label in enumerate(CHANNEL_LABELS):
         flow = _setpoint(step.get("sensor_setpoints"), index)
         pressure = _setpoint(step.get("pressure_setpoints"), index)
         if flow is not None:
-            parts.append(f"{letter}{flow:g}")
+            channels.append({"index": index, "label": label, "mode": "flow", "value": flow})
         elif pressure is not None:
-            parts.append(f"{letter}{pressure:g}mbar")
+            channels.append({"index": index, "label": label, "mode": "pressure", "value": pressure})
+    return channels
+
+
+def protocol_condition(record: dict[str, Any]) -> str:
+    """The generation condition of a run, by what it did: its protocol and the oil, cells and beads setpoints of
+    its recording step, "dropseq_3n o300 c40 b40"; a pressure setpoint says so, "o600mbar". Nothing known is ""."""
+    protocol = (record.get("normalized_settings") or {}).get("protocol")
+    if not isinstance(protocol, dict):
+        return ""
+    name = str(record.get("tag") or protocol.get("name") or "").strip()
+    parts = [f"{CHANNEL_LETTERS[c['index']]}{c['value']:g}" + ("mbar" if c["mode"] == "pressure" else "")
+             for c in condition_channels(record)]
     return " ".join([name, *parts]).strip()
 
 
