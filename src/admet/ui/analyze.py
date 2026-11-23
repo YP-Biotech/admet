@@ -82,7 +82,7 @@ RESULT_DATA = {"opencv": "OpenCV", "cellpose": "Cellpose", "live": "Live QC"}
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
-IMAGING_DEFAULTS = {"px_to_um": 1.14, "frame_limit": 0, "detect_inclusions": True}
+IMAGING_DEFAULTS = {"px_to_um": 1.14, "frame_limit": 0, "detect_inclusions": True, "slide_height_um": 0.0}
 
 
 @dataclass
@@ -1114,6 +1114,12 @@ class AnalyzeWorkflowView:
                     limit.on("blur", lambda _e: self._set_setting(target, "frame_limit", int(_numeric(limit.value) or 0)))
                 ui.checkbox("Detect inclusions", value=_row_bool(target, "detect_inclusions", True),
                             on_change=lambda e: self._set_setting(target, "detect_inclusions", bool(e.value)))
+                with ui.row().classes("slider-label-row w-full items-center no-wrap"):
+                    ui.label("Slide height, µm (0 = none)").classes("muted text-xs font-semibold grow")
+                    slide = ui.number(value=_row_float(target, "slide_height_um", 0.0), min=0, step=1,
+                                      format="%g").props("dense borderless input-class=text-right").classes("slider-number")
+                    slide.on("blur", lambda _e: self._set_setting(target, "slide_height_um",
+                                                                   float(_numeric(slide.value) or 0.0)))
                 ui.label("Corrections").classes("muted text-xs font-semibold uppercase mt-2")
                 self._refs["corrections_table"] = ui.table(
                     columns=[{"name": "item", "label": "Correction", "field": "item", "align": "left"},
@@ -1466,7 +1472,8 @@ class AnalyzeWorkflowView:
         of a video, the frame limit and the inclusions of an image folder."""
         if row.engine == "cellpose":
             return {"frame_limit": _row_int(row, "frame_limit", 0) or None,
-                    "detect_inclusions": _row_bool(row, "detect_inclusions", True)}
+                    "detect_inclusions": _row_bool(row, "detect_inclusions", True),
+                    "slide_height_um": _row_float(row, "slide_height_um", 0.0) or None}
         return {"skip_left_pct": _row_float(row, "skip_left_pct", 0.0),
                 "skip_right_pct": _row_float(row, "skip_right_pct", 0.0),
                 "gate_pct": _row_float(row, "gate_pct", 50.0)}

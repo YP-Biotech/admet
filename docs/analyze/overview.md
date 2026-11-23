@@ -134,7 +134,14 @@ Image folders are grouped into frames by name (`…_z01_…a01f001d4.tif`: z-sli
 frame), min-projected over z and segmented with Cellpose. Cellpose is the slow part
 and runs once per folder: inclusions are always counted after it, and *Detect
 inclusions* only says whether they are shown; a *Frame limit* lower than the frames
-already segmented is applied when read, a higher one segments the new frames. The editor shows each
+already segmented is applied when read, a higher one segments the new frames. **Slide
+height** is applied when read too: a droplet wider than the chamber it is imaged
+in, 130 to 160 µm in a 100 µm slide, is flattened, and its footprint reads larger
+than the droplet was. With the height given, every droplet wider than it is taken
+as a disc of that height with a rounded rim, and its diameter is that of the
+sphere of the same volume: a 140 µm footprint in a 100 µm slide is a 130 µm
+droplet, 185 µm is 160 µm. A droplet no wider than the slide is as seen, and 0
+turns the correction off. Areas stay the footprints measured. The editor shows each
 image with the stored droplets drawn over it: a circle per droplet with its
 inclusion count. Corrections are made on the image: **click** a droplet to switch
 it off (or back on), **shift-click** to add an inclusion, **alt-click** to remove

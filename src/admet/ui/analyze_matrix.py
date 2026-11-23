@@ -23,6 +23,7 @@ SETTING_FIELDS: tuple[tuple[str, str, ParamKind, tuple[str, ...]], ...] = (
     ("gate_pct", "Gate, %", ParamKind.FLOAT, ("opencv",)),
     ("frame_limit", "Image limit", ParamKind.INTEGER, ("cellpose",)),
     ("detect_inclusions", "Detect inclusions", ParamKind.BOOLEAN, ("cellpose",)),
+    ("slide_height_um", "Slide height, µm", ParamKind.FLOAT, ("cellpose",)),
 )
 MASS_EDIT_FIELDS = SETTING_FIELDS
 # The columns the Analyse table can show, in order: every setting, and two read-only summaries.
