@@ -75,17 +75,19 @@ See [Safety](../control/safety#pressure-trips).
 What the run will be called and which set it joins, apart from the protocol's name:
 
 ```json
-"run": {"name": "Oil 3", "set": "oil"}
+"run": {"name": "Oil 3", "condition": "Oil 300"}
 ```
 
 Both are optional text of up to 80 characters; a missing or empty one is none. The
 **name** tags the run: its folder is named after it, its record, the record of each
 recording and the lists in Review and Calculations carry it, and in `admet control`
 the step takes it at Plan; without one the run is named after the protocol. The
-**set** is the group the run belongs to, one condition or one experiment across
-runs: the record and the recordings carry it, Review lists it, and `admet analyze`
-puts the run's videos into that set when it scans them, named `<set>_rep1`,
-`<set>_rep2`, … (see [Sets](../analyze/overview#sets)). In `admet control` the two
+**condition** is the generation condition the run belongs to. Left out, it is the
+protocol with its oil, cells and beads setpoints, `dropseq_3n o300 c40 b40`; give
+one to call it something else. The record and the recordings carry it, Review
+lists it, and `admet analyze` puts the run's videos into it when it scans them,
+named `<condition>_rep1`, `<condition>_rep2`, … (see
+[Generation conditions](../analyze/overview#generation-conditions)). In `admet control` the two
 are the first rows of the parameter table.
 
 ## Measurements

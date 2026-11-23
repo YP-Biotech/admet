@@ -134,9 +134,9 @@ class Registry:
 
     def add_source(self, path: str | Path, *, engine: str = "", sample_id: str = "", run: str | Path | None = None,
                    settings: dict[str, Any] | None = None, protocol: str = "", run_time: str = "",
-                   replicate: int | None = None, group: str = "") -> dict[str, Any] | None:
+                   replicate: int | None = None, condition: str = "") -> dict[str, Any] | None:
         """Know a file; None when it was known already. SAMPLE_ID empty means the name is built;
-        GROUP is the set the file starts in, the one its run was planned with."""
+        CONDITION is the generation condition the file starts in, the one its run was planned with."""
         source = Path(path).expanduser().resolve()
         record = self.read()
         if any(_canonical(entry.get("path")) == str(source) for entry in record["sources"] if isinstance(entry, dict)):
@@ -144,7 +144,7 @@ class Registry:
         entry = {"path": str(source), "engine": engine or infer_engine(source), "sample_id": sample_id,
                  "cache_policy": "use", "active": True, "settings": dict(settings or {}),
                  "run": str(Path(run).resolve()) if run else "", "protocol": protocol, "run_time": run_time,
-                 "replicate": replicate, "set": str(group or "").strip(), "added_at": _now()}
+                 "replicate": replicate, "condition": str(condition or "").strip(), "added_at": _now()}
         record["sources"].append(entry)
         self.write(record)
         return dict(entry)
@@ -201,13 +201,13 @@ class Registry:
                     if not path.is_file():
                         continue
                     # The protocol, the run's time and the replicate are fields of their own; the sample name
-                    # is built from them and the file's set unless the user writes one over it. The set is
+                    # is built from them and the file's condition unless the user writes one over it. The condition is
                     # the one the run was planned with in control, else the protocol with its setpoints,
                     # until the user puts the file elsewhere.
                     entry = self.add_source(path, engine="opencv", sample_id="", run=run_dir,
                                             protocol=protocol, run_time=run_time(run_dir),
                                             replicate=replicate_of(video, len(videos)),
-                                            group=str(record.get("set") or "") or protocol_set(record))
+                                            condition=str(record.get("condition") or "") or protocol_condition(record))
                     if entry is not None:
                         added.append(entry)
         return added
@@ -231,8 +231,8 @@ class Registry:
 CHANNEL_LETTERS = ("o", "c", "b")           # oil, cells, beads: the rig's channels 0, 1, 2
 
 
-def protocol_set(record: dict[str, Any]) -> str:
-    """The set a run belongs to by what it did: its protocol and the oil, cells and beads setpoints of
+def protocol_condition(record: dict[str, Any]) -> str:
+    """The generation condition of a run, by what it did: its protocol and the oil, cells and beads setpoints of
     its recording step, "dropseq_3n o300 c40 b40"; a pressure setpoint says so, "o600mbar". The
     recording step is the first that records, else the first with a setpoint; nothing known is ""."""
     from admet.workflows.json_protocol import resolve

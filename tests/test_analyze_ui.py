@@ -131,7 +131,7 @@ class MatrixChangeTests(unittest.TestCase):
             self.assertEqual(view.analyse_fields, ["fps", "k_sigma"])          # canonical order, unknown dropped
             self.assertEqual(_make_view(store).analyse_fields, ["fps", "k_sigma"])
             names = [column["name"] for column in analyse_columns(view.analyse_fields)]
-            self.assertEqual(names, ["active", "sample_id", "set", "protocol", "run_time", "replicate", "source",
+            self.assertEqual(names, ["active", "sample_id", "condition", "protocol", "run_time", "replicate", "source",
                                      "engine", "fps", "k_sigma", "analyzed"])
             row = analyse_row(_row(sample="v", k_sigma=4.0, microns_per_pixel=1.1), range_text="0–10",
                               crop_text="full", analyzed="")
@@ -373,31 +373,31 @@ class SetTests(unittest.TestCase):
             a, b, c = view.matrix
             c.active = False
 
-            view._assign_set("Oil A")
+            view._assign_condition("Oil A")
 
-            self.assertEqual([row.set for row in view.matrix], ["Oil A", "Oil A", ""])
-            self.assertEqual((view.current_set, view._set_names()), ("Oil A", ["Oil A"]))
-            self.assertEqual(_make_view(store).matrix[0].set, "Oil A")                  # kept with the list
-            view._assign_set("")                                                          # a name is needed
-            self.assertEqual(b.set, "Oil A")
-            view._handle_matrix_change(SimpleNamespace(args={"uid": c.uid, "field": "set", "value": " Water "}))
-            self.assertEqual((c.set, view._set_names()), ("Water", ["Oil A", "Water"]))   # typed in the column
+            self.assertEqual([row.condition for row in view.matrix], ["Oil A", "Oil A", ""])
+            self.assertEqual((view.current_condition, view._condition_names()), ("Oil A", ["Oil A"]))
+            self.assertEqual(_make_view(store).matrix[0].condition, "Oil A")                  # kept with the list
+            view._assign_condition("")                                                          # a name is needed
+            self.assertEqual(b.condition, "Oil A")
+            view._handle_matrix_change(SimpleNamespace(args={"uid": c.uid, "field": "condition", "value": " Water "}))
+            self.assertEqual((c.condition, view._condition_names()), ("Water", ["Oil A", "Water"]))   # typed in the column
             c.active = True
-            view._use_set("Oil A")                                                        # ticks exactly its files
+            view._use_condition("Oil A")                                                        # ticks exactly its files
             self.assertEqual([row.active for row in view.matrix], [True, True, False])
-            view._use_set("nothing")
+            view._use_condition("nothing")
             self.assertEqual([row.active for row in view.matrix], [True, True, False])
             c.active = True
             view.state = replace(view.state, index=2)                                    # 3. Results
             self.assertEqual([row.name for row in view._for_results()],
                              ["Oil A_rep1", "Oil A_rep2", "Water_rep1"])                 # built from the sets
-            view._clear_set()
-            self.assertEqual([row.set for row in view.matrix], ["", "", ""])
+            view._clear_condition()
+            self.assertEqual([row.condition for row in view.matrix], ["", "", ""])
 
     def test_results_group_the_files_by_set_in_the_sets_order(self):
         view = _make_view()
         view.matrix = [_row(sample="a"), _row(sample="b"), _row(sample="c"), _row(sample="d")]
-        view.matrix[0].set, view.matrix[1].set, view.matrix[2].set = "two", "one", "two"
+        view.matrix[0].condition, view.matrix[1].condition, view.matrix[2].condition = "two", "one", "two"
 
         self.assertEqual([row.sample_id for row in view._for_results()], ["a", "c", "b", "d"])
 
@@ -437,10 +437,10 @@ class StoredResultTests(unittest.TestCase):
                                                           "values": {"frame": 1, "droplet_id": 1, "centroid_x": 10.0,
                                                                      "centroid_y": 5.0, "equivalent_diameter": 20.0,
                                                                      "area": 314.0}}) + "\n")
-            clip.set, clip.replicate = "oil", 2
+            clip.condition, clip.replicate = "oil", 2
             view._save_matrix()                                                          # names follow the set
             result, = view._results()
-            self.assertEqual((result.set, result.replicate, result.sample_id), ("oil", 2, "v"))   # the row's, as written
+            self.assertEqual((result.condition, result.replicate, result.sample_id), ("oil", 2, "v"))   # the row's, as written
             clip.sample_id = ""
             view._save_matrix()
             self.assertEqual(view._results()[0].sample_id, "oil_rep1")                   # built, without a re-read
@@ -541,7 +541,7 @@ class BuiltNameTests(unittest.TestCase):
                           run_time=f"2026-11-17 19:3{n}", replicate=n) for n in (1, 2, 3)]
         rows.append(MatrixRow(uid=_uid(), source_path="/loose.avi", engine="opencv", sample_id=""))
         self.assertEqual([row.name for row in rows], ["dropseq_rep1", "dropseq_rep2", "dropseq_rep3", "loose"])
-        rows[0].set = rows[2].set = "oil"                                                 # the set numbers its files
+        rows[0].condition = rows[2].condition = "oil"                                                 # the set numbers its files
         rows[1].sample_id = "control"
         _name_rows(rows)
         self.assertEqual([row.name for row in rows], ["oil_rep1", "control", "oil_rep2", "loose"])

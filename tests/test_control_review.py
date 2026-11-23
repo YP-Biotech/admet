@@ -29,7 +29,7 @@ class ReviewTests(unittest.TestCase):
         self.root = Path(tmp.name)
         self.run = archive(tmp.name, "gravimetry")
         record = self.run / "run.json"
-        record.write_text(json.dumps({**json.loads(record.read_text()), "set": "oil"}))   # planned into a set
+        record.write_text(json.dumps({**json.loads(record.read_text()), "condition": "oil"}))   # planned into a set
 
     def test_a_recorded_run_reads_its_channels_and_step_marks(self):
         run = project_run(self.run, "gravimetry")

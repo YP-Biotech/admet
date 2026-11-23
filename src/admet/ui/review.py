@@ -151,7 +151,7 @@ def _bin(t: np.ndarray, y: np.ndarray, size: float) -> tuple[np.ndarray, np.ndar
     return np.bincount(index, weights=t)[used] / counts[used], np.bincount(index, weights=y)[used] / counts[used]
 
 
-COLUMNS = ("", "Colour", "Run", "Set", "Recorded", "State", "Duration", "Droplets", "Rate, /s", "CV, %")
+COLUMNS = ("", "Colour", "Run", "Condition", "Recorded", "State", "Duration", "Droplets", "Rate, /s", "CV, %")
 
 
 class _Crosshair:
@@ -218,7 +218,7 @@ class ReviewPanel(QWidget):
         self._pg = pg
         self.project = None
         self._runs: dict[str, ReviewRun] = {}
-        # key -> (kind, run name, set, recorded, state, duration): project runs, then files loaded by hand
+        # key -> (kind, run name, condition, recorded, state, duration): project runs, then files loaded by hand
         self._sources: dict[str, tuple[str, str, str, str, str, str]] = {}
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -318,7 +318,7 @@ class ReviewPanel(QWidget):
         checked = set(self.checked_keys())
         project = {}
         for run in recorded_runs(self.project):
-            project[run["directory"]] = ("project", run["name"], run["set"], run["at"][:16].replace("T", " "),
+            project[run["directory"]] = ("project", run["name"], run["condition"], run["at"][:16].replace("T", " "),
                                          run["state"], _duration(Path(run["directory"])))
         self._sources = project | {k: v for k, v in self._sources.items() if v[0] == "file"}
         self.table.blockSignals(True)

@@ -44,7 +44,7 @@ def recorded_runs(data_dir):
     """The finished runs of a data folder, newest first."""
     if not data_dir:
         return []
-    return [{"directory": run["directory"], "name": run["name"], "set": run["set"],
+    return [{"directory": run["directory"], "name": run["name"], "condition": run["condition"],
              "at": run["completed_at"] or run["at"], "state": run["state"]}
             for run in RunStore(data_dir).list() if run["state"] in FINISHED]
 
