@@ -188,6 +188,31 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(infer_engine(images), "cellpose")
             self.assertEqual(len(content_key(images)), 24)
 
+    def test_an_image_folder_is_known_by_its_files_names_sizes_and_times_without_reading_them(self):
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp) / "imgs"
+            images.mkdir()
+            for name in ("a01f001d4.tif", "a01f002d4.tif"):
+                (images / name).write_bytes(bytes(1024))
+            os.utime(images / "a01f001d4.tif", ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+            os.utime(images, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+            key = content_key(images)
+            same_size = (images / "a01f001d4.tif").stat()
+            (images / "a01f001d4.tif").write_bytes(bytes(range(256)) * 4)            # other pixels, same size
+            os.utime(images / "a01f001d4.tif", ns=(same_size.st_mtime_ns, same_size.st_mtime_ns))
+            os.utime(images, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+            self.assertEqual(content_key(images), key)                                  # no byte was read
+            copy = Path(tmp) / "elsewhere" / "imgs"
+            shutil.copytree(images, copy)                                                # keeps names, sizes, times
+            self.assertEqual(content_key(copy), key)                                     # a copy finds its result
+            (images / "a01f003d4.tif").write_bytes(bytes(1024))                          # one more image
+            self.assertNotEqual(content_key(images), key)
+            os.utime(copy / "a01f002d4.tif", ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+            os.utime(copy, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))  # another acquisition's time
+            self.assertNotEqual(content_key(copy), key)
+
     def test_a_damaged_registry_reads_as_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Registry(Path(tmp) / "analyze")
