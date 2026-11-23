@@ -444,7 +444,8 @@ class StoredResultTests(unittest.TestCase):
             clip.sample_id = ""
             view._save_matrix()
             self.assertEqual(view._results()[0].sample_id, "oil_rep1")                   # built, without a re-read
-            self.assertEqual(view._read_settings(folder), {"frame_limit": 3, "detect_inclusions": True})
+            self.assertEqual(view._read_settings(folder),
+                             {"frame_limit": 3, "detect_inclusions": True, "slide_height_um": None})
 
 
 class StopTests(unittest.TestCase):

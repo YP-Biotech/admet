@@ -312,6 +312,19 @@ def _reservoir(acc: dict[str, Any], point: tuple[float, float, float, float]) ->
         acc["points"][slot] = point
 
 
+def unsquashed_diameter(footprint_um: float, height_um: float) -> float:
+    """The diameter a droplet had before a slide lower than it flattened it: the sphere of the same
+    volume as a disc of that footprint, HEIGHT thick, with a rounded rim of half that height. A
+    droplet no wider than the slide is as seen."""
+    footprint, height = float(footprint_um), float(height_um)
+    if height <= 0 or footprint <= height:
+        return footprint
+    rim = height / 2                                  # the rim is a half-torus of this tube radius
+    flat = footprint / 2 - rim                        # around a flat middle of this radius
+    volume = math.pi * (2 * rim * flat * flat + math.pi * rim * rim * flat + 4 / 3 * rim ** 3)
+    return (6 * volume / math.pi) ** (1 / 3)
+
+
 def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> FileResult:
     engine = stored.engine or key[0]
     job, context = acc["job"], acc["context"]
@@ -324,6 +337,9 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
         + [d * to_um for d in acc["loose_d"]]
     areas = [median(e["a"]) * to_um * to_um for e in acc["per_droplet"].values() if e["a"]] \
         + [a * to_um * to_um for a in acc["loose_a"]]
+    slide = _num(acc["read"].get("slide_height_um")) or 0.0
+    if engine == "cellpose" and slide > 0:          # imaged in a slide lower than the droplets: unsquashed
+        diameters = [unsquashed_diameter(d, slide) for d in diameters]
     spans: list[tuple[float, float, float]] = []
     arrivals: list[float] = []
     speeds: list[float] = []
@@ -379,6 +395,8 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
     points = sorted(acc["points"])
     settings = _run_settings(stored, analysis, _as_dict(context.get("detection")))
     settings.update({"microns_per_pixel": scale, "fps": fps} if engine != "cellpose" else {"px_to_um": scale})
+    if engine == "cellpose" and slide > 0:
+        settings["slide_height_um"] = slide
     return FileResult(
         run=stored.run_name,
         sample_id=stored.sample_id or str(job.get("sample_id") or key[1]),
@@ -416,7 +434,8 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
 def settings_summary(settings: dict[str, Any]) -> str:
     """The settings a result was made with, in one line."""
     parts = []
-    for key, label, unit in (("microns_per_pixel", "µm/px", ""), ("fps", "fps", ""), ("k_sigma", "k", "")):
+    for key, label, unit in (("microns_per_pixel", "µm/px", ""), ("fps", "fps", ""), ("k_sigma", "k", ""),
+                             ("slide_height_um", "slide", " µm")):
         if settings.get(key) not in {None, ""}:
             parts.append(f"{label} {_fmt(settings[key])}{unit}")
     if settings.get("start_frame") is not None or settings.get("end_frame"):

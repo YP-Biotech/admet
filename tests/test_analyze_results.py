@@ -182,6 +182,30 @@ class FileResultTests(unittest.TestCase):
         self.assertEqual(len(result.detections), 4)
         self.assertEqual(result.rate_hz, 0.0)
 
+    def test_a_slide_lower_than_the_droplets_unsquashes_their_diameters(self):
+        from admet.ui.analyze_results import unsquashed_diameter
+
+        self.assertEqual(unsquashed_diameter(100.0, 100.0), 100.0)                   # as wide as the slide: as seen
+        self.assertEqual(unsquashed_diameter(90.0, 100.0), 90.0)
+        self.assertEqual(unsquashed_diameter(140.0, 0.0), 140.0)                     # no slide given
+        self.assertAlmostEqual(unsquashed_diameter(140.0, 100.0), 129.7, places=1)   # a 130 µm droplet, flattened
+        self.assertAlmostEqual(unsquashed_diameter(185.2, 100.0), 160.0, places=1)
+        rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
+                 "values": {"frame": 1, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
+                            "diameter_um": diameter, "area_um2": 15000.0, "inclusions": 1}}
+                for droplet, diameter in enumerate((140.0, 100.0, 185.2))]
+        run = _imaging(droplet_count=3)
+        read = {("cellpose", "/p/study/media/imgs"): {"slide_height_um": 100.0}}
+
+        result, = file_results(run, rows, settings=read)
+
+        self.assertEqual([round(d, 1) for d in result.diameters], [129.7, 100.0, 160.0])
+        self.assertEqual(result.settings["slide_height_um"], 100.0)
+        self.assertEqual(result.areas, (15000.0, 15000.0, 15000.0))                   # footprints, as measured
+        plain, = file_results(run, rows)
+        self.assertEqual(plain.diameters, (140.0, 100.0, 185.2))
+        self.assertNotIn("slide_height_um", plain.settings)
+
     def test_hand_corrections_switch_droplets_off_and_change_inclusions(self):
         rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
                  "values": {"frame": 1, "droplet_id": droplet, "center_x": 10.0 * droplet, "center_y": 5.0,
