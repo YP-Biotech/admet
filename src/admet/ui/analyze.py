@@ -39,6 +39,7 @@ from admet.ui.analyze_matrix import (
     files_columns,
     matrix_field_kind,
     results_columns,
+    results_condition_row,
     sample_row,
     setting_key,
     unassigned_row,
@@ -47,14 +48,16 @@ from admet.ui.analyze_matrix import (
     wire_results_table,
 )
 from admet.ui.analyze_results import (
-    AGGREGATED_FIELDS,
     FileResult,
     LiveQC,
-    RESULT_LABELS,
     RESULT_SECTIONS,
+    SAMPLE_FIELDS,
+    SAMPLE_HTML,
+    SAMPLE_LABELS,
+    SAMPLE_TICKS,
+    sample_cells,
     RunPlot,
     StoredResult,
-    aggregated_cells,
     corrected_inclusions,
     correction_key,
     corrections_summary,
@@ -62,13 +65,11 @@ from admet.ui.analyze_results import (
     export_csv_zip,
     file_results,
     iter_rows,
-    live_cells,
     live_qc,
     load_stored_result,
     local_time,
     plot_styles,
     result_charts,
-    results_cells,
     run_label,
     stale_window,
     runs_charts,
@@ -82,7 +83,6 @@ from admet.workflows.analyze_runner import AnalysisStop, AnalyzeBatchReport, Ana
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 # Per-file detection settings a video row starts with and "Reset file settings" goes back to.
-RESULT_DATA = {"opencv": "OpenCV", "cellpose": "Cellpose", "live": "Live QC"}
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
@@ -98,7 +98,8 @@ class MatrixRow:
     cache_policy: str = "use"
     active: bool = True                # ticked on 1. Files: goes on to the stages after it
     to_run: bool = True                # ticked on 2. Analyse: in the run
-    plotted: bool = True               # ticked on 3. Results: in the plots and the export
+    plotted: bool = True               # ticked on 3. Results: its analysis in the plots and the export
+    live_plotted: bool = True          # ticked on 3. Results: the live QC of this video in the plots and the export
     settings: dict[str, Any] = field(default_factory=dict)
     run: str = ""                      # the run folder the file came from, when it did
     protocol: str = ""                 # the run's tag or protocol
@@ -183,9 +184,6 @@ class AnalyzeWorkflowView:
             self.store.view_setting("analyse_columns", list(DEFAULT_ANALYSE_FIELDS))) or list(DEFAULT_ANALYSE_FIELDS)
         self.current_condition = str(self.store.view_setting("current_condition", "") or "")   # the set in use
         self._last_tick = ""                            # the Use box clicked last, for shift-click ranges
-        # The kinds of data 3. Results uses, as chosen last time: the engines' analyses and the rig's live QC.
-        chosen = self.store.view_setting("results_data", list(RESULT_DATA))
-        self.results_data: set[str] = {kind for kind in RESULT_DATA if kind in (chosen or [])}
         self._run_progress = 0.0
         self._run_step_progress = 0.0
         self._running = False
@@ -273,7 +271,7 @@ class AnalyzeWorkflowView:
         return structure_signature(self._stage_id(), self.selected_uid, tuple(self.store.roots()),
                                    tuple(self.analyse_fields),
                                    tuple(row.uid for row in self.matrix), self._running,
-                                   tuple(sorted(self.results_data)), self.current_condition)
+                                   self.current_condition)
 
     def _mount_stage(self) -> None:
         for key in ("action_box_body", "action_panel_body", "main_body", "log_body"):
@@ -365,7 +363,7 @@ class AnalyzeWorkflowView:
         results, lives = self._results(), self._lives()
         if not results and not lives:
             return 0.0, "nothing analysed yet"
-        return 1.0, f"{_count(len(results), 'result')}" + (f" · {len(lives)} live" if lives else "")
+        return 1.0, f"{_count(len(results), 'result')} in the plots" + (f" · {len(lives)} live" if lives else "")
 
     def _mount_action_panel(self) -> None:
         body = self._refs["action_panel_body"]
@@ -407,7 +405,7 @@ class AnalyzeWorkflowView:
             self._refs["log"] = ui.html("").classes("log-text w-full")
 
     def _sync_tables(self) -> None:
-        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._aggregated_rows}
+        row_sources = {"files": self._files_rows, "analyse": self._analyse_rows, "results": self._sample_rows}
         for key, tables in self._table_refs.items():
             tables[:] = [table for table in tables if not table.is_deleted]
             source = row_sources.get(key)
@@ -607,7 +605,7 @@ class AnalyzeWorkflowView:
             for sample in mine:
                 ticked = [row.active for row in sample["rows"]]
                 video = sample["videos"][0] if sample["videos"] else None
-                live = self._live_qc(video, any_data=True) if video is not None else None
+                live = self._live_qc(video) if video is not None else None
                 rows.append(sample_row(
                     sample["name"], sample["primary"].rep, active=any(ticked), mixed=any(ticked) and not all(ticked),
                     video=_short_time(video.run_time) if video is not None else "",
@@ -1506,37 +1504,83 @@ class AnalyzeWorkflowView:
     # -- 3. Results -----------------------------------------------------------------------
 
     def _render_results_table(self) -> None:
-        """The one table of the stage: a line per file with anything to show, with Use, which every
-        section below follows; an unticked file stays here but leaves the plots and export."""
+        """The one table of the stage: a line per sample under its condition, with a tick per source it
+        has, OpenCV, Cellpose and Live; every section below and the export follow the ticks."""
         from nicegui import ui
 
-        rows = self._aggregated_rows()
+        rows = self._sample_rows()
         with ui.column().classes("panel w-full gap-2 p-3"):
-            with ui.row().classes("items-center gap-4 no-wrap"):
-                ui.label("Data").classes("text-xs muted")
-                for kind, label in RESULT_DATA.items():
-                    box = ui.checkbox(label, value=kind in self.results_data).props("dense")
-                    box.on("update:model-value", lambda event, kind=kind: self._set_results_data(kind, bool(event.args)),
-                           [None])
             if not rows:
-                ui.label("No ticked file is analysed yet or has the rig's live QC." if self.results_data
-                         else "No data chosen.").classes("muted text-xs")
+                ui.label("No ticked sample is analysed yet or has the rig's live QC.").classes("muted text-xs")
                 return
-            table = ui.table(columns=results_columns(AGGREGATED_FIELDS, RESULT_LABELS), rows=rows,
+            table = ui.table(columns=results_columns(SAMPLE_FIELDS, SAMPLE_LABELS), rows=rows,
                              row_key="uid").classes("slim-table matrix-table results-table w-full").props(
                 "dense flat hide-bottom")
             self._register_table("results", table)
-            wire_results_table(table, self._handle_matrix_change, AGGREGATED_FIELDS)
-            self._render_use_all_header(table)
+            wire_results_table(table, self._handle_results_tick, SAMPLE_HTML, SAMPLE_TICKS)
 
-    def _set_results_data(self, kind: str, chosen: bool) -> None:
-        """A kind of data taken into 3. Results or left out, for every table, plot and export; remembered."""
-        wanted = (self.results_data | {kind}) if chosen else (self.results_data - {kind})
-        if wanted == self.results_data:
+    def _sample_rows(self) -> list[dict[str, Any]]:
+        """One row per listed sample with anything to show, under its condition's line: the video's analysis,
+        the image folder's, the rig's live QC, each with its tick."""
+        results = self._results(ticked_only=False)
+        lives = self._lives(ticked_only=False)
+        styles = plot_styles([*results, *lives], listed=[row.condition or row.name for row in self.matrix])
+        by_key = {_result_key(result): result for result in results}
+        rows: list[dict[str, Any]] = []
+        for condition in self._conditions():
+            block: list[dict[str, Any]] = []
+            for sample in (s for s in self._samples() if s["condition"] == condition):
+                listed = [row for row in sample["rows"] if row.active]
+                if not listed:
+                    continue
+                video = next((row for row in sample["videos"] if row.active), None)
+                folders = [row for row in sample["folders"] if row.active]
+                opencv = by_key.get(self._row_key(video)) if video is not None else None
+                folder = next((row for row in folders if by_key.get(self._row_key(row)) is not None), None)
+                cellpose = by_key.get(self._row_key(folder)) if folder is not None else None
+                live = self._live_qc(video) if video is not None else None
+                if opencv is None and cellpose is None and live is None:
+                    continue
+                anchor = opencv if opencv is not None else cellpose if cellpose is not None else live
+                status = {"opencv": self._missing(video), "cellpose": self._missing(folders[0]) if folders else "—"}
+                ticks = {"opencv": video.plotted if video is not None else False,
+                         "cellpose": folder.plotted if folder is not None else False,
+                         "live": video.live_plotted if video is not None else False}
+                block.append({"uid": f"sample:{sample['name']}", "kind": "sample",
+                              **sample_cells(sample["primary"].rep, styles.get((anchor.run, anchor.source_path)),
+                                             opencv, cellpose, live, ticks, status=status)})
+            if block:
+                rows.append(results_condition_row(condition, self._condition_alias(condition),
+                                                  self._condition_auto(condition), SAMPLE_HTML))
+                rows.extend(block)
+        return rows
+
+    def _missing(self, row: MatrixRow | None) -> str:
+        """Why a source has no number: the file is not run, or its settings changed since."""
+        if row is None:
+            return "—"
+        return {"stale": "stale", "new": "not run", "running": "running"}.get(self._file_status(row), "—")
+
+    def _handle_results_tick(self, event: Any) -> None:
+        """A tick on a sample's source: the sample's files take it, the plots and the export follow."""
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
             return
-        self.results_data = wanted
-        self.store.set_view_setting("results_data", [kind for kind in RESULT_DATA if kind in wanted])
-        self._refresh(force_mount=True)
+        uid, field, value = str(payload.get("uid") or ""), str(payload.get("field") or ""), bool(payload.get("value"))
+        rows = self._rows_of(uid)
+        if not rows or field not in SAMPLE_TICKS:
+            return
+        for row in rows:
+            if field == "opencv" and row.engine == "opencv":
+                row.plotted = value
+            elif field == "cellpose" and row.engine == "cellpose":
+                row.plotted = value
+            elif field == "live" and row.engine == "opencv":
+                row.live_plotted = value
+        self._save_matrix()
+        self._sync_action_box()
+        self._sync_tables()
+        self._remount_main()
 
     def _result_sections(self) -> list[str]:
         """The sections with something to show, in their order: aggregated, then the engines' own, then
@@ -1553,54 +1597,9 @@ class AnalyzeWorkflowView:
         hues follow the whole list's order, so a file keeps its colour whichever are ticked."""
         return plot_styles([*self._results(), *self._lives()], listed=[row.condition or row.name for row in self.matrix])
 
-    def _results_rows(self, engine: str | None = None) -> list[dict[str, Any]]:
-        """One row per listed file with a stored result (of the engine), ticked or not; the ticked ones
-        in their plot colour."""
-        styles = self._styles()
-        by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
-        rows = []
-        for row in self._for_results():
-            result = by_key.get(self._row_key(row))
-            if result is None or (engine and result.engine != engine):
-                continue
-            style = styles.get((result.run, result.source_path))
-            colour = style.color if style is not None else "var(--text-disabled)"
-            rows.append({"uid": row.uid, "active": row.plotted, **results_cells(result, colour, active=row.plotted)})
-        return rows
-
-    def _live_rows(self) -> list[dict[str, Any]]:
-        """One row per listed video the rig measured while recording, named as the file is."""
-        styles = self._styles()
-        rows = []
-        for row in self._for_results():
-            live = self._live_qc(row)
-            if live is None:
-                continue
-            style = styles.get((live.run, live.source_path))
-            colour = style.color if style is not None else "var(--text-disabled)"
-            rows.append({"uid": f"{row.uid}:live", "active": row.plotted,
-                         **live_cells(live, row.name, colour, active=row.plotted)})
-        return rows
-
-    def _aggregated_rows(self) -> list[dict[str, Any]]:
-        """One row per listed file with anything to show: the analysis's numbers, the rig's live ones under."""
-        styles = self._styles()
-        by_key = {_result_key(result): result for result in self._results(ticked_only=False)}
-        rows = []
-        for row in self._for_results():
-            result, live = by_key.get(self._row_key(row)), self._live_qc(row)
-            if result is None and live is None:
-                continue
-            key = (result.run, result.source_path) if result is not None else (live.run, live.source_path)
-            rows.append({"uid": row.uid, "active": row.plotted,
-                         **aggregated_cells(row.name, styles.get(key), result, live, active=row.plotted,
-                                            origin=row.origin)})
-        return rows
-
-    def _live_qc(self, row: MatrixRow, *, any_data: bool = False):
-        """The live QC the rig wrote for this video while recording it, when the file came from a run and,
-        unless ANY_DATA, 3. Results takes live data."""
-        if not row.run or row.engine != "opencv" or (not any_data and "live" not in self.results_data):
+    def _live_qc(self, row: MatrixRow):
+        """The live QC the rig wrote for this video while recording it, when the file came from a run."""
+        if not row.run or row.engine != "opencv":
             return None
         try:
             mtime = (Path(row.run) / "run.csv").stat().st_mtime
@@ -1608,14 +1607,21 @@ class AnalyzeWorkflowView:
             return None
         return _live_qc_of(row.run, str(Path(row.source_path)), mtime)
 
-    def _lives(self) -> list[LiveQC]:
-        """The live QC of every ticked video that has one, named as the file is: data to view like a result."""
+    def _lives(self, *, ticked_only: bool = True) -> list[LiveQC]:
+        """The live QC of every listed video that has one -- the ones ticked Live unless asked otherwise --
+        named as the file is: data to view like a result."""
         lives = []
-        for row in self._shown():
+        for row in self.matrix:
+            if not row.active or (ticked_only and not row.live_plotted):
+                continue
             live = self._live_qc(row)
             if live is not None:
                 lives.append(replace(live, sample_id=row.name, replicate=row.replicate, condition=row.condition))
         return lives
+
+    def _live_shown(self) -> list[MatrixRow]:
+        """The videos whose live QC is in the plots: listed past 1. Files and ticked Live on 3. Results."""
+        return [row for row in self.matrix if row.active and row.live_plotted and self._live_qc(row) is not None]
 
     def _render_results_plots(self) -> None:
         """One page: the aggregated plots, then a section of plots per engine, then the rig's live QC
@@ -1656,9 +1662,8 @@ class AnalyzeWorkflowView:
     def _live_runs(self) -> list[tuple[str, str]]:
         """The runs of the ticked videos the rig measured, as (folder, name), in the list's order."""
         runs: dict[str, str] = {}
-        for row in self._shown():
-            if row.run and self._live_qc(row) is not None:
-                runs.setdefault(row.run, run_label(row.run))
+        for row in self._live_shown():
+            runs.setdefault(row.run, run_label(row.run))
         return list(runs.items())
 
     def _run_plots(self) -> list[RunPlot]:
@@ -1667,8 +1672,8 @@ class AnalyzeWorkflowView:
         plots = []
         for run_dir, label in self._live_runs():
             files = {}
-            for row in self._shown():
-                if row.run == run_dir and self._live_qc(row) is not None:
+            for row in self._live_shown():
+                if row.run == run_dir:
                     files[Path(row.source_path).stem] = (
                         row.name, styles.get((Path(row.run).name, str(Path(row.source_path)))))
             plots.append(RunPlot(run_dir, label, files))
@@ -1707,8 +1712,7 @@ class AnalyzeWorkflowView:
             # The name, the condition and the replicate are the row's, stamped on after the parse: renaming or
             # moving a file between sets re-reads nothing.
             results.extend(replace(result, sample_id=row.name, condition=row.condition, replicate=row.replicate)
-                           for result in _cached_results(stored, fixes, scales)
-                           if _result_key(result) in listed and result.engine in self.results_data)
+                           for result in _cached_results(stored, fixes, scales) if _result_key(result) in listed)
         return results
 
     def _read_settings(self, row: MatrixRow) -> dict[str, Any]:
@@ -1750,7 +1754,7 @@ class AnalyzeWorkflowView:
             self._notify("Nothing to export yet.", "warning")
             self._mount_sidebar()
             return
-        live = {self._row_key(row): measured for row in self.matrix if (measured := self._live_qc(row)) is not None}
+        live = {self._row_key(row): measured for row in self._live_shown() if (measured := self._live_qc(row)) is not None}
         ui.download.content(export_csv_zip(self._stored_results(), results, self._corrections(), live), "analysis.zip")
         self._log(f"export: {len(results)} result(s) as CSV")
         self._notify(f"Exported {_count(len(results), 'result')} as CSV.", "success")
@@ -2092,6 +2096,7 @@ class AnalyzeWorkflowView:
                                   cache_policy=str(entry.get("cache_policy") or "use"),
                                   active=bool(entry.get("active", True)), to_run=bool(entry.get("to_run", True)),
                                   plotted=bool(entry.get("plotted", True)),
+                                  live_plotted=bool(entry.get("live_plotted", True)),
                                   settings=dict(entry.get("settings") or {}), run=run,
                                   condition=str(entry.get("condition") or "") or derived, derived_condition=derived,
                                   note=str(entry.get("note") or ""), last_result=str(entry.get("last_result") or ""),
@@ -2108,7 +2113,7 @@ class AnalyzeWorkflowView:
                  "cache_policy": row.cache_policy, "active": row.active, "to_run": row.to_run, "plotted": row.plotted,
                  "settings": dict(row.settings), "run": row.run, "protocol": row.protocol, "run_time": row.run_time,
                  "replicate": row.replicate, "condition": row.condition, "note": row.note,
-                 "last_result": row.last_result}
+                 "last_result": row.last_result, "live_plotted": row.live_plotted}
                 for row in rows]
 
     def _save_matrix(self) -> None:

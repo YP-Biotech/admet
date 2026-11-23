@@ -11,10 +11,10 @@ from pathlib import Path
 from admet.ui import theme
 from admet.ui.analyze_results import (
     FileResult,
-    AGGREGATED_FIELDS,
+    SAMPLE_FIELDS,
     LiveQC,
     StoredResult,
-    aggregated_cells,
+    sample_cells,
     live_cells,
     live_qc,
     results_cells,
@@ -301,9 +301,8 @@ class SetStyleTests(unittest.TestCase):
         self.assertEqual({hue(r) for r in water}, {1})
         self.assertEqual(hue(loose), 2)                                                   # no set: by its sample name
         self.assertEqual(sorted(styles[(r.run, r.source_path)].shade for r in oil), [0, 1, 2])   # replicates: shades
-        cells = aggregated_cells("o1", styles[(oil[0].run, oil[0].source_path)], oil[0], None)
-        self.assertIn("oil", cells["condition"])
-        self.assertIn("—", aggregated_cells("l", None, loose, None)["condition"])
+        cells = sample_cells("rep 1", styles[(oil[0].run, oil[0].source_path)], oil[0], None, None, {"opencv": True})
+        self.assertIn(styles[(oil[0].run, oil[0].source_path)].color, cells["sample"])   # the line in its colour
 
 
 class ChartTests(unittest.TestCase):
@@ -324,17 +323,25 @@ class ChartTests(unittest.TestCase):
         self.assertNotEqual(chart["series"][0]["itemStyle"]["color"], chart["series"][1]["itemStyle"]["color"])
         self.assertEqual(sum(chart["series"][0]["data"]), 3)
 
-    def test_cv_chart_has_one_bar_per_sample_in_its_colour(self):
+    def test_cv_chart_has_one_place_per_sample_and_a_bar_per_source(self):
         chart = cv_chart([_result(sample_id="a", source_path="/a.avi", diameters=(10.0, 10.0, 12.0)),
                           _result(sample_id="b", source_path="/b.avi", diameters=(20.0, 20.0)),
                           _result(sample_id="none", source_path="/n.avi")])
 
         self.assertEqual(chart["xAxis"]["data"], ["a", "b"])
+        self.assertEqual([series["name"] for series in chart["series"]], ["OpenCV"])
         values = [point["value"] for point in chart["series"][0]["data"]]
         self.assertAlmostEqual(values[0], 8.84, places=2)
         self.assertEqual(values[1], 0.0)
         self.assertNotEqual(chart["series"][0]["data"][0]["itemStyle"]["color"],
                             chart["series"][0]["data"][1]["itemStyle"]["color"])
+        both = cv_chart([_result(sample_id="a", source_path="/a.avi", diameters=(10.0, 10.0, 12.0)),
+                         _result(sample_id="a", engine="cellpose", source_path="/a_imgs", diameters=(10.0, 11.0))])
+        self.assertEqual(both["xAxis"]["data"], ["a"])                                    # one place: the sample
+        self.assertEqual([series["name"] for series in both["series"]], ["OpenCV", "Cellpose"])
+        self.assertEqual(both["series"][1]["data"][0]["itemStyle"]["opacity"], 0.65)       # the folder's bar, lighter
+        self.assertEqual(both["series"][1]["data"][0]["itemStyle"]["color"],
+                         both["series"][0]["data"][0]["itemStyle"]["color"])               # in the sample's colour
 
     def test_only_plots_with_data_for_the_ticked_files_are_shown(self):
         video = _result(sample_id="v", diameters=(10.0, 11.0), spans=((1, 0, 5),), arrivals_s=(0.0, 0.1),
@@ -513,7 +520,7 @@ class LiveQCTests(unittest.TestCase):
         self.assertLess(timeline[1]["lineStyle"]["width"], timeline[0]["lineStyle"]["width"])   # the live line, thinner
         per_sample = charts["cv_per_sample"]
         self.assertEqual(per_sample["xAxis"]["data"], ["oil"])                                  # one place per file
-        self.assertEqual([series["name"] for series in per_sample["series"]], ["analysed", "live"])
+        self.assertEqual([series["name"] for series in per_sample["series"]], ["OpenCV", "Live"])
         self.assertEqual(per_sample["series"][1]["data"][0]["value"], 3.4)
         self.assertIn("decal", per_sample["series"][1]["data"][0]["itemStyle"])                # the live bar, hatched
         self.assertEqual(charts["diameter_over_time"]["series"][1]["data"][0], [0.0, 124.0])
@@ -590,26 +597,32 @@ class LiveQCTests(unittest.TestCase):
         self.assertEqual([s["data"][0][0] for s in pressure], [0.4, 0.4])                 # no events: from the bursts' span
         self.assertEqual([s["name"] for s in charts["droplets"]["series"]], ["oil", "water"])
 
-    def test_the_aggregated_line_sets_the_live_number_under_the_analysis(self):
+    def test_a_samples_line_has_a_tick_and_the_numbers_per_source(self):
         from admet.ui.series_style import series_styles
 
-        result = _result(sample_id="oil", diameters=(120.0, 124.0, 128.0))
+        video = _result(sample_id="oil_rep1", diameters=(120.0, 124.0, 128.0))
+        images = _result(sample_id="oil_rep1", engine="cellpose", source_path="/imgs", diameters=(130.0, 132.0),
+                         inclusion_counts=(0, 1, 2, 1))
         live = LiveQC(rate_hz=1420.0, rate_half=20.0, diameter=124.0, diameter_half=0.5, diameter_unit="um",
                       cv_percent=3.4, cv_half=0.3, count=7000.0, bursts=5, state="STABLE")
-        style = series_styles(["oil"])["oil"]
+        style = series_styles(["oil_rep1"])["oil_rep1"]
 
-        both = aggregated_cells("oil", style, result, live)
-        alone = aggregated_cells("oil", None, None, live, active=False)
+        full = sample_cells("rep 1", style, video, images, live, {"opencv": True, "cellpose": False, "live": True})
+        bare = sample_cells("rep 2", None, None, None, live, {"live": True}, status={"opencv": "stale"})
 
-        self.assertEqual(set(both), set(AGGREGATED_FIELDS))
-        self.assertIn("124.0 ± 3.3", both["diameter"])
-        self.assertIn("124.0 um live", both["diameter"])
-        self.assertIn("1420 live", both["rate"])
-        self.assertIn(style.color, both["sample"])
-        self.assertIn("not analysed", alone["sample"])
-        self.assertIn("results-off", alone["droplets"])
-        self.assertIn("7 000", alone["droplets"])
-        self.assertIn(theme.QC_STATE_COLORS["STABLE"], alone["analysed"])               # the state in its colour
+        self.assertEqual(set(full), set(SAMPLE_FIELDS) | {"opencv_has", "cellpose_has", "live_has"})
+        self.assertEqual((full["opencv"], full["cellpose"], full["live"]), (True, False, True))
+        self.assertEqual((full["opencv_has"], full["cellpose_has"], full["live_has"]), (True, True, True))
+        self.assertIn("124.0", full["cv_diameter"])
+        self.assertIn("131.0", full["cp_diameter"])
+        self.assertIn("results-off", full["cp_diameter"])                                  # unticked: greyed
+        self.assertIn("1.00", full["cp_inclusions"])
+        self.assertIn("1420", full["live_rate"])
+        self.assertIn(theme.QC_STATE_COLORS["STABLE"], full["live_rate"])                  # the state in its colour
+        self.assertIn(style.color, full["sample"])
+        self.assertEqual((bare["opencv"], bare["opencv_has"], bare["live"]), (False, False, True))
+        self.assertIn("stale", bare["cv_droplets"])                                          # why the number is missing
+        self.assertIn("—", bare["cp_diameter"])
 
     def test_the_summary_csv_carries_the_live_columns(self):
         result = _result(run="oil", source_path="/v.avi")
