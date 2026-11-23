@@ -13,6 +13,7 @@ analysed the same way twice is analysed once, and a copy of the file finds the s
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 import json
 import re
 from datetime import datetime
@@ -35,6 +36,32 @@ VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
 
 
+@lru_cache(maxsize=4096)
+def _file_identity(path: str, size: int, _mtime_ns: int) -> "hashlib._Hash":
+    """The digest of a file's size and its first and last megabyte, kept while the file stays as it is."""
+    digest = hashlib.sha256()
+    digest.update(str(size).encode())
+    with open(path, "rb") as handle:
+        digest.update(handle.read(1 << 20))
+        if size > 2 << 20:
+            handle.seek(-(1 << 20), 2)
+            digest.update(handle.read(1 << 20))
+    return digest
+
+
+@lru_cache(maxsize=1024)
+def _folder_identity(path: str, _dir_mtime_ns: int) -> "hashlib._Hash":
+    """The digest of a folder's files by name, size and time, no bytes read; kept while the folder's
+    own time stays, which changes when a file is added or taken away."""
+    digest = hashlib.sha256()
+    root = Path(path)
+    for file in sorted(item for item in root.rglob("*") if item.is_file()):
+        stat = file.stat()
+        digest.update(file.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}\0".encode())
+    return digest
+
+
 def infer_engine(path: str | Path) -> str:
     source = Path(path)
     if source.is_dir():
@@ -48,28 +75,21 @@ def infer_engine(path: str | Path) -> str:
 
 
 def content_key(source: str | Path, settings: dict[str, Any] | None = None) -> str:
-    """What a result is of: the file's content (its size and its first and last megabyte, enough to
-    tell videos apart without reading gigabytes) and the settings that change what is detected."""
+    """What a result is of: the source's identity and the settings that change what is detected.
+
+    A file is known by its size and its first and last megabyte, enough to tell videos apart
+    without reading gigabytes; an image folder by the names, sizes and times of its files, so
+    listing a folder reads no image. Either is worked out once per process while the source
+    stays as it is, so a table redraw costs one stat, not a read."""
     path = Path(source)
-    digest = hashlib.sha256()
     if path.is_file():
-        size = path.stat().st_size
-        digest.update(str(size).encode())
-        with path.open("rb") as handle:
-            digest.update(handle.read(1 << 20))
-            if size > 2 << 20:
-                handle.seek(-(1 << 20), 2)
-                digest.update(handle.read(1 << 20))
+        stat = path.stat()
+        digest = _file_identity(str(path), stat.st_size, stat.st_mtime_ns).copy()
     elif path.is_dir():
-        for file in sorted(item for item in path.rglob("*") if item.is_file()):
-            digest.update(file.relative_to(path).as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            with file.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1 << 20), b""):
-                    digest.update(chunk)
-            digest.update(b"\0")
+        stat = path.stat()
+        digest = _folder_identity(str(path), stat.st_mtime_ns).copy()
     else:
-        digest.update(str(path).encode("utf-8"))
+        digest = hashlib.sha256(str(path).encode("utf-8"))
     kept = {key: settings[key] for key in KEY_FIELDS if settings and key in settings}
     kept.update({key: value for key, value in READ_TIME_DEFAULTS.items() if key in kept})
     digest.update(json.dumps(kept, sort_keys=True, default=str).encode("utf-8"))

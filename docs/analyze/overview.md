@@ -25,7 +25,10 @@ recorded is listed without a step of your own. It keeps its own room in the home
 its sample name, engine and settings;
 `analyze/results/` holds one folder per file and detection settings, named by a
 digest of the file's content and those settings, so the same video analysed the
-same way is never analysed twice and a copy of the file finds its result.
+same way is never analysed twice and a copy of the file finds its result. A video
+is known by its size and its first and last megabyte; an image folder by the
+names, sizes and times of its files, so listing one reads no image, and a copy
+made with its times kept finds its result too.
 
 Press **Ctrl+C** to stop. Running analyses are asked to stop cleanly first, so no
 one's work is left half-written.
