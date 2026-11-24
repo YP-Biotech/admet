@@ -152,31 +152,35 @@ the stored rows stay as found, and *Clear corrections* drops them.
 
 ## Results
 
-The stage is one page with one table, in the Action Panel. **Data** above it
-chooses what the stage takes in, OpenCV, Cellpose and Live QC, for every table,
-plot and export; the choice is remembered. The table has one line per file
-with droplets, diameter, CV and rate, the rig's live number under the
-analysis's, the recording's state in the rig's colour, and Use. Below it come
-the plots, in sections that are there when they have data; the table's ticks
-choose for all of them:
+The stage is one page with one table, in the Action Panel: one line per sample
+under its condition's line. Each sample has a tick per source it has, **OpenCV**
+for its video's analysis, **Cellpose** for its image folder's, **Live** for what
+the rig measured while the video was recorded, with that source's numbers beside
+the tick: droplets, diameter, CV and rate from OpenCV; diameter, CV and
+inclusions per droplet from Cellpose; rate and CV from the rig, with its state in
+the rig's colour. A source with no number yet says why, *not run* or *stale*. A
+tick off greys its numbers and takes that source out of every plot and the export;
+the ticks are remembered. Below the table come the plots, in sections that are
+there when they have data:
 
-- **Aggregated**: diameter, CV and rate per sample as bars, a hatched bar for
-  the live value beside the analysed one.
-- **OpenCV**: the analysed videos' diameter distribution, droplets, diameter and
+- **Aggregated**: diameter, CV and rate as bars, one place per sample with a bar
+  per source side by side, the video's solid, the image folder's a shade lighter,
+  the rig's hatched. Samples stand in the list's order under their condition, so
+  replicates sit next to each other and conditions are compared at a glance.
+- **OpenCV**: the ticked videos' diameter distribution, droplets, diameter and
   rate over time, positions and area along the channel.
-- **Cellpose**: the image folders' diameter distribution and inclusions per
-  droplet.
+- **Cellpose**: the ticked image folders' diameter distribution and inclusions
+  per droplet.
 - **Live QC + Fluidics**: the four plots of the control app's Review stage,
-  stacked as its *Stacked* view: every ticked recording's step from its own
-  start, so steps and runs overlay. Pressure and flow per channel, the channel
-  told by the line pattern, then the droplet rate and CV the rig measured, each
-  recording in its sample's colour.
+  stacked as its *Stacked* view: every recording ticked Live, its step from its
+  own start, so steps and runs overlay. Pressure and flow per channel, the
+  channel told by the line pattern, then the droplet rate and CV the rig
+  measured, each recording in its sample's colour.
 
-Every series has a colour and pattern of its own. Files of one condition wear
-shades of the condition's hue, one per file. Without a condition, files whose
-sample names end in a replicate marker (`oil_rep2`, `oil #2`), as the built names
-do, are replicates of one group and share its hue. Put files into conditions on
-1. Files to group them as you see fit.
+Every sample has a colour of its own: files of one condition wear shades of the
+condition's hue, one per sample, and a sample's video, image folder and live line
+share its colour. Without a condition, samples whose names end in a replicate
+marker (`oil_rep2`, `oil #2`) are replicates of one group and share its hue.
 
 ## Where results go
 

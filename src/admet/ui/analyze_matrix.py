@@ -152,17 +152,32 @@ def analyse_columns(fields) -> list[dict[str, Any]]:
 
 
 def results_columns(fields: tuple[str, ...], labels: dict[str, str]) -> list[dict[str, Any]]:
-    columns = [{"name": "active", "label": "Use", "field": "active", "align": "center"}]
-    columns += [{"name": field, "label": labels[field], "field": field, "align": "left"} for field in fields]
-    return columns
+    """The Results table's columns: the sample, then a tick and the numbers per source."""
+    return [{"name": field, "label": labels[field], "field": field,
+             "align": "center" if field in ("opencv", "cellpose", "live") else "left"} for field in fields]
 
 
-def wire_results_table(table: Any, on_change: Any, html_fields: tuple[str, ...]) -> None:
-    """Use toggles like the other tables; every other cell is HTML made server-side."""
-    table.add_slot("body-cell-active", _bool_cell_slot("active"))
+def results_condition_row(key: str, alias: str, auto: str, html_fields: tuple[str, ...]) -> dict[str, Any]:
+    """A condition's line of the Results table: its name across the row, no tick."""
+    cells: dict[str, Any] = {"uid": f"condition:{key}", "kind": "condition",
+                             "sample": f'<span class="cond-alias">{alias}</span>'
+                                       + (f' <span class="cond-auto">{auto}</span>' if auto else "")}
+    for field in html_fields:
+        cells.setdefault(field, "")
+    for tick in ("opencv", "cellpose", "live"):
+        cells[tick] = False
+        cells[f"{tick}_has"] = False
+    return cells
+
+
+def wire_results_table(table: Any, on_change: Any, html_fields: tuple[str, ...],
+                       tick_fields: tuple[str, ...] = ()) -> None:
+    """A tick per source a sample has; every other cell is HTML made server-side."""
+    for field in tick_fields:
+        table.add_slot(f"body-cell-{field}", _bool_cell_slot(field, applies=f"props.row.{field}_has"))
     for field in html_fields:
         table.add_slot(f"body-cell-{field}", f"""
-        <q-td :props="props"><div v-html="props.row.{field}"></div></q-td>
+        <q-td :props="props" :class="props.row.kind === 'condition' ? 'cond-cell' : ''"><div v-html="props.row.{field}"></div></q-td>
         """)
     table.on("matrix-change", on_change)
 

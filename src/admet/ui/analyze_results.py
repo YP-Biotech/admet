@@ -589,8 +589,10 @@ def live_cells(live: LiveQC, sample_id: str, color: str, *, active: bool = True)
     }
 
 
+SOURCES = ("opencv", "cellpose", "live")                 # what a sample's data can come from
+SOURCE_LABELS = {"opencv": "OpenCV", "cellpose": "Cellpose", "live": "Live"}
 RESULT_FIELDS = ("sample", "droplets", "inclusions", "diameter", "area", "cv", "rate", "speed", "analysed")
-RESULT_LABELS = {"sample": "Sample", "condition": "Set", "droplets": "Droplets", "inclusions": "Inclusions",
+RESULT_LABELS = {"sample": "Sample", "condition": "Condition", "droplets": "Droplets", "inclusions": "Inclusions",
                  "diameter": "Diameter, µm",
                  "area": "Area, µm²", "cv": "CV, %", "rate": "Rate, /s", "speed": "Speed, mm/s",
                  "analysed": "Analysed"}
@@ -894,29 +896,39 @@ def scatter_chart(title: str, xname: str, yname: str, results: list[FileResult],
 def per_sample_chart(title: str, unit: str, results: Sequence[FileResult], lives: Sequence[LiveQC],
                      analysed: Callable[[FileResult], float | None], measured: Callable[[LiveQC], float | None],
                      *, listed: Sequence[str] | None = None, digits: int = 1) -> dict[str, Any]:
-    """One place per ticked file: the analysis's value as a bar and, hatched beside it, what the rig
-    measured live; a file with only one of them shows that one."""
-    files: dict[tuple[str, str], dict[str, Any]] = {}
-    for item, style, name in _plotted(results, lives, listed):
-        entry = files.setdefault(_file_key(item), {"name": name.removesuffix(" live"), "style": style,
-                                                   "analysed": None, "live": None})
+    """One place per ticked sample, a bar per source side by side: the video's analysis, the image
+    folder's analysis a shade lighter, and, hatched, what the rig measured live. A sample with only
+    some of them shows those; samples stand in the list's order, so replicates sit next to each other."""
+    items = [*results, *lives]
+    short = short_names([item.sample_id for item in items])
+    styles = plot_styles(items, listed)
+    samples: dict[str, dict[str, Any]] = {}
+    for item in items:
+        entry = samples.setdefault(item.sample_id, {"name": short[item.sample_id], "style": None,
+                                                    "opencv": None, "cellpose": None, "live": None})
+        style = styles[_file_key(item)]
         if isinstance(item, LiveQC):
             entry["live"] = measured(item)
+        elif item.engine == "cellpose":
+            entry["cellpose"] = analysed(item)
         else:
-            entry["name"], entry["analysed"] = name, analysed(item)
-    shown = [entry for entry in files.values() if entry["analysed"] is not None or entry["live"] is not None]
+            entry["opencv"] = analysed(item)
+        if entry["style"] is None or (not isinstance(item, LiveQC) and item.engine != "cellpose"):
+            entry["style"] = style                      # the video's style names the sample's colour
+    shown = [entry for entry in samples.values() if any(entry[kind] is not None for kind in SOURCES)]
     if not shown:
         return _empty_chart(title)
 
     def bars(kind: str) -> dict[str, Any]:
-        return {"name": kind, "type": "bar", "barMaxWidth": 28, "barGap": "10%",
+        def item_style(entry: dict[str, Any]) -> dict[str, Any]:
+            style = entry["style"].item(live=kind == "live")
+            return {**style, "opacity": 0.65} if kind == "cellpose" else style
+        return {"name": SOURCE_LABELS[kind], "type": "bar", "barMaxWidth": 28, "barGap": "10%",
                 "data": [{"value": round(entry[kind], digits) if entry[kind] is not None else None,
-                          "itemStyle": entry["style"].item(live=kind == "live")} for entry in shown],
+                          "itemStyle": item_style(entry)} for entry in shown],
                 "label": {"show": True, "position": "top", "fontSize": 9, "formatter": "{c}"}}
 
-    series = [bars("analysed")] if any(entry["analysed"] is not None for entry in shown) else []
-    if any(entry["live"] is not None for entry in shown):
-        series.append(bars("live"))
+    series = [bars(kind) for kind in SOURCES if any(entry[kind] is not None for entry in shown)]
     return {
         "title": _title(title),
         "animation": False,
@@ -1133,36 +1145,52 @@ def _thin(points: list, limit: int) -> list:
 AGGREGATED_FIELDS = ("sample", "condition", "droplets", "diameter", "cv", "rate", "analysed")
 
 
-def aggregated_cells(name: str, style: SeriesStyle | None, result: FileResult | None, live: LiveQC | None,
-                     *, active: bool = True, origin: str = "") -> dict[str, str]:
-    """One file's line of the aggregated table: the analysis's number, with the rig's live one under it.
-    ORIGIN says where the file is from, protocol, time and step, under the sample."""
-    off = "" if active else " results-off"
-    colour = style.color if style is not None else "var(--text-disabled)"
+SAMPLE_FIELDS = ("sample", "opencv", "cv_droplets", "cv_diameter", "cv_cv", "cv_rate",
+                 "cellpose", "cp_diameter", "cp_cv", "cp_inclusions", "live", "live_rate", "live_cv")
+SAMPLE_LABELS = {"sample": "Sample", "opencv": "OpenCV", "cv_droplets": "Droplets", "cv_diameter": "d, µm",
+                 "cv_cv": "CV, %", "cv_rate": "Rate, /s", "cellpose": "Cellpose", "cp_diameter": "d, µm",
+                 "cp_cv": "CV, %", "cp_inclusions": "Incl.", "live": "Live", "live_rate": "Rate, /s", "live_cv": "CV, %"}
+SAMPLE_TICKS = ("opencv", "cellpose", "live")
+SAMPLE_HTML = tuple(field for field in SAMPLE_FIELDS if field not in SAMPLE_TICKS)
 
-    def cell(main: str, sub: str = "") -> str:
+
+def sample_cells(name: str, style: SeriesStyle | None, opencv: FileResult | None, cellpose: FileResult | None,
+                 live: LiveQC | None, ticks: dict[str, bool], *, status: dict[str, str] | None = None) -> dict[str, Any]:
+    """One sample's line of the Results table: a tick per source it has, OpenCV, Cellpose and Live, and the
+    numbers of each beside its tick, greyed when the tick is off. STATUS says, per source, why a number is
+    missing: "stale", "not run"."""
+    colour = style.color if style is not None else "var(--text-disabled)"
+    status = status or {}
+
+    def cell(main: str, *, on: bool = True, sub: str = "") -> str:
+        off = "" if on else " results-off"
         inner = f'<span class="n">{main}</span>' + (f'<div class="sub">{sub}</div>' if sub else "")
         return f'<div class="results-cell{off}">{inner}</div>'
 
-    unit = live.diameter_unit if live is not None else "um"
-    group = (result.condition if result is not None else live.condition if live is not None else "") or ""
-    return {
-        "condition": cell(html.escape(group) if group else "—"),
-        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}',
-                       html.escape(" · ".join(part for part in (origin, result.engine if result is not None else
-                                                                 "not analysed") if part))),
-        "droplets": cell(f"{result.droplets}" if result is not None else "—",
-                         f"{live.count:,.0f} live".replace(",", " ") if live is not None else ""),
-        "diameter": cell(f"{result.mean_diameter:.1f} ± {result.std_diameter:.1f}"
-                         if result is not None and result.diameters else "—",
-                         f"{live.diameter:.1f} {html.escape(unit)} live" if live is not None and live.diameter else ""),
-        "cv": cell(f"{result.cv_percent:.1f}" if result is not None and result.diameters else "—",
-                   f"{live.cv_percent:.1f} live" if live is not None and live.cv_percent else ""),
-        "rate": cell(f"{result.rate_hz:.0f}" if result is not None and result.rate_hz else "—",
-                     f"{live.rate_hz:.0f} live" if live is not None and live.rate_hz else ""),
-        "analysed": cell(html.escape(result.analyzed_at or "earlier") if result is not None else "—",
-                         f"{state_html(live.state)} while recording" if live is not None else ""),
+    def missing(kind: str) -> str:
+        return html.escape(status.get(kind, "—"))
+
+    on = {kind: bool(ticks.get(kind)) for kind in SAMPLE_TICKS}
+    has = {"opencv": opencv is not None, "cellpose": cellpose is not None, "live": live is not None}
+    cells: dict[str, Any] = {
+        "sample": cell(f'<span class="swatch" style="background:{colour}"></span>{html.escape(name)}'),
+        "cv_droplets": cell(f"{opencv.droplets}" if opencv is not None else missing("opencv"), on=on["opencv"]),
+        "cv_diameter": cell(f"{opencv.mean_diameter:.1f}" if opencv is not None and opencv.diameters else "—", on=on["opencv"]),
+        "cv_cv": cell(f"{opencv.cv_percent:.1f}" if opencv is not None and opencv.diameters else "—", on=on["opencv"]),
+        "cv_rate": cell(f"{opencv.rate_hz:.0f}" if opencv is not None and opencv.rate_hz else "—", on=on["opencv"]),
+        "cp_diameter": cell(f"{cellpose.mean_diameter:.1f}" if cellpose is not None and cellpose.diameters
+                            else missing("cellpose"), on=on["cellpose"]),
+        "cp_cv": cell(f"{cellpose.cv_percent:.1f}" if cellpose is not None and cellpose.diameters else "—", on=on["cellpose"]),
+        "cp_inclusions": cell(f"{mean(cellpose.inclusion_counts):.2f}" if cellpose is not None and cellpose.inclusion_counts
+                              else "—", on=on["cellpose"]),
+        "live_rate": cell(f"{live.rate_hz:.0f}" if live is not None and live.rate_hz else "—", on=on["live"],
+                          sub=state_html(live.state) if live is not None else ""),
+        "live_cv": cell(f"{live.cv_percent:.1f}" if live is not None and live.cv_percent else "—", on=on["live"]),
     }
+    for kind in SAMPLE_TICKS:
+        cells[kind] = on[kind] and has[kind]
+        cells[f"{kind}_has"] = has[kind]
+    return cells
 
 
 def _title(text: str) -> dict[str, Any]:
