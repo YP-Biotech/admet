@@ -60,7 +60,8 @@ def sample_row(name: str, rep: str, *, active: bool, mixed: bool, video: str, im
     """A sample's line: its files as chips, the live QC that came with its video, its note. IMAGES are its
     folders as {uid, name}; OPTIONS the samples a folder can move to."""
     return {"uid": f"sample:{name}", "kind": "sample", "rep": rep, "active": active, "mixed": mixed,
-            "video": video, "images": list(images), "live": live, "note": note, "file_uids": list(file_uids),
+            "video": video, "images": ", ".join(f["name"] for f in images), "folders": list(images),
+            "live": live, "note": note, "file_uids": list(file_uids),
             "options": [option for option in (options or []) if option["value"] != name]}
 
 
@@ -98,7 +99,7 @@ FILES_BODY = """
     <q-td class="sample-cell">{{ props.row.rep }}</q-td>
     <q-td><span v-if="props.row.video" class="chip">&#9654; {{ props.row.video }}</span><span v-else class="chip off">no video</span></q-td>
     <q-td>
-      <span v-for="folder in props.row.images" :key="folder.uid" class="chip chip-folder" title="Move or unassign"
+      <span v-for="folder in props.row.folders" :key="folder.uid" class="chip chip-folder" title="Move or unassign"
         @click.stop @mousedown.stop>&#9635; {{ folder.name }} &#9662;
         <q-menu auto-close>
           <q-list dense style="min-width: 200px">
@@ -112,7 +113,7 @@ FILES_BODY = """
           </q-list>
         </q-menu>
       </span>
-      <span v-if="!props.row.images.length" class="chip off">no images</span>
+      <span v-if="!props.row.folders.length" class="chip off">no images</span>
     </q-td>
     <q-td><span v-if="props.row.live" class="chip">&#9679; {{ props.row.live }}</span><span v-else class="muted">—</span></q-td>
     <q-td>

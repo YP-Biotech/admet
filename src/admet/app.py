@@ -127,8 +127,10 @@ def run_analyze_server(host: str, port: int, *, data: str | None = None, home: s
 
     from admet.engines import create_engine_registry
     from admet.ui.analyze import render_workflow
+    from admet.ui.web_quirks import quiet_aborted_requests
     from admet.workflows import create_analyze_workflow
 
+    quiet_aborted_requests()
     store = analyze_registry(home, data)
     registry = create_engine_registry("analyze")
 
