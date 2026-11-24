@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import io
 import json
 import tempfile
@@ -24,7 +25,7 @@ from admet.ui.analyze_results import (
     cv_chart,
     diameter_chart,
     diameter_time_chart,
-    export_csv_zip,
+    export_zip,
     file_results,
     gate_crossings,
     histogram_edges,
@@ -414,40 +415,60 @@ class ChartTests(unittest.TestCase):
 
 
 class ExportTests(unittest.TestCase):
-    def test_csv_export_zips_a_summary_and_every_droplet_row(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            stored = _stored(Path(tmp) / "study")
-            stored.rows_path.parent.mkdir(parents=True)
-            stored.rows_path.write_text("\n".join(json.dumps(row) for row in _rows()))
-            results = file_results(stored, _rows())
+    def _files(self, results, lives=(), details=None):
+        archive = zipfile.ZipFile(io.BytesIO(export_zip(results, lives, details)))
+        self.assertEqual(sorted(archive.namelist()), ["details.json", "droplet.csv", "summary.csv"])
+        return {name: archive.read(name).decode() for name in archive.namelist()}
 
-            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([stored], results)))
+    def test_a_video_gives_a_row_per_droplet_in_um_and_a_summary_row(self):
+        result, = file_results(_stored(), _rows())
+        result = replace(result, sample_id="oil_rep1", condition="oil", replicate=1)
 
-            self.assertEqual(sorted(archive.namelist()), ["droplets/study_s_opencv.csv", "summary.csv"])
-            summary = archive.read("summary.csv").decode().splitlines()
-            self.assertTrue(summary[0].startswith("run,protocol,time,replicate,sample,condition,engine"))
-            self.assertIn("study,study,,,s,,opencv", summary[1])                     # no stamp: the run as named
-            droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
-            self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,bbox_x,bbox_width,equivalent_diameter,area")
-            self.assertEqual(len(droplets), 10)
+        files = self._files([result], details={"samples": []})
 
-    def test_csv_export_leaves_out_droplets_switched_off_and_keeps_the_raw_count(self):
+        droplets = list(csv.reader(io.StringIO(files["droplet.csv"])))
+        self.assertEqual(droplets[0], ["sample", "condition", "replicate", "source", "droplet_id", "frame",
+                                       "droplet_diameter_um", "droplet_area_um2", "pos_x_um", "pos_y_um"])   # no inclusions
+        self.assertEqual(droplets[1], ["oil_rep1", "oil", "1", "opencv", "1", "0", "40.0", "1260.0", "220.0", "100.0"])
+        self.assertEqual(len(droplets), 4)                                              # one per droplet, not per frame
+        summary = list(csv.DictReader(io.StringIO(files["summary.csv"])))
+        self.assertEqual((summary[0]["source"], summary[0]["droplets"], summary[0]["diameter_mean_um"],
+                          summary[0]["inclusions_mean"]), ("opencv", "3", "42", ""))
+        self.assertEqual(json.loads(files["details.json"]), {"samples": []})
+
+    def test_imaging_rows_follow_the_corrections_the_slide_and_the_inclusions_choice(self):
         rows = [{"engine": "cellpose", "item_id": "imgs", "kind": "droplet",
-                 "values": {"frame": 1, "droplet_id": droplet, "inclusions": 1}} for droplet in (0, 1)]
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "study"
-            stored = StoredResult(source_path=project / "media" / "imgs", engine="cellpose", sample_id="imgs",
-                                  result_dir=Path(tmp) / "results" / "k2", metadata={"file_id": "f2"},
-                                  run=str(Path(tmp) / "study"))
-            stored.rows_path.parent.mkdir(parents=True)
-            stored.rows_path.write_text("\n".join(json.dumps(row) for row in rows))
-            fixes = {("cellpose", str(project / "media/imgs")): {"1:0": {"disabled": True},
-                                                                  "1:1": {"inclusions": 1}}}
+                 "values": {"frame": 1, "droplet_id": droplet, "center_x": 10.0, "center_y": 20.0,
+                            "diameter_px": 140.0, "area_px": 15000.0, "inclusions": 1}} for droplet in (0, 1, 2)]
+        stored = _imaging(droplet_count=3)
+        key = ("cellpose", str(stored.source_path))
+        fixes = {key: {"1:0": {"disabled": True}, "1:1": {"inclusions": 2}}}
+        read = {key: {"slide_height_um": 100.0}}
 
-            archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([stored], file_results(stored, rows, fixes), fixes)))
+        result, = file_results(stored, rows, fixes, {key: (1.0, 0.0)}, read)
+        files = self._files([replace(result, sample_id="oil_rep1")])
 
-            lines = archive.read("droplets/study_imgs_cellpose.csv").decode().splitlines()
-            self.assertEqual(lines, ["kind,frame,droplet_id,inclusions,inclusions_raw", "droplet,1,1,2,1"])
+        droplets = list(csv.DictReader(io.StringIO(files["droplet.csv"])))
+        self.assertEqual([(d["droplet_id"], d["droplet_diameter_um"], d["inclusions"]) for d in droplets],
+                         [("1", "129.713", "3"), ("2", "129.713", "1")])                # switched off: gone; unsquashed
+        summary = list(csv.DictReader(io.StringIO(files["summary.csv"])))
+        self.assertEqual((summary[0]["source"], summary[0]["inclusions_mean"], summary[0]["rate_hz"]),
+                         ("cellpose", "2", ""))
+        hidden, = file_results(stored, rows, fixes, {key: (1.0, 0.0)}, {key: {"detect_inclusions": False}})
+        header = self._files([hidden])["droplet.csv"].splitlines()[0]
+        self.assertNotIn("inclusions", header)                                          # not shown: not exported
+
+    def test_the_rigs_live_qc_is_a_summary_row_of_its_own(self):
+        live = LiveQC(rate_hz=1420.0, rate_half=20.0, diameter=124.0, diameter_half=0.5, diameter_unit="um",
+                      cv_percent=3.4, cv_half=0.3, count=7000.0, bursts=5, state="STABLE", sample_id="oil_rep1",
+                      condition="oil", replicate=1)
+
+        files = self._files([], [live])
+
+        summary = list(csv.DictReader(io.StringIO(files["summary.csv"])))
+        self.assertEqual([(s["source"], s["droplets"], s["diameter_mean_um"], s["rate_hz"], s["state"]) for s in summary],
+                         [("live", "7000", "124", "1420", "STABLE")])
+        self.assertEqual(files["droplet.csv"].splitlines()[1:], [])                     # no droplets of its own
 
 
 def _run_csv(directory: Path, stem: str = "oil_step01_x") -> Path:
@@ -623,19 +644,6 @@ class LiveQCTests(unittest.TestCase):
         self.assertEqual((bare["opencv"], bare["opencv_has"], bare["live"]), (False, False, True))
         self.assertIn("stale", bare["cv_droplets"])                                          # why the number is missing
         self.assertIn("—", bare["cp_diameter"])
-
-    def test_the_summary_csv_carries_the_live_columns(self):
-        result = _result(run="oil", source_path="/v.avi")
-        live = LiveQC(rate_hz=1420.0, rate_half=20.0, diameter=124.0, diameter_half=0.5, diameter_unit="um",
-                      cv_percent=3.4, cv_half=0.3, count=7000.0, bursts=5, state="STABLE")
-
-        archive = zipfile.ZipFile(io.BytesIO(export_csv_zip([], [result], live={("oil", "opencv", "/v.avi"): live})))
-
-        header, line = archive.read("summary.csv").decode().splitlines()[:2]
-        self.assertTrue(header.endswith("live_rate_hz,live_diameter,live_diameter_unit,live_cv_percent,live_state"))
-        self.assertTrue(line.endswith("1420,124,um,3.4,STABLE"))
-        plain = zipfile.ZipFile(io.BytesIO(export_csv_zip([], [result]))).read("summary.csv").decode().splitlines()[1]
-        self.assertTrue(plain.endswith(",,,,"))
 
 
 if __name__ == "__main__":
