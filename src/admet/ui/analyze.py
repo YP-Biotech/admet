@@ -78,7 +78,7 @@ from admet.ui.analyze_results import (
 from admet.ui.window import log_state, panel_specs, settings_panel_state, structure_signature
 from admet.ui.workflow_view import action_button_state, current_stage, instruction_text, stage_by_id, toc_row_states
 from admet.workflows import StageStatus, Workflow, WorkflowState
-from admet.workflows.analyze_runner import AnalysisStop, AnalyzeBatchReport, AnalyzeBatchRunner, AnalyzeTarget
+from admet.workflows.analyze_runner import AnalyzeTarget
 
 VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
@@ -188,7 +188,7 @@ class AnalyzeWorkflowView:
         self._run_step_progress = 0.0
         self._running = False
         self._running_uids: set[str] = set()            # the files of the run in progress
-        self._stop: AnalysisStop | None = None          # how the run in progress is told to stop
+        self._stop: Any = None                          # the run in progress: told to stop through it
         self.show_overlay = True
         self.show_stages = False
         self.notice = "Add a folder of runs, or files, to start."
@@ -2191,7 +2191,11 @@ class AnalyzeWorkflowView:
     # -- running --------------------------------------------------------------------------
 
     async def _run_rows(self, rows: list[MatrixRow]) -> None:
-        from nicegui import run, ui
+        import asyncio
+
+        from nicegui import ui
+
+        from admet.workflows.analyze_process import AnalysisProcess
 
         rows = [row for row in rows if row.active and row.to_run and self._row_ready(row)]
         if not rows or self._running:
@@ -2201,7 +2205,9 @@ class AnalyzeWorkflowView:
         page = ui.context.client
         self._running = True
         self._running_uids = {row.uid for row in rows}
-        self._stop = AnalysisStop()
+        # The run goes to a process of its own: the page keeps answering while it works.
+        process = AnalysisProcess(jobs, self.store.results_dir)
+        self._stop = process
         self._run_progress = self._run_step_progress = 0.0
         self._notify(f"Analysing {_count(len(jobs), 'file')}…", "primary")
         self._log(f"analysis: running {', '.join(row.name for row in rows)}")
@@ -2209,7 +2215,11 @@ class AnalyzeWorkflowView:
         with page.layout:                      # the page's outer layout, never redrawn
             timer = ui.timer(0.25, self._sync_run_progress)
         try:
-            report = await run.io_bound(self._run_batch, jobs)
+            process.start()
+            while not process.poll():
+                self._run_progress, self._run_step_progress = process.progress, process.file_progress
+                await asyncio.sleep(0.25)
+            report = process.result()
         except Exception as exc:
             self._notify(f"Analysis failed: {exc}", "danger")
             self._log(f"analysis: {type(exc).__name__}: {exc}")
@@ -2227,6 +2237,8 @@ class AnalyzeWorkflowView:
             if row is not None and job.status in {"complete", "cached"} and job.result_dir:
                 row.last_result = Path(job.result_dir).name        # tells stale from never run, later
         self._save_matrix()
+        if page.is_deleted:                    # the browser left meanwhile: the results are saved, nothing to show
+            return
         stopped = [job for job in report.jobs if job.status == "stopped"]
         failed = [job for job in report.jobs if job.status not in {"complete", "cached", "stopped"}]
         done = len(report.jobs) - len(failed) - len(stopped)
@@ -2249,16 +2261,6 @@ class AnalyzeWorkflowView:
         self._stop.now.set()
         self._notify("Stopping…", "warning")
         self._log("analysis: stop asked")
-
-    def _run_batch(self, jobs: tuple[AnalyzeTarget, ...]) -> AnalyzeBatchReport:
-        def on_progress(percent: float) -> None:
-            self._run_progress = percent
-
-        def on_file_progress(percent: float) -> None:
-            self._run_step_progress = percent
-
-        return AnalyzeBatchRunner(self.registry, results_dir=self.store.results_dir).run(
-            jobs, on_progress=on_progress, on_file_progress=on_file_progress, stop=self._stop)
 
     def _sync_run_progress(self) -> None:
         progress = self._refs.get("action_progress")
