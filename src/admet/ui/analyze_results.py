@@ -1260,12 +1260,13 @@ def _empty_chart(title: str) -> dict[str, Any]:
 
 # -- export ----------------------------------------------------------------------------
 
-def export_zip(results: list[FileResult], lives: Sequence[LiveQC] = (), details: dict[str, Any] | None = None) -> bytes:
+def export_files(results: list[FileResult], lives: Sequence[LiveQC] = (),
+                 details: dict[str, Any] | None = None) -> dict[str, bytes]:
     """The export: droplet.csv, one row per droplet for downstream work; summary.csv, the statistics of
     every exported file and live recording; details.json, everything about the files, the samples and
     how they were analysed. RESULTS and LIVES are the ticked ones, read with the settings of the day."""
-    return zip_bytes({"droplet.csv": droplet_csv(results), "summary.csv": summary_csv(results, lives),
-                      "details.json": json.dumps(details or {}, indent=2, ensure_ascii=False, default=str).encode("utf-8")})
+    return {"droplet.csv": droplet_csv(results), "summary.csv": summary_csv(results, lives),
+            "details.json": json.dumps(details or {}, indent=2, ensure_ascii=False, default=str).encode("utf-8")}
 
 
 def zip_bytes(files: dict[str, bytes]) -> bytes:

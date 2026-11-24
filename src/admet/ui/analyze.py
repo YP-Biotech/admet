@@ -62,7 +62,6 @@ from admet.ui.analyze_results import (
     correction_key,
     corrections_summary,
     dispersed_flow_ul_min,
-    export_zip,
     file_results,
     iter_rows,
     live_qc,
@@ -189,6 +188,7 @@ class AnalyzeWorkflowView:
         self._running = False
         self._running_uids: set[str] = set()            # the files of the run in progress
         self._redraw_task: Any = None                   # a plot redraw waiting for the ticks to settle
+        self._exporting: Any = None                     # the export being written, if any
         self._stop: Any = None                          # the run in progress: told to stop through it
         self.show_overlay = True
         self.show_stages = False
@@ -1809,19 +1809,60 @@ class AnalyzeWorkflowView:
                 for row in self.matrix if row.settings.get("corrections")}
 
     def _export_csv(self) -> None:
-        from nicegui import ui
-
-        results = self._results()
-        if not results:
+        """Pick a folder on the server; the export is written there by a process of its own."""
+        if not self._results() and not self._lives():
             self._notify("Nothing to export yet.", "warning")
             self._mount_sidebar()
             return
-        lives = self._lives()
-        ui.download.content(export_zip(results, lives, self._export_details(results, lives)), "analysis.zip")
-        self._log(f"export: {len(results)} result(s), {len(lives)} live")
-        self._notify(f"Exported {_count(len(results), 'result')}" + (f" and {len(lives)} live" if lives else "")
-                     + ": droplet.csv, summary.csv, details.json.", "success")
-        self._sync_stage()
+        last = str(self.store.view_setting("export_dir", "") or "")
+        home = self.store.root.parent
+        start = Path(last) if last and Path(last).is_dir() else home
+        self._open_path_browser(title="Export to a folder", start=start, mode="folder", on_choose=self._export_into,
+                                choose_label="Export here",
+                                hint="Open the folder to keep the export in; analysis_<date>_<time>.tar.gz is "
+                                     "written there with droplet.csv, summary.csv and details.json.")
+
+    def _export_into(self, folder: Path) -> None:
+        import asyncio
+
+        from nicegui import background_tasks
+
+        from admet.workflows.export_process import ExportProcess
+
+        results, lives = self._results(), self._lives()         # the ticks as they are now
+        if not results and not lives:
+            self._notify("Nothing to export yet.", "warning")
+            return
+        if self._exporting is not None:
+            self._notify("An export is being written; wait for it to end.", "warning")
+            return
+        self.store.set_view_setting("export_dir", str(folder))
+        export = ExportProcess(folder, results, lives, self._export_details(results, lives))
+        self._exporting = export
+        export.start()
+        self._notify(f"Writing {export.path.name} in {folder}…", "primary")
+        self._log(f"export: {len(results)} result(s), {len(lives)} live into {export.path}")
+        self._mount_sidebar()
+        self._sync_log()
+
+        async def follow() -> None:
+            while not export.poll():
+                await asyncio.sleep(0.5)
+            self._exporting = None
+            try:
+                written = export.result()
+            except RuntimeError as exc:
+                self._notify(f"Export failed: {exc}", "danger")
+                self._log(f"export: {exc}")
+                self._mount_sidebar()
+                self._sync_log()
+                return
+            self._notify(f"Exported to {written}.", "success")
+            self._log(f"export: written {written}")
+            self._mount_sidebar()                       # the notice and the log say so on the page
+            self._sync_log()
+
+        background_tasks.create(follow(), name="admet export")
 
     def _export_details(self, results: list[FileResult], lives: list[LiveQC]) -> dict[str, Any]:
         """Everything about what was exported: when and with what, the conditions with their setpoints, and
@@ -1934,7 +1975,8 @@ class AnalyzeWorkflowView:
         roots = self.store.roots()
         self._open_path_browser(title="Add files", start=Path(roots[0]) if roots else Path.home(), mode="source")
 
-    def _open_path_browser(self, *, title: str, start: Path, mode: str) -> None:
+    def _open_path_browser(self, *, title: str, start: Path, mode: str, on_choose: Any = None,
+                           hint: str = "", choose_label: str = "Add this folder") -> None:
         from nicegui import ui
 
         state = {"path": _existing_dir(start)}
@@ -1947,8 +1989,8 @@ class AnalyzeWorkflowView:
                 ui.label("Videos (.avi, .mp4, .mov, .mkv) and folders of images (.tif, .png, .jpg). "
                          "Press ＋ to pick, then Add.").classes("muted text-xs")
             else:
-                ui.label("A data folder, an export folder on the server, or one run: every video of every run "
-                         "in it is listed. Open the folder, then Add this folder.").classes("muted text-xs")
+                ui.label(hint or "A data folder, an export folder on the server, or one run: every video of every "
+                         "run in it is listed. Open the folder, then Add this folder.").classes("muted text-xs")
             path_label = ui.label(str(state["path"])).classes("browser-path")
             rows = ui.column().classes("browser-list w-full gap-1")
             with ui.row().classes("w-full gap-2 justify-end items-center"):
@@ -1957,7 +1999,7 @@ class AnalyzeWorkflowView:
                 if multi:
                     ui.button("Add", on_click=lambda: finish()).props("dense no-caps")
                 else:
-                    ui.button("Add this folder", on_click=lambda: choose_folder()).props("dense no-caps")
+                    ui.button(choose_label, on_click=lambda: choose_folder()).props("dense no-caps")
 
         def toggle(path: Path) -> None:
             key = str(path.resolve())
@@ -2003,7 +2045,7 @@ class AnalyzeWorkflowView:
 
         def choose_folder() -> None:
             dialog.close()
-            self._add_root(state["path"])
+            (on_choose or self._add_root)(state["path"])
 
         def navigate(path: Path) -> None:
             state["path"] = _existing_dir(path)

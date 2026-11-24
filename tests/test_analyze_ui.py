@@ -40,7 +40,7 @@ class WorkflowShapeTests(unittest.TestCase):
         self.assertEqual([stage.id for stage in workflow.stages], ["files", "analyse", "results"])
         self.assertEqual([action.label for action in workflow.stages[1].actions],
                          ["Analyse all", "Run selected", "Stop", "Reset ticked", "Reset file settings"])
-        self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export CSV", "Export plots"])
+        self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export…", "Export plots"])
 
 
 class UidUniquenessTests(unittest.TestCase):
