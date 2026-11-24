@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 import signal
@@ -57,7 +58,7 @@ from admet.engines.acquisition.fluidics.config import (
     FLUIDIC_CHANNELS,
     SENSOR_CALIBRATIONS,
 )
-from admet.engines.acquisition.settings import DEAD_VOLUME_PARAM_NAMES, LIQUID_PROFILE_PARAM_NAMES
+from admet.engines.acquisition.settings import CAMERA_SETTINGS, DEAD_VOLUME_PARAM_NAMES, LIQUID_PROFILE_PARAM_NAMES
 from admet.engines.acquisition.fluidics.liquids import (
     channel_profile,
     dead_volume,
@@ -168,6 +169,11 @@ CAMERA_AUTO_APPLY_PARAMS = {
     "camera_throughput_mbps",
     "camera_waterfall",
 }
+
+log = logging.getLogger(__name__)
+
+# The camera settings kept with the rig and set again when control opens; the scale is kept as optics.
+KEPT_CAMERA_SETTINGS = tuple(param.name for param in CAMERA_SETTINGS.params if param.name != "camera_microns_per_pixel")
 
 PREVIEW_MIN_HEIGHT = 280
 PREVIEW_MAX_HEIGHT = 520
@@ -401,6 +407,7 @@ class ControlWindow(QMainWindow):
         self._calibration_sources: dict[str, QTableWidgetItem] = {}
         self._load_rig_calibration(apply=False)
         self._load_optics()
+        self._load_camera_settings()
         self.protocol_editors = {}
         self._last_protocol_log = None
         self.last_result: RunResult | None = None
@@ -2615,6 +2622,24 @@ class ControlWindow(QMainWindow):
         except (TypeError, ValueError):
             self.values["camera_microns_per_pixel"] = 0.0
 
+    def _load_camera_settings(self) -> None:
+        """The camera as last set on this rig, into the table; a value no longer valid keeps its default."""
+        for name, value in self.api.camera_settings.items():
+            if name not in KEPT_CAMERA_SETTINGS:
+                continue
+            try:
+                self.values[name] = self._param_by_name(name).validate(value)
+            except Exception:
+                log.warning("kept camera setting %s=%r is not valid any more; its default is used", name, value)
+
+    def _save_camera_settings(self) -> None:
+        """Every camera setting as it is now, kept with the rig, so the next session starts from it."""
+        try:
+            self.api.save_camera_settings({name: self.values[name] for name in KEPT_CAMERA_SETTINGS
+                                           if name in self.values})
+        except Exception as exc:
+            self._notify(f"Could not keep the camera settings: {exc}", "danger", timeout_ms=0)
+
     def _ask_channel_width(self) -> float:
         """The channel's width in µm, the last one measured offered first."""
         last = float(self.api.optics.get("channel_width_um") or 125.0)
@@ -2837,6 +2862,8 @@ class ControlWindow(QMainWindow):
         for editor in self.protocol_editors.values():
             if editor.builtin and name in editor.stage.settings.defaults():
                 editor.edited()
+        if name in KEPT_CAMERA_SETTINGS:
+            self._save_camera_settings()
         if name in CAMERA_AUTO_APPLY_PARAMS:
             self._schedule_camera_apply()
         if name in LIQUID_PROFILE_PARAM_NAMES:

@@ -332,6 +332,8 @@ class CameraController:
             "configured_frame_rate_hz": (value("AcquisitionFrameRate")
                                          if connected and value("AcquisitionFrameRateEnable") is not False else None),
             "measured_frame_rate_hz": stats.get("fps") if self.live else None,
+            # the rate the camera makes frames at, whatever reaches the PC
+            "resulting_frame_rate_hz": self._resulting_fps if connected and self._resulting_fps else None,
             "exposure_us": value("ExposureTime") if connected else None,
             "gain": value("Gain") if connected else None,
             "frame_count": stats.get("total_frames") if self.live else None,

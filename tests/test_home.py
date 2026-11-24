@@ -50,7 +50,8 @@ class RigTests(unittest.TestCase):
 
             self.assertIn("colour", str(caught.exception))
             self.assertEqual(set(RIG_KEYS),
-                             {"acquisition_mode", "calibration", "profiles", "liquids", "optics", "qt_checkup", "export"})
+                             {"acquisition_mode", "calibration", "profiles", "liquids", "optics", "camera", "qt_checkup",
+                              "export"})
 
     def test_a_damaged_file_reads_as_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
