@@ -58,7 +58,9 @@ the rig measured while the video was recorded, each a chip in its column.
 
 A video from a run gets its condition and its sample by itself. An image folder has
 no run, so it waits under **Unassigned** until you pick the sample it belongs to,
-or make a sample of its own for a collection with no video. **Use** on a sample
+or make a sample of its own for a collection with no video. Put in the wrong one,
+click its chip in the sample's row: **Move to** another sample, or **Unassign** it
+back to the bottom of the list. Neither redraws the page. **Use** on a sample
 ticks all its files; on a condition line, all its samples; a shift-click on a
 sample ticks or clears every sample between it and the one clicked last. The
 **Note** field is for anything you want to write down. Click a sample to see its

@@ -549,7 +549,8 @@ class AnalyzeWorkflowView:
                 "slim-table files-list w-full").props("dense flat hide-bottom")
             self._register_table("files", table)
             wire_files_list(table, on_tick=self._handle_files_tick, on_alias=self._handle_alias,
-                            on_note=self._handle_note, on_assign=self._handle_assign, on_pick=self._handle_pick)
+                            on_note=self._handle_note, on_assign=self._handle_assign, on_pick=self._handle_pick,
+                            on_unassign=self._handle_unassign)
             self._render_use_all_header(table)
             self._refs["files_hint"] = ui.label("No files yet. Add folder… lists a folder of runs; Add files… "
                                                 "single videos or image folders.").classes("muted text-xs")
@@ -596,6 +597,7 @@ class AnalyzeWorkflowView:
     def _files_rows(self) -> list[dict[str, Any]]:
         samples = self._samples()
         rows: list[dict[str, Any]] = []
+        options = self._sample_options()
         for condition in self._conditions():
             mine = [s for s in samples if s["condition"] == condition]
             files = [row for s in mine for row in s["rows"]]
@@ -609,14 +611,14 @@ class AnalyzeWorkflowView:
                 rows.append(sample_row(
                     sample["name"], sample["primary"].rep, active=any(ticked), mixed=any(ticked) and not all(ticked),
                     video=_short_time(video.run_time) if video is not None else "",
-                    images=", ".join(Path(row.source_path).name for row in sample["folders"]),
+                    images=[{"uid": row.uid, "name": Path(row.source_path).name} for row in sample["folders"]],
                     live=f"{live.rate_hz:,.0f}/s · {live.cv_percent:.1f} %".replace(",", " ") if live else "",
-                    note=sample["primary"].note, file_uids=[row.uid for row in sample["rows"]]))
+                    note=sample["primary"].note, file_uids=[row.uid for row in sample["rows"]],
+                    options=[option for option in options if option["value"] != NEW_SAMPLE]))
         loose = [row for row in self.matrix if row.unassigned]
         if loose:
             rows.append(condition_row("__unassigned__", "Unassigned", "image folders with no sample yet",
                                       _count(len(loose), "folder"), active=False, mixed=False, fixed=True))
-            options = self._sample_options()
             rows += [unassigned_row(row.uid, Path(row.source_path).name, options) for row in loose]
         return rows
 
@@ -709,10 +711,26 @@ class AnalyzeWorkflowView:
         target = next((s for s in self._samples() if s["name"] == sample), None)
         row.sample_id = sample
         row.condition = target["condition"] if target is not None else ""
-        self._save_matrix()
         self._log(f"sample: {Path(row.source_path).name} put into '{sample}'")
         self._notify(f"{Path(row.source_path).name} is in {sample}.", "success")
-        self._refresh(force_mount=True)
+        self._refresh()                                  # the list's rows change in place; nothing is rebuilt
+
+    def _handle_unassign(self, event: Any) -> None:
+        payload = getattr(event, "args", {})
+        if not isinstance(payload, dict):
+            return
+        row = next((item for item in self.matrix if item.uid == str(payload.get("uid") or "")), None)
+        if row is not None:
+            self._unassign(row)
+
+    def _unassign(self, row: MatrixRow) -> None:
+        """A folder put into the wrong sample goes back to Unassigned; a file from a run cannot."""
+        if row.engine != "cellpose" or row.run:
+            return
+        row.sample_id, row.condition = "", ""
+        self._log(f"sample: {Path(row.source_path).name} unassigned")
+        self._notify(f"{Path(row.source_path).name} is unassigned.", "secondary")
+        self._refresh()
 
     def _ask_sample_name(self, row: MatrixRow) -> None:
         from nicegui import ui
@@ -744,9 +762,16 @@ class AnalyzeWorkflowView:
         if not rows:
             return
         primary = next((row for row in rows if row.engine == "opencv"), rows[0])
-        if primary.uid != self.selected_uid:
-            self.selected_uid = primary.uid
-            self._refresh()
+        self._select(primary.uid)
+
+    def _select(self, uid: str) -> None:
+        """A file picked: only the panel below the list is drawn again, the list and its controls stay."""
+        if not uid or uid == self.selected_uid:
+            return
+        self.selected_uid = uid
+        self._remount_main()
+        self._mounted_signature = self._structure_signature()
+        self._sync_stage()
 
     # -- generation conditions: how a file's droplets were made ----------------------------------
 
@@ -2013,10 +2038,7 @@ class AnalyzeWorkflowView:
 
     def _select_row_event(self, event: Any) -> None:
         row = _event_row(event)
-        uid = str(row.get("uid") or "")
-        if uid and uid != self.selected_uid:
-            self.selected_uid = uid
-            self._refresh()
+        self._select(str(row.get("uid") or ""))
 
     def _selected_row(self) -> MatrixRow | None:
         """The file picked in the table; past 1. Files an unticked one is not on the page, so not picked."""
@@ -3065,6 +3087,7 @@ def _style() -> str:
             border-radius: 999px; background: var(--bg-control); margin-right: 6px; white-space: nowrap; }
     .chip.off { color: var(--text-disabled); border-style: dashed; }
     .note-input .q-field__control { min-height: 26px; } .note-input { max-width: 240px; }
+    .chip-folder { cursor: pointer; } .chip-folder:hover { border-color: var(--accent); }
     .sample-picker { min-width: 200px; } .sample-picker .q-field__control { min-height: 30px; }
     .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--text-disabled); margin-right: 4px; }
     .dot-done { background: var(--success-hover); } .dot-stale { background: var(--warning); }
