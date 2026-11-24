@@ -155,20 +155,27 @@ def _finish_running_analyses() -> None:
     """
     import time
 
+    from admet.workflows import analyze_process
     from admet.workflows.analyze_runner import SHUTDOWN, running_batches
 
+    def running() -> int:
+        return running_batches() + analyze_process.live()
+
     SHUTDOWN.after_file.set()
-    if not running_batches():
+    analyze_process.stop_all()
+    if not running():
         return
-    print(f"waiting for {running_batches()} running analysis to finish its current file and save; "
+    print(f"waiting for {running()} running analysis to finish its current file and save; "
           "Ctrl+C again to stop now")
-    while running_batches():
+    while running():
         try:
             time.sleep(0.2)
+            analyze_process.stop_all(now=SHUTDOWN.now.is_set())   # polls them too
         except KeyboardInterrupt:
             if SHUTDOWN.now.is_set():
                 raise
             SHUTDOWN.now.set()
+            analyze_process.stop_all(now=True)
             print("stopping now; saving the files already finished")
 
 
