@@ -1,0 +1,18 @@
+# admet analyze as a systemd user service. `make systemd` fills in the @…@ values and installs it
+# into ~/.config/systemd/user; edit the values there or run `make systemd` again with others.
+[Unit]
+Description=admet analyze
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=ADMET_HOME=@ADMET_HOME@
+WorkingDirectory=@CHECKOUT@
+ExecStart=@CHECKOUT@/.venv/bin/admet analyze --host @HOST@ --port @PORT@@DATA_ARG@
+Restart=on-failure
+RestartSec=5
+# The server and the rig come first; an analysis runs lower still in its own process.
+Nice=5
+
+[Install]
+WantedBy=default.target
