@@ -750,5 +750,74 @@ class SampleTests(unittest.TestCase):
             self.assertIn("dot-stale", view._analyse_row(row)["status"])
 
 
+
+class RedrawTests(unittest.TestCase):
+    def _view(self, tmp):
+        from tests.test_analyze_results import _run_csv
+
+        data = Path(tmp) / "data"
+        run, names = run_with_videos(data, "oil", videos=2)
+        for name in names:
+            _run_csv(run.path, Path(name).stem)
+        view = _make_view(Registry(Path(tmp) / "analyze"))
+        view._add_root(data)
+        view._notify = lambda *a, **k: None
+        return view
+
+    def test_ticks_in_quick_succession_redraw_the_plots_once_after_they_settle(self):
+        import asyncio
+        from unittest.mock import patch
+
+        import admet.ui.analyze as analyze
+
+        with tempfile.TemporaryDirectory() as tmp:
+            view = self._view(tmp)
+            uids = [f"sample:{row.name}" for row in view.matrix]
+            drawn = []
+
+            async def tick_three_times():
+                with patch.object(analyze, "REDRAW_DELAY_S", 0.2), \
+                        patch.object(view, "_remount_main", lambda: drawn.append(sorted(view._live_runs()))):
+                    for uid, value in ((uids[0], False), (uids[1], False), (uids[0], True)):
+                        view._handle_results_tick(SimpleNamespace(args={"uid": uid, "field": "live", "value": value}))
+                        await asyncio.sleep(0.05)
+                    self.assertEqual(drawn, [])                                          # still ticking: nothing drawn
+                    await asyncio.sleep(0.4)
+
+            asyncio.run(tick_three_times())
+
+            self.assertEqual(len(drawn), 1)                                              # one redraw for three ticks
+            self.assertEqual([row.live_plotted for row in view.matrix], [True, False])   # as last ticked
+
+    def test_the_export_follows_the_ticks_even_before_the_plots_are_drawn_again(self):
+        import asyncio
+        import io
+        import zipfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            view = self._view(tmp)
+            saved = {}
+
+            measured = next(row for row in view.matrix if view._live_qc(row) is not None)   # the video the rig measured
+
+            async def tick_then_export():
+                with patch.object(view, "_remount_main", lambda: None), \
+                        patch.object(view, "_results", lambda **k: [object()]), \
+                        patch("admet.ui.analyze.export_csv_zip",
+                              side_effect=lambda stored, results, fixes, live: saved.update(live=dict(live)) or b""), \
+                        patch("nicegui.ui.download.content", lambda *a, **k: None), \
+                        patch.object(view, "_sync_stage", lambda: None):
+                    view._export_csv()
+                    self.assertEqual(list(saved["live"]), [view._row_key(measured)])
+                    view._handle_results_tick(SimpleNamespace(args={"uid": f"sample:{measured.name}", "field": "live",
+                                                                    "value": False}))
+                    self.assertIsNotNone(view._redraw_task)                               # the redraw still waits
+                    view._export_csv()
+
+            asyncio.run(tick_then_export())
+
+            self.assertEqual(saved["live"], {})                                         # as ticked, not as drawn
+
 if __name__ == "__main__":
     unittest.main()
