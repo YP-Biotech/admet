@@ -66,6 +66,30 @@ or Linux PC to drive a Fluigent rig.
 Without hardware, `admet control` can still connect to a **simulated** Fluigent
 controller (Fluigent page → *Simulated Hardware*). The camera is not simulated.
 
+## admet analyze as a service
+
+On a Linux server, run analyze as a system-wide systemd service, so it starts at
+boot, does not depend on anyone being logged in, and is restarted if it stops:
+
+```bash
+make systemd                                          # home ~/admet, port 8080
+make systemd ADMET_DATA=/srv/nas/ADMET/data ANALYZE_PORT=9000
+```
+
+It installs the analyze extra, writes `/etc/systemd/system/admet-analyze.service`
+from `deploy/systemd/admet-analyze.service` with this checkout and the values
+given, then enables and (re)starts it; the install steps ask for `sudo`. The
+service runs as the user who ran `make systemd` (`SERVICE_USER` and
+`SERVICE_GROUP` change it), so the checkout, the home and the data must be
+readable by that user and the home writable. `ADMET_DATA` adds another folder of
+runs beside the home's data folder, for example a NAS share. After a `git pull`,
+run `make systemd` again to sync and restart; to watch it:
+
+```bash
+systemctl status admet-analyze
+journalctl -u admet-analyze -f
+```
+
 ## Where the data lives
 
 `admet control` keeps its things in the admet home, `~/.admet` unless
