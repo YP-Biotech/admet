@@ -789,6 +789,7 @@ class RedrawTests(unittest.TestCase):
             self.assertEqual(len(drawn), 1)                                              # one redraw for three ticks
             self.assertEqual([row.live_plotted for row in view.matrix], [True, False])   # as last ticked
 
+    @unittest.skipUnless(find_spec("nicegui"), "NiceGUI is not installed")
     def test_the_export_follows_the_ticks_even_before_the_plots_are_drawn_again(self):
         import asyncio
         import io
