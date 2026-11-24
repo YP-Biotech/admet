@@ -55,11 +55,13 @@ def condition_row(key: str, alias: str, auto: str, count: str, *, active: bool, 
             "active": active, "mixed": mixed, "fixed": fixed}
 
 
-def sample_row(name: str, rep: str, *, active: bool, mixed: bool, video: str, images: str, live: str,
-               note: str, file_uids: list[str]) -> dict[str, Any]:
-    """A sample's line: its files as chips, the live QC that came with its video, its note."""
+def sample_row(name: str, rep: str, *, active: bool, mixed: bool, video: str, images: list[dict[str, str]],
+               live: str, note: str, file_uids: list[str], options: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """A sample's line: its files as chips, the live QC that came with its video, its note. IMAGES are its
+    folders as {uid, name}; OPTIONS the samples a folder can move to."""
     return {"uid": f"sample:{name}", "kind": "sample", "rep": rep, "active": active, "mixed": mixed,
-            "video": video, "images": images, "live": live, "note": note, "file_uids": list(file_uids)}
+            "video": video, "images": list(images), "live": live, "note": note, "file_uids": list(file_uids),
+            "options": [option for option in (options or []) if option["value"] != name]}
 
 
 def unassigned_row(uid: str, folder: str, options: list[dict[str, str]]) -> dict[str, Any]:
@@ -95,7 +97,23 @@ FILES_BODY = """
     </q-td>
     <q-td class="sample-cell">{{ props.row.rep }}</q-td>
     <q-td><span v-if="props.row.video" class="chip">&#9654; {{ props.row.video }}</span><span v-else class="chip off">no video</span></q-td>
-    <q-td><span v-if="props.row.images" class="chip">&#9635; {{ props.row.images }}</span><span v-else class="chip off">no images</span></q-td>
+    <q-td>
+      <span v-for="folder in props.row.images" :key="folder.uid" class="chip chip-folder" title="Move or unassign"
+        @click.stop @mousedown.stop>&#9635; {{ folder.name }} &#9662;
+        <q-menu auto-close>
+          <q-list dense style="min-width: 200px">
+            <q-item clickable @click="$parent.$emit('unassign', {uid: folder.uid})">
+              <q-item-section>Unassign</q-item-section></q-item>
+            <q-separator />
+            <q-item-label header>Move to</q-item-label>
+            <q-item v-for="option in props.row.options" :key="option.value" clickable
+              @click="$parent.$emit('assign', {uid: folder.uid, sample: option.value})">
+              <q-item-section>{{ option.label }}</q-item-section></q-item>
+          </q-list>
+        </q-menu>
+      </span>
+      <span v-if="!props.row.images.length" class="chip off">no images</span>
+    </q-td>
     <q-td><span v-if="props.row.live" class="chip">&#9679; {{ props.row.live }}</span><span v-else class="muted">—</span></q-td>
     <q-td>
       <q-input dense borderless class="note-input" v-model="props.row.note" placeholder="—"
@@ -121,13 +139,15 @@ FILES_BODY = """
 """
 
 
-def wire_files_list(table: Any, *, on_tick: Any, on_alias: Any, on_note: Any, on_assign: Any, on_pick: Any) -> None:
+def wire_files_list(table: Any, *, on_tick: Any, on_alias: Any, on_note: Any, on_assign: Any, on_pick: Any,
+                    on_unassign: Any) -> None:
     """The Files list draws its own rows: conditions, samples and unassigned folders look different."""
     table.add_slot("body", FILES_BODY)
     table.on("tick", on_tick)
     table.on("alias", on_alias)
     table.on("note", on_note)
     table.on("assign", on_assign)
+    table.on("unassign", on_unassign)
     table.on("pick", on_pick)
 
 
