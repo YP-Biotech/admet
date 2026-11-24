@@ -11,7 +11,8 @@ def quiet_aborted_requests() -> None:
     """A browser that drops a long-poll before the server reads it (a reload, a closed tab, a proxy
     timing out) reaches engine.io as a request with nothing in it, and engine.io raises
     KeyError('REQUEST_METHOD') with a full traceback in the log. There is no one to answer, so such a
-    request is dropped. Safe to call more than once."""
+    request gets an empty 400 and nothing is logged: a reply must still be sent, or the middleware in
+    front of engine.io raises "No response returned". Safe to call more than once."""
     from engineio import async_server
     from engineio.async_drivers import asgi
 
@@ -31,6 +32,10 @@ def quiet_aborted_requests() -> None:
         try:
             return await handle(self, *args, **kwargs)
         except _ClientGone:
+            send = args[2] if len(args) > 2 else kwargs.get("send")
+            if send is not None:
+                await send({"type": "http.response.start", "status": 400, "headers": []})
+                await send({"type": "http.response.body", "body": b""})
             return None
 
     handle_request._admet_quiet = True
