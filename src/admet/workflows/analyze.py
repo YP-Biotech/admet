@@ -62,7 +62,7 @@ def create_analyze_workflow() -> Workflow:
                 ),
                 settings_panel=SettingsSpec("results", title="Per file"),
                 actions=(
-                    StageAction("Export CSV", "export_csv", guard="has_results"),
+                    StageAction("Export…", "export_csv", guard="has_results"),
                     StageAction("Export plots", "export_plots", guard="has_results", variant="secondary"),
                 ),
                 editor=EditorSpec("results_plots"),

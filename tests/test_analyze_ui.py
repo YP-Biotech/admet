@@ -40,7 +40,7 @@ class WorkflowShapeTests(unittest.TestCase):
         self.assertEqual([stage.id for stage in workflow.stages], ["files", "analyse", "results"])
         self.assertEqual([action.label for action in workflow.stages[1].actions],
                          ["Analyse all", "Run selected", "Stop", "Reset ticked", "Reset file settings"])
-        self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export CSV", "Export plots"])
+        self.assertEqual([action.label for action in workflow.stages[2].actions], ["Export…", "Export plots"])
 
 
 class UidUniquenessTests(unittest.TestCase):
@@ -802,20 +802,28 @@ class RedrawTests(unittest.TestCase):
 
             measured = next(row for row in view.matrix if view._live_qc(row) is not None)   # the video the rig measured
 
+            class Captured:
+                def __init__(self, folder, results, lives, details):
+                    saved["live"] = list(lives)
+                    self.path = Path(folder) / "a.tar.gz"
+
+                def start(self):
+                    pass
+
             async def tick_then_export():
                 with patch.object(view, "_remount_main", lambda: None), \
                         patch.object(view, "_results", lambda **k: [object()]), \
                         patch.object(view, "_export_details", lambda results, lives: {}), \
-                        patch("admet.ui.analyze.export_zip",
-                              side_effect=lambda results, lives, details: saved.update(live=list(lives)) or b""), \
-                        patch("nicegui.ui.download.content", lambda *a, **k: None), \
-                        patch.object(view, "_sync_stage", lambda: None):
-                    view._export_csv()
+                        patch("admet.workflows.export_process.ExportProcess", Captured), \
+                        patch("nicegui.background_tasks.create", lambda coroutine, **k: coroutine.close()), \
+                        patch.object(view, "_mount_sidebar", lambda: None), patch.object(view, "_sync_log", lambda: None):
+                    view._export_into(Path(tmp))                                            # "Export here"
                     self.assertEqual([str(Path(live.source_path)) for live in saved["live"]], [str(Path(measured.source_path))])
+                    view._exporting = None
                     view._handle_results_tick(SimpleNamespace(args={"uid": f"sample:{measured.name}", "field": "live",
                                                                     "value": False}))
                     self.assertIsNotNone(view._redraw_task)                               # the redraw still waits
-                    view._export_csv()
+                    view._export_into(Path(tmp))
 
             asyncio.run(tick_then_export())
 

@@ -25,7 +25,7 @@ from admet.ui.analyze_results import (
     cv_chart,
     diameter_chart,
     diameter_time_chart,
-    export_zip,
+    export_files,
     file_results,
     gate_crossings,
     histogram_edges,
@@ -416,9 +416,41 @@ class ChartTests(unittest.TestCase):
 
 class ExportTests(unittest.TestCase):
     def _files(self, results, lives=(), details=None):
-        archive = zipfile.ZipFile(io.BytesIO(export_zip(results, lives, details)))
-        self.assertEqual(sorted(archive.namelist()), ["details.json", "droplet.csv", "summary.csv"])
-        return {name: archive.read(name).decode() for name in archive.namelist()}
+        """Written as the export process writes them, and read back from the archive."""
+        import tarfile
+
+        from admet.workflows.export_process import write_archive
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_archive(Path(tmp) / "analysis_20261124_150000.tar.gz", export_files(results, lives, details))
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], [path.name])         # no part file left behind
+            with tarfile.open(path, "r:gz") as archive:
+                names = archive.getnames()
+                self.assertEqual(sorted(names), ["analysis_20261124_150000/details.json",
+                                                 "analysis_20261124_150000/droplet.csv",
+                                                 "analysis_20261124_150000/summary.csv"])
+                return {Path(name).name: archive.extractfile(name).read().decode() for name in names}
+
+    def test_the_export_is_written_into_a_folder_by_a_process_of_its_own(self):
+        import tarfile
+
+        from admet.workflows.export_process import ExportProcess
+
+        result, = file_results(_stored(), _rows())
+        with tempfile.TemporaryDirectory() as tmp:
+            export = ExportProcess(Path(tmp) / "exports", [replace(result, sample_id="oil_rep1")], [], {"samples": []})
+            export.start()
+            self.assertTrue(export.wait(60))
+            written = export.result()
+            self.assertEqual((written.parent, written.suffixes[-2:]), (Path(tmp) / "exports", [".tar", ".gz"]))
+            with tarfile.open(written, "r:gz") as archive:
+                droplets = [n for n in archive.getnames() if n.endswith("droplet.csv")]
+                self.assertEqual(len(archive.extractfile(droplets[0]).read().decode().splitlines()), 4)
+            broken = ExportProcess(Path(tmp) / "exports", [object()], [], {})       # cannot be read: an error back
+            broken.start()
+            self.assertTrue(broken.wait(60))
+            with self.assertRaises(RuntimeError):
+                broken.result()
 
     def test_a_video_gives_a_row_per_droplet_in_um_and_a_summary_row(self):
         result, = file_results(_stored(), _rows())
