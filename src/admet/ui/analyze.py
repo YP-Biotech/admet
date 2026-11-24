@@ -62,7 +62,7 @@ from admet.ui.analyze_results import (
     correction_key,
     corrections_summary,
     dispersed_flow_ul_min,
-    export_csv_zip,
+    export_zip,
     file_results,
     iter_rows,
     live_qc,
@@ -1816,11 +1816,61 @@ class AnalyzeWorkflowView:
             self._notify("Nothing to export yet.", "warning")
             self._mount_sidebar()
             return
-        live = {self._row_key(row): measured for row in self._live_shown() if (measured := self._live_qc(row)) is not None}
-        ui.download.content(export_csv_zip(self._stored_results(), results, self._corrections(), live), "analysis.zip")
-        self._log(f"export: {len(results)} result(s) as CSV")
-        self._notify(f"Exported {_count(len(results), 'result')} as CSV.", "success")
+        lives = self._lives()
+        ui.download.content(export_zip(results, lives, self._export_details(results, lives)), "analysis.zip")
+        self._log(f"export: {len(results)} result(s), {len(lives)} live")
+        self._notify(f"Exported {_count(len(results), 'result')}" + (f" and {len(lives)} live" if lives else "")
+                     + ": droplet.csv, summary.csv, details.json.", "success")
         self._sync_stage()
+
+    def _export_details(self, results: list[FileResult], lives: list[LiveQC]) -> dict[str, Any]:
+        """Everything about what was exported: when and with what, the conditions with their setpoints, and
+        each sample with its files, where they came from and how they were analysed."""
+        from admet import __version__
+
+        by_path = {(r.engine, str(Path(r.source_path))): r for r in results}
+        live_by_path = {str(Path(live.source_path)): live for live in lives}
+        samples, conditions = [], {}
+        for sample in self._samples():
+            files = []
+            for row in sample["rows"]:
+                result = by_path.get((row.engine, str(Path(row.source_path))))
+                live = live_by_path.get(str(Path(row.source_path))) if row.engine == "opencv" else None
+                if result is None and live is None:
+                    continue
+                stored = self._stored_result(row)
+                files.append({
+                    "source": row.engine, "path": row.source_path, "run": Path(row.run).name if row.run else "",
+                    "protocol": row.protocol, "run_time": row.run_time, "replicate": row.replicate,
+                    "result_key": stored.result_dir.name if stored is not None else "",
+                    "analysed_at": result.analyzed_at if result is not None else "",
+                    "settings": dict(row.settings), "read_settings": self._read_settings(row),
+                    "um_per_px": result.scale if result is not None else None,
+                    "fps": result.fps if result is not None and row.engine == "opencv" else None,
+                    "frames": result.frames if result is not None else None,
+                    "droplets": result.droplets if result is not None else None,
+                    "rate_note": result.rate_note if result is not None else "",
+                    "expected_hz": result.expected_hz or None if result is not None else None,
+                    "dispersed_ul_min": result.dispersed_ul_min or None if result is not None else None,
+                    "live": None if live is None else {
+                        "rate_hz": live.rate_hz, "rate_half": live.rate_half, "diameter": live.diameter,
+                        "diameter_half": live.diameter_half, "diameter_unit": live.diameter_unit,
+                        "cv_percent": live.cv_percent, "cv_half": live.cv_half, "count": live.count,
+                        "bursts": live.bursts, "state": live.state},
+                })
+            if not files:
+                continue
+            primary = sample["primary"]
+            condition = sample["condition"]
+            if condition and condition not in conditions:
+                conditions[condition] = {"name": condition, "derived": primary.derived_condition,
+                                         "protocol": primary.protocol,
+                                         "channels": _run_channels(primary.run) if primary.run else []}
+            samples.append({"sample": sample["name"], "condition": condition, "replicate": primary.replicate,
+                            "note": primary.note, "files": files})
+        return {"exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "admet_version": __version__, "home": str(self.store.root.parent),
+                "conditions": list(conditions.values()), "samples": samples}
 
     async def _export_plots(self) -> None:
         from nicegui import ui

@@ -805,12 +805,13 @@ class RedrawTests(unittest.TestCase):
             async def tick_then_export():
                 with patch.object(view, "_remount_main", lambda: None), \
                         patch.object(view, "_results", lambda **k: [object()]), \
-                        patch("admet.ui.analyze.export_csv_zip",
-                              side_effect=lambda stored, results, fixes, live: saved.update(live=dict(live)) or b""), \
+                        patch.object(view, "_export_details", lambda results, lives: {}), \
+                        patch("admet.ui.analyze.export_zip",
+                              side_effect=lambda results, lives, details: saved.update(live=list(lives)) or b""), \
                         patch("nicegui.ui.download.content", lambda *a, **k: None), \
                         patch.object(view, "_sync_stage", lambda: None):
                     view._export_csv()
-                    self.assertEqual(list(saved["live"]), [view._row_key(measured)])
+                    self.assertEqual([str(Path(live.source_path)) for live in saved["live"]], [str(Path(measured.source_path))])
                     view._handle_results_tick(SimpleNamespace(args={"uid": f"sample:{measured.name}", "field": "live",
                                                                     "value": False}))
                     self.assertIsNotNone(view._redraw_task)                               # the redraw still waits
@@ -818,7 +819,36 @@ class RedrawTests(unittest.TestCase):
 
             asyncio.run(tick_then_export())
 
-            self.assertEqual(saved["live"], {})                                         # as ticked, not as drawn
+            self.assertEqual(saved["live"], [])                                         # as ticked, not as drawn
+
+
+class ExportDetailsTests(unittest.TestCase):
+    def test_details_hold_the_conditions_with_their_setpoints_and_each_sample_with_its_files(self):
+        from tests.test_analyze_results import _run_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            run, names = run_with_videos(data, "oil", videos=1)
+            _run_csv(run.path, Path(names[0]).stem)
+            view = _make_view(Registry(Path(tmp) / "analyze"))
+            view._add_root(data)
+            video = view.matrix[0]
+            video.note = "second chip"
+
+            details = view._export_details([], view._lives())
+
+            self.assertEqual(details["home"], str(Path(tmp)))
+            self.assertTrue(details["admet_version"])
+            self.assertEqual([c["name"] for c in details["conditions"]], [video.condition])
+            self.assertEqual(details["conditions"][0]["channels"], [])                    # the test protocol sets no flow
+            sample, = details["samples"]
+            self.assertEqual((sample["sample"], sample["replicate"], sample["note"]), (video.name, None, "second chip"))   # a lone video: no replicate
+            file, = sample["files"]
+            self.assertEqual((file["source"], file["path"], file["run"]), ("opencv", video.source_path, run.run_id))
+            self.assertEqual(file["live"]["state"], "STABLE")
+            self.assertEqual(file["read_settings"]["gate_pct"], 50.0)
+            video.live_plotted = False
+            self.assertEqual(view._export_details([], view._lives())["samples"], [])     # nothing ticked: not exported
 
 if __name__ == "__main__":
     unittest.main()

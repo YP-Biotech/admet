@@ -41,7 +41,7 @@ The list comes back as you left it.
 |---|---|
 | **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every run's videos as samples under their generation condition; **Add files…** takes single videos and image folders. Tick **Use** on the samples to take on; put an image folder into its sample from the picker. The selected sample's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results. |
 | **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; both are prefilled for recordings made by `admet control`), set a file up on its preview when it needs a crop or other detection, then **Analyse all**. It runs every ticked file that has no result yet or whose detection settings changed since, and skips the rest. **Run selected** runs one file; **Stop** ends a run at its next step. |
-| **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
+| **3. Results** | View only: one row per sample with its numbers, the plots, and **Export CSV** / **Export plots**. |
 
 Image folders are analysed with Cellpose and videos with OpenCV; both go through the
 same three stages.
@@ -81,8 +81,8 @@ ran. Type over a condition's line to give it an alias, `Oil 300`; the derived
 condition stays beside it, and every sample of the condition takes the alias in its
 name. Conditions carry through to 3. Results: the table groups its lines by
 condition with the condition in a column, every file of a condition shares its hue
-in the plots with a shade per file, and the summary CSV has condition and
-replicate columns. A file in no condition is grouped by its sample name alone.
+in the plots with a shade per file, and the export carries the condition and the
+replicate of every row. A file in no condition is grouped by its sample name alone.
 
 ## Setting a video up
 
@@ -185,6 +185,27 @@ Every sample has a colour of its own: files of one condition wear shades of the
 condition's hue, one per sample, and a sample's video, image folder and live line
 share its colour. Without a condition, samples whose names end in a replicate
 marker (`oil_rep2`, `oil #2`) are replicates of one group and share its hue.
+
+## The export
+
+**Export CSV** saves `analysis.zip` with three files, over what is ticked on
+3. Results and read with the settings of the moment, so window, gate, frame limit,
+slide height and hand corrections are applied:
+
+- `droplet.csv`, one row per droplet, ready for downstream work: `sample`,
+  `condition`, `replicate`, `source` (`opencv` or `cellpose`), `droplet_id`,
+  `frame`, `droplet_diameter_um`, `droplet_area_um2`, `pos_x_um`, `pos_y_um`, and
+  `inclusions` when an exported image folder shows them. A video's droplet is one
+  row with its median size and mean position over the frames it was followed in;
+  an image folder's droplet is one row per droplet found in its image. The rig's
+  live QC measures bursts, not droplets, so it has no rows here.
+- `summary.csv`, one row per exported source of a sample, `opencv`, `cellpose` or
+  `live`: droplets, diameter mean, SD and CV, area mean and SD, rate and speed for
+  videos, mean inclusions for image folders, and the rig's state for live rows.
+- `details.json`, everything else: when and with which version, each condition
+  with its protocol and setpoints, and each sample with its note and its files,
+  where they came from, their result key, every setting, the scale and fps, and
+  the live QC in full.
 
 ## Where results go
 

@@ -93,6 +93,9 @@ class FileResult:
     timed_diameters: tuple[tuple[float, float], ...] = ()            # s from the first frame, µm, per tracked droplet
     spans: tuple[tuple[float, float, float], ...] = ()               # droplet id, first frame, last frame
     inclusion_counts: tuple[int, ...] = ()
+    # One per droplet kept: droplet id, frame (the first it was seen in, or its image), diameter µm,
+    # area µm², centroid x and y µm, inclusions (None where the engine has none or they are not shown).
+    droplet_rows: tuple[tuple[int, int | None, float | None, float | None, float | None, float | None, int | None], ...] = ()
 
     @property
     def protocol(self) -> str:
@@ -212,7 +215,7 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
                                 "fixes": (corrections or {}).get((stored.engine, source), {}),
                                 "scale": tuple((scales or {}).get((stored.engine, source), (0.0, 0.0))),
                                 "read": dict((settings or {}).get((stored.engine, source), {})),
-                                "width": None, "frames_kept": []}
+                                "width": None, "frames_kept": [], "loose_rows": []}
         if kind == "run_context":
             acc["context"] = _values(row)
             acc["width"] = _num(acc["context"].get("frame_width"))
@@ -251,8 +254,10 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
                 acc["loose_d"].append(diameter)
             if area:
                 acc["loose_a"].append(area)
+            if kind == "droplet":
+                acc["loose_rows"].append((frame, diameter, area, cx, cy, corrected_inclusions(values, fix)))
             continue
-        entry = acc["per_droplet"].setdefault(int(droplet_id), {"d": [], "a": [], "f": [], "x": []})
+        entry = acc["per_droplet"].setdefault(int(droplet_id), {"d": [], "a": [], "f": [], "x": [], "cx": [], "cy": []})
         if diameter:
             entry["d"].append(diameter)
         if area:
@@ -260,6 +265,9 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
         if frame is not None:
             entry["f"].append(frame)
             entry["x"].append(cx or 0.0)
+        if cx is not None and cy is not None:
+            entry["cx"].append(cx)
+            entry["cy"].append(cy)
     return [_finish(stored, key, acc) for key, acc in sorted(files.items())]
 
 
@@ -340,6 +348,7 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
     slide = _num(acc["read"].get("slide_height_um")) or 0.0
     if engine == "cellpose" and slide > 0:          # imaged in a slide lower than the droplets: unsquashed
         diameters = [unsquashed_diameter(d, slide) for d in diameters]
+    droplet_rows = _droplet_rows(acc, engine, to_um, scale, slide)
     spans: list[tuple[float, float, float]] = []
     arrivals: list[float] = []
     speeds: list[float] = []
@@ -428,7 +437,36 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
         timed_diameters=tuple(sorted(((f - arrivals[0]) / fps, d) for f, d in timed)) if arrivals and fps else (),
         spans=tuple(spans),
         inclusion_counts=() if acc["read"].get("detect_inclusions") is False else tuple(acc["inclusions"]),
+        droplet_rows=droplet_rows,
     )
+
+
+def _droplet_rows(acc: dict[str, Any], engine: str, to_um: float, scale: float, slide: float) -> tuple[tuple, ...]:
+    """A row per droplet kept, in µm: a tracked droplet's median size and mean centroid over its frames, an
+    imaging droplet as found in its image (unsquashed when a slide height is set), numbered in order."""
+    to_um_xy = scale or 1.0                            # centroids are always pixels
+
+    def um(value: float | None, factor: float) -> float | None:
+        return round(value * factor, 3) if value is not None else None
+
+    rows = []
+    for droplet_id, entry in sorted(acc["per_droplet"].items()):
+        if not entry["d"] and not entry["a"]:
+            continue
+        rows.append((droplet_id, int(min(entry["f"])) if entry["f"] else None,
+                     um(median(entry["d"]) if entry["d"] else None, to_um),
+                     um(median(entry["a"]) if entry["a"] else None, to_um * to_um),
+                     um(mean(entry["cx"]) if entry["cx"] else None, to_um_xy),
+                     um(mean(entry["cy"]) if entry["cy"] else None, to_um_xy), None))
+    shown = acc["read"].get("detect_inclusions") is not False
+    for n, (frame, diameter, area, cx, cy, inclusions) in enumerate(acc["loose_rows"], start=1):
+        d = diameter * to_um if diameter is not None else None
+        if d is not None and engine == "cellpose" and slide > 0:
+            d = unsquashed_diameter(d, slide)
+        rows.append((n, int(frame) if frame is not None else None, round(d, 3) if d is not None else None,
+                     um(area, to_um * to_um), um(cx, to_um_xy), um(cy, to_um_xy),
+                     inclusions if shown and engine == "cellpose" else None))
+    return tuple(rows)
 
 
 def settings_summary(settings: dict[str, Any]) -> str:
@@ -1222,26 +1260,12 @@ def _empty_chart(title: str) -> dict[str, Any]:
 
 # -- export ----------------------------------------------------------------------------
 
-def export_csv_zip(stored: list[StoredResult], results: list[FileResult],
-                   corrections: dict[tuple[str, str], dict[str, Any]] | None = None,
-                   live: dict[tuple[str, str, str], LiveQC] | None = None) -> bytes:
-    """A zip: summary.csv over the results, and every droplet row of each file as its own CSV.
-
-    Imaging droplets switched off by hand are left out; corrected inclusion counts are written
-    with the raw count beside them.
-    """
-    wanted = {(result.run, result.engine, result.source_path): result.sample_id for result in results}
-    files: dict[str, bytes] = {"summary.csv": _summary_csv(results, live)}
-    for item in stored:
-        source = str(item.source_path)
-        sample_id = wanted.get((item.run_name, item.engine, source))
-        if sample_id is None:
-            continue
-        rows = [row for row in iter_rows(item.rows_path)
-                if row.get("kind") in {"detection", "droplet", "track", "droplet_geometry"}]
-        fixes = (corrections or {}).get((item.engine, source), {})
-        files[f"droplets/{_safe(item.run_name or 'files')}_{_safe(sample_id)}_{item.engine}.csv"] = _rows_csv(rows, fixes)
-    return zip_bytes(files)
+def export_zip(results: list[FileResult], lives: Sequence[LiveQC] = (), details: dict[str, Any] | None = None) -> bytes:
+    """The export: droplet.csv, one row per droplet for downstream work; summary.csv, the statistics of
+    every exported file and live recording; details.json, everything about the files, the samples and
+    how they were analysed. RESULTS and LIVES are the ticked ones, read with the settings of the day."""
+    return zip_bytes({"droplet.csv": droplet_csv(results), "summary.csv": summary_csv(results, lives),
+                      "details.json": json.dumps(details or {}, indent=2, ensure_ascii=False, default=str).encode("utf-8")})
 
 
 def zip_bytes(files: dict[str, bytes]) -> bytes:
@@ -1252,52 +1276,49 @@ def zip_bytes(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _summary_csv(results: list[FileResult], live: dict[tuple[str, str, str], LiveQC] | None = None) -> bytes:
-    """One line per result; the live QC of the same video, when the rig measured one, in the last columns."""
+def droplet_csv(results: list[FileResult]) -> bytes:
+    """One row per droplet: who it belongs to, then what it is. The live QC measures bursts, not droplets,
+    so its numbers are in summary.csv only. Inclusions are a column only when an exported image folder
+    shows them."""
+    with_inclusions = any(r.engine == "cellpose" and any(row[6] is not None for row in r.droplet_rows) for r in results)
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["run", "protocol", "time", "replicate", "sample", "condition", "engine", "source", "analysed_at", "frames",
-                     "droplets", "inclusions",
-                     "mean_diameter_um", "sd_diameter_um", "cv_percent", "mean_area_um2", "sd_area_um2",
-                     "rate_hz", "expected_hz", "dispersed_ul_min", "speed_mm_s", "fps", "um_per_px", "settings",
-                     "live_rate_hz", "live_diameter", "live_diameter_unit", "live_cv_percent", "live_state"])
+    writer.writerow(["sample", "condition", "replicate", "source", "droplet_id", "frame", "droplet_diameter_um",
+                     "droplet_area_um2", "pos_x_um", "pos_y_um", *(["inclusions"] if with_inclusions else [])])
     for result in results:
-        measured = (live or {}).get((result.run, result.engine, result.source_path))
-        writer.writerow([result.run, result.protocol, result.run_time, result.replicate or "", result.sample_id, result.condition,
-                         result.engine, result.source_path, result.analyzed_at,
-                         result.frames, result.droplets, result.inclusions,
-                         _fmt(result.mean_diameter, 3), _fmt(result.std_diameter, 3), _fmt(result.cv_percent, 3),
-                         _fmt(result.mean_area, 2), _fmt(result.std_area, 2), _fmt(result.rate_hz, 3),
-                         _fmt(result.expected_hz, 1), _fmt(result.dispersed_ul_min, 2),
-                         _fmt(result.speed_mm_s, 3), _fmt(result.fps, 3), _fmt(result.scale, 4),
-                         settings_summary(result.settings),
-                         *((_fmt(measured.rate_hz, 3), _fmt(measured.diameter, 1), measured.diameter_unit,
-                            _fmt(measured.cv_percent, 1), measured.state) if measured else ("", "", "", "", ""))])
+        for droplet_id, frame, diameter, area, x, y, inclusions in result.droplet_rows:
+            writer.writerow([result.sample_id, result.condition, result.replicate or "", result.engine, droplet_id,
+                             "" if frame is None else frame, _blank(diameter), _blank(area), _blank(x), _blank(y),
+                             *([_blank(inclusions)] if with_inclusions else [])])
     return out.getvalue().encode("utf-8")
 
 
-def _rows_csv(rows: list[dict[str, Any]], fixes: dict[str, Any] | None = None) -> bytes:
-    keys: list[str] = []
-    for row in rows:
-        for key in _values(row):
-            if key not in keys and not key.startswith("contour"):
-                keys.append(key)
-    if fixes and "inclusions" in keys:
-        keys.append("inclusions_raw")
+def summary_csv(results: list[FileResult], lives: Sequence[LiveQC] = ()) -> bytes:
+    """One row per exported source of a sample: the video's analysis, the image folder's, the rig's live QC."""
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["kind", *keys])
-    for row in rows:
-        values = dict(_values(row))
-        if fixes and row.get("kind") == "droplet":
-            fix = fixes.get(correction_key(values.get("frame"), values.get("droplet_id")))
-            if fix and fix.get("disabled"):
-                continue
-            if fix:
-                values["inclusions_raw"] = values.get("inclusions")
-                values["inclusions"] = corrected_inclusions(values, fix)
-        writer.writerow([row.get("kind", ""), *(_cell(values.get(key)) for key in keys)])
+    writer.writerow(["sample", "condition", "replicate", "source", "droplets", "diameter_mean_um", "diameter_sd_um",
+                     "diameter_cv_percent", "area_mean_um2", "area_sd_um2", "rate_hz", "speed_mm_s",
+                     "inclusions_mean", "state"])
+    for r in results:
+        imaging = r.engine == "cellpose"
+        writer.writerow([r.sample_id, r.condition, r.replicate or "", r.engine, r.droplets,
+                         _fmt(r.mean_diameter, 3) if r.diameters else "", _fmt(r.std_diameter, 3) if r.diameters else "",
+                         _fmt(r.cv_percent, 3) if r.diameters else "", _fmt(r.mean_area, 2) if r.areas else "",
+                         _fmt(r.std_area, 2) if r.areas else "",
+                         "" if imaging or not r.rate_hz else _fmt(r.rate_hz, 3),
+                         "" if imaging or not r.speed_mm_s else _fmt(r.speed_mm_s, 3),
+                         _fmt(mean(r.inclusion_counts), 3) if imaging and r.inclusion_counts else "", ""])
+    for live in lives:
+        in_um = live.diameter and live.diameter_unit == "um"
+        writer.writerow([live.sample_id, live.condition, live.replicate or "", "live", f"{live.count:.0f}",
+                         _fmt(live.diameter, 1) if in_um else "", "", _fmt(live.cv_percent, 2) if live.cv_percent else "",
+                         "", "", _fmt(live.rate_hz, 1) if live.rate_hz else "", "", "", live.state])
     return out.getvalue().encode("utf-8")
+
+
+def _blank(value: Any) -> Any:
+    return "" if value is None else value
 
 
 def _cell(value: Any) -> Any:
