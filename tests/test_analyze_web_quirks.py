@@ -26,13 +26,41 @@ class AbortedRequestTests(unittest.TestCase):
         scope = {"type": "http", "method": "GET", "path": "/engine.io/", "query_string": b"transport=polling&EIO=4",
                  "headers": [], "server": ("x", 80), "client": ("y", 1)}
         self.assertIsNone(asyncio.run(server.handle_request(scope, gone, send)))
-        self.assertEqual(sent, [])                                 # nothing to answer, nothing raised
+        self.assertEqual([(m["type"], m.get("status")) for m in sent],
+                         [("http.response.start", 400), ("http.response.body", None)])   # an empty reply, nothing raised
+        sent.clear()
 
         async def request():
             return {"type": "http.request", "body": b"", "more_body": False}
 
         asyncio.run(server.handle_request(scope, request, send))
         self.assertEqual(sent[0]["type"], "http.response.start")   # a live client is answered as before
+        self.assertNotEqual(sent[0]["status"], 400)
+
+    def test_behind_a_starlette_middleware_as_nicegui_runs_it_a_gone_browser_raises_nothing(self):
+        import engineio
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        from admet.ui.web_quirks import quiet_aborted_requests
+
+        quiet_aborted_requests()
+
+        class Through(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                return await call_next(request)
+
+        app = Through(engineio.ASGIApp(engineio.AsyncServer(async_mode="asgi")))
+        scope = {"type": "http", "method": "GET", "path": "/engine.io/", "query_string": b"transport=polling&EIO=4",
+                 "headers": [], "server": ("x", 80), "client": ("y", 1), "scheme": "http", "root_path": "",
+                 "http_version": "1.1"}
+
+        async def gone():
+            return {"type": "http.disconnect"}
+
+        async def send(_message):
+            pass
+
+        asyncio.run(app(scope, gone, send))                        # no "No response returned"
 
 
 if __name__ == "__main__":
