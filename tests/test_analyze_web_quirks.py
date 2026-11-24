@@ -2,8 +2,10 @@
 
 import asyncio
 import unittest
+from importlib.util import find_spec
 
 
+@unittest.skipUnless(find_spec("engineio"), "the analyze extra is not installed")
 class AbortedRequestTests(unittest.TestCase):
     def test_a_request_with_nothing_in_it_is_dropped_and_a_real_one_still_answered(self):
         import engineio
