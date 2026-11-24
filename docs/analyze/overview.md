@@ -35,34 +35,37 @@ one's work is left half-written.
 
 ## The workflow
 
-The file list comes back as you left it.
+The list comes back as you left it.
 
 | Stage | What you do there |
 |---|---|
-| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every video in it with its run's protocol, time and step; **Add files…** takes single videos and image folders. Tick **Use** on the ones to take on; the sample name is built from the file's generation condition and its replicate unless you write one over it, see [Generation conditions](#generation-conditions). The selected file's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results; an unticked file stays listed here. Each later stage has a Use of its own: on 2. Analyse it says which files to run, on 3. Results which are in the plots and the export; an unticked file stays in the table, greyed, and a file not run still shows its live QC on 3. Results. Use all in a table's header ticks or clears every file of that stage. |
-| **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; FPS is prefilled for recordings made by `admet control`), set each file up on its preview, then **Run all ticked** or **Run selected**. **Stop** ends a run at its next step: the files already finished keep their results, the one in hand is left unfinished and runs again next time. |
+| **1. Files** | **Add folder…** takes a folder of runs (a data folder, the export folder on the server, or one run) and lists every run's videos as samples under their generation condition; **Add files…** takes single videos and image folders. Tick **Use** on the samples to take on; put an image folder into its sample from the picker. The selected sample's first frame and facts are shown below the list. Only ticked files go on to 2. Analyse and 3. Results. |
+| **2. Analyse** | Fill in **µm/px** and **FPS** for every ticked file (red cells are missing; both are prefilled for recordings made by `admet control`), set a file up on its preview when it needs a crop or other detection, then **Analyse all**. It runs every ticked file that has no result yet or whose detection settings changed since, and skips the rest. **Run selected** runs one file; **Stop** ends a run at its next step. |
 | **3. Results** | View only: one row per file with its numbers and their distributions, the plots, and **Export CSV** / **Export plots**. |
 
 Image folders are analysed with Cellpose and videos with OpenCV; both go through the
 same three stages.
 
-## The file list
+## Samples and files
 
-Each row is one file with its sample name, its generation condition, the run's
-protocol, time and replicate, its engine and when it was last analysed. A run is one execution of a
-protocol, unique by its id; its step videos are its **replicates**, numbered from
-the step's name (`set01_rep02` is the second; a protocol runs one condition, so its
-steps are replicates) or its number. The **sample** name is built:
-`<condition>_rep<n>` for a file in a condition, the n-th of the condition by run
-time and replicate, else the protocol with the replicate (`dropseq_3n_rep2`), or
-the file's name. Type a name over it to say
-otherwise; clear the field to have it built again. The protocol, the time and the
-replicate stay in columns of their own however the file is named. **Use**
-decides which files go on, and a shift-click on a Use box ticks or clears every file
-between it and the box clicked last, on any stage; **✕** takes a file off the list (its
-stored results stay). **Rescan** at the top lists videos that arrived in the watched folders since.
-The list and every file's settings are kept in the registry, so the screen comes
-back as you left it.
+Three words cover what is listed. A **condition** is how the droplets were made: the
+protocol with the oil, cells and beads setpoints of the step that recorded, see
+[Generation conditions](#generation-conditions). A **sample** is one collection: a
+run's replicate, shown as `rep 1`, `rep 2`, … under its condition and numbered by
+time across the runs of that condition. A **file** is a video or an image folder;
+a sample holds its video, the image folders of the same droplets, and the live QC
+the rig measured while the video was recorded, each a chip in its column.
+
+A video from a run gets its condition and its sample by itself. An image folder has
+no run, so it waits under **Unassigned** until you pick the sample it belongs to,
+or make a sample of its own for a collection with no video. **Use** on a sample
+ticks all its files; on a condition line, all its samples; a shift-click on a
+sample ticks or clears every sample between it and the one clicked last. The
+**Note** field is for anything you want to write down. Click a sample to see its
+first frame below, how its droplets were made, the camera as it was set, and,
+under Details, the run and step it came from. The list and every file's settings
+are kept in the registry, so the screen comes back as you left it; **Rescan** at
+the top lists videos that arrived in the watched folders since.
 
 ## Generation conditions
 
@@ -72,17 +75,12 @@ oil, cells and beads setpoints of the step that recorded, written
 run gets it at scan, from the condition the run was planned with in `admet
 control` when there is one, else from the protocol itself. Runs of one protocol at
 the same setpoints thus fall into one condition on their own, whatever day they
-ran. Type a condition in the **Condition** column, or tick the files and
-**Assign…** them to one, named anew or chosen; **Clear** takes the ticked files out
-of theirs. Choosing a condition from **Condition** above the list ticks exactly
-its files. Conditions are kept with the file list.
-
-A condition names its files: `<condition>_rep1`, `<condition>_rep2`, … in the
-order of their runs and replicates, unless a name is written over. Conditions
-carry through to 3. Results: the table groups its lines by condition with the
-condition in a column, every file of a condition shares its hue in the plots with
-a shade per file, and the summary CSV has condition and replicate columns. A file
-in no condition is grouped by its sample name alone.
+ran. Type over a condition's line to give it an alias, `Oil 300`; the derived
+condition stays beside it, and every sample of the condition takes the alias in its
+name. Conditions carry through to 3. Results: the table groups its lines by
+condition with the condition in a column, every file of a condition shares its hue
+in the plots with a shade per file, and the summary CSV has condition and
+replicate columns. A file in no condition is grouped by its sample name alone.
 
 ## Setting a video up
 
@@ -126,7 +124,9 @@ whose engine has that setting takes it as soon as the value is entered. The
 **Columns** dropdown above the table chooses which settings are shown as columns
 (µm/px, FPS, the frame range and the detection settings; the frames and crop
 summaries too), and the box in the **Use** header ticks or clears every file at
-once. Every setting column also edits per file, in its row. A value in a header
+once. The **Status** dot says where a file stands: grey not run, blue running,
+green analysed as set up now, amber its detection settings changed since, so
+**Analyse all** will run it again. Every setting column also edits per file, in its row. A value in a header
 lands, for example *Detect inclusions* off on every image folder, or
 one µm/px on every video. Unticked files are left alone.
 

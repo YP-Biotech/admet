@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from admet.core.registry import Registry, content_key, infer_engine, protocol_condition, replicate_of
+from admet.core.registry import Registry, condition_channels, content_key, infer_engine, protocol_condition, replicate_of
 from admet.core.runs import RunStore
 
 
@@ -120,6 +120,10 @@ class RegistryTests(unittest.TestCase):
              "trigger_type": "time", "trigger_params": {"duration_s": 1}},
             {"name": "stop", "trigger_type": "time", "trigger_params": {"duration_s": 1}}]}
         self.assertEqual(protocol_condition({"normalized_settings": {"protocol": literal}}), "dropseq o1300mbar c540mbar b0")
+        self.assertEqual(condition_channels({"normalized_settings": {"protocol": literal}}),
+                         [{"index": 0, "label": "Oil L", "mode": "pressure", "value": 1300.0},
+                          {"index": 1, "label": "Cells M", "mode": "pressure", "value": 540.0},
+                          {"index": 2, "label": "Beads M", "mode": "flow", "value": 0.0}])
         self.assertEqual(protocol_condition({"tag": "Oil 3", "normalized_settings": {"protocol": literal}}), "Oil 3 o1300mbar c540mbar b0")
         self.assertEqual(protocol_condition({"normalized_settings": {"protocol": {"name": "wash", "steps": []}}}), "wash")
         self.assertEqual(protocol_condition({"kind": "recording"}), "")                       # by hand: no protocol

@@ -16,9 +16,9 @@ def create_analyze_workflow() -> Workflow:
                 instruction_cards=(
                     StageInstruction("Add a folder of runs (a data or export folder), or single videos and image "
                                      "folders, to analyse.", guard="not has_matrix_rows"),
-                    StageInstruction("Tick Use on the files to take on, name the samples and put them into sets "
-                                     "(Assign…); a run's protocol, time and step are fields of their own. "
-                                     "Then go to 2. Analyse."),
+                    StageInstruction("Samples are listed under their generation condition, with their video, "
+                                     "images and live QC. Tick Use on the ones to take on; put an image folder "
+                                     "into its sample from the picker. Then go to 2. Analyse."),
                 ),
                 settings_panel=SettingsSpec("matrix", title="Files"),
                 actions=(
@@ -37,11 +37,12 @@ def create_analyze_workflow() -> Workflow:
                     StageInstruction("No files ticked. Tick Use on 1. Files.", guard="not has_targets"),
                     StageInstruction("Fill in µm/px and FPS for every ticked file: the red cells are missing.",
                                      guard="not targets_ready"),
-                    StageInstruction("Select a file, set its crop, frames and detection on the preview, then Run."),
+                    StageInstruction("Analyse all runs every ticked file that has no result yet or whose detection "
+                                     "settings changed since. Select a file only to crop it or change its detection."),
                 ),
                 settings_panel=SettingsSpec("matrix", title="Ticked files"),
                 actions=(
-                    StageAction("Run all ticked", "analyze", guard="targets_ready", completes=True),
+                    StageAction("Analyse all", "analyze", guard="targets_ready", completes=True),
                     StageAction("Run selected", "analyze_selected", guard="selected_ready", variant="secondary"),
                     StageAction("Stop", "stop_analysis", guard="running", variant="warning"),
                     StageAction("Reset ticked", "reset_ticked_settings", guard="has_targets", variant="secondary"),
