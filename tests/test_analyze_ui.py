@@ -805,6 +805,7 @@ class RedrawTests(unittest.TestCase):
             async def tick_then_export():
                 with patch.object(view, "_remount_main", lambda: None), \
                         patch.object(view, "_results", lambda **k: [object()]), \
+                        patch.object(view, "_export_details", lambda results, lives: {}), \
                         patch("admet.ui.analyze.export_zip",
                               side_effect=lambda results, lives, details: saved.update(live=list(lives)) or b""), \
                         patch("nicegui.ui.download.content", lambda *a, **k: None), \
