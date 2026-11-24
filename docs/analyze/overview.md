@@ -162,7 +162,9 @@ the tick: droplets, diameter, CV and rate from OpenCV; diameter, CV and
 inclusions per droplet from Cellpose; rate and CV from the rig, with its state in
 the rig's colour. A source with no number yet says why, *not run* or *stale*. A
 tick off greys its numbers and takes that source out of every plot and the export;
-the ticks are remembered. Below the table come the plots, in sections that are
+the ticks are remembered. The table follows each tick at once; the plots are drawn
+again once the ticking has rested for a moment, so ticking several samples is one
+redraw. The export always takes the ticks as they are, drawn or not. Below the table come the plots, in sections that are
 there when they have data:
 
 - **Aggregated**: diameter, CV and rate as bars, one place per sample with a bar

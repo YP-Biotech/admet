@@ -188,6 +188,7 @@ class AnalyzeWorkflowView:
         self._run_step_progress = 0.0
         self._running = False
         self._running_uids: set[str] = set()            # the files of the run in progress
+        self._redraw_task: Any = None                   # a plot redraw waiting for the ticks to settle
         self._stop: Any = None                          # the run in progress: told to stop through it
         self.show_overlay = True
         self.show_stages = False
@@ -388,6 +389,42 @@ class AnalyzeWorkflowView:
             self._render_file_editor()
         else:
             self._render_results_plots()
+
+    def _schedule_redraw(self) -> None:
+        """Redraw the plots once the ticks have settled: each tick restarts a short wait, so ticking several
+        files is one redraw, not one per click. Without a running event loop (a test) it redraws at once."""
+        import asyncio
+
+        if self._redraw_task is not None:
+            self._redraw_task.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._redraw_task = None
+            self._remount_main()
+            return
+        self._redraw_task = loop.create_task(self._redraw_after(REDRAW_DELAY_S))
+
+    async def _redraw_after(self, delay: float) -> None:
+        import asyncio
+
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        self._redraw_task = None
+        self._remount_main()
+
+    async def _flush_redraw(self) -> None:
+        """A redraw still waiting is done now: what is drawn then follows every tick made."""
+        import asyncio
+
+        if self._redraw_task is None:
+            return
+        self._redraw_task.cancel()
+        self._redraw_task = None
+        self._remount_main()
+        await asyncio.sleep(0.5)                        # the charts mount in the browser before they are read
 
     def _remount_main(self) -> None:
         body = self._refs.get("main_body")
@@ -658,7 +695,7 @@ class AnalyzeWorkflowView:
         self._mount_sidebar()
         self._sync_tables()                              # past 1. Files the row greys out, or comes back
         if self._stage_id() != "files":
-            self._remount_main()                         # the plots follow the ticked files
+            self._schedule_redraw()                         # the plots follow the ticks, once they settle
 
     def _handle_alias(self, event: Any) -> None:
         """A condition's alias typed over: every file of the condition takes the new name."""
@@ -1028,7 +1065,7 @@ class AnalyzeWorkflowView:
         self._notify(self._stage_summary(), "primary")
         self._mount_sidebar()
         if self._stage_id() != "files":
-            self._remount_main()                      # the editor and the plots follow the ticked files
+            self._schedule_redraw()                      # the editor and the plots follow, once the ticks settle
 
     def _handle_header_set(self, field: str, value: Any) -> None:
         """A value entered in a setting column's header: onto every ticked file the setting applies to."""
@@ -1604,8 +1641,8 @@ class AnalyzeWorkflowView:
                 row.live_plotted = value
         self._save_matrix()
         self._sync_action_box()
-        self._sync_tables()
-        self._remount_main()
+        self._sync_tables()                              # the tick shows at once
+        self._schedule_redraw()                          # the plots once the ticking stops
 
     def _result_sections(self) -> list[str]:
         """The sections with something to show, in their order: aggregated, then the engines' own, then
@@ -1788,6 +1825,7 @@ class AnalyzeWorkflowView:
     async def _export_plots(self) -> None:
         from nicegui import ui
 
+        await self._flush_redraw()                      # the plots as ticked, not as last drawn
         charts = [(name, chart) for name, chart in self._chart_refs if not chart.is_deleted]
         if not charts:
             self._notify("No plots to export.", "warning")
@@ -2023,7 +2061,7 @@ class AnalyzeWorkflowView:
             self._mount_sidebar()
             self._sync_tables()                          # past 1. Files the row greys out, or comes back
             if self._stage_id() != "files":
-                self._remount_main()                     # the plots follow the ticked files
+                self._schedule_redraw()                     # the plots follow the ticks, once they settle
             return
         if field_name == "condition":
             row.condition = str(value or "").strip()
@@ -2417,6 +2455,7 @@ def _results_of(result_dir: str, _mtime: float, source_path: str, engine: str, s
 
 
 NEW_SAMPLE = "__new__"
+REDRAW_DELAY_S = 0.8                    # how long the ticks must rest before the plots are drawn again
 
 
 def _short_time(run_time: str) -> str:
