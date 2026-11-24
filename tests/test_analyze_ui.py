@@ -635,7 +635,7 @@ class SampleTests(unittest.TestCase):
             self.assertEqual([r["kind"] for r in rows], ["condition", "sample", "sample", "sample", "condition", "unassigned"])
             self.assertEqual((rows[0]["alias"], rows[0]["count"], rows[0]["active"], rows[0]["mixed"]),
                              ("Oil 3", "3 samples", True, False))
-            self.assertEqual((rows[1]["rep"], rows[1]["images"], rows[1]["live"]), ("rep 1", [], ""))
+            self.assertEqual((rows[1]["rep"], rows[1]["images"], rows[1]["live"]), ("rep 1", "", ""))
             self.assertEqual((rows[4]["alias"], rows[4]["fixed"]), ("Unassigned", True))
             self.assertEqual(rows[5]["images"], "plate3_A1")
             self.assertEqual([o["label"] for o in rows[5]["options"]],
@@ -657,10 +657,10 @@ class SampleTests(unittest.TestCase):
             self.assertEqual([Path(r.source_path).name for r in second["folders"]], ["plate3_A1"])   # in the sample
             rows = view._files_rows()
             self.assertEqual([r["kind"] for r in rows], ["condition", "sample", "sample", "sample"])  # nothing unassigned
-            self.assertEqual([f["name"] for f in rows[2]["images"]], ["plate3_A1"])
+            self.assertEqual([f["name"] for f in rows[2]["folders"]], ["plate3_A1"])
             self.assertNotIn("Oil 3_rep2", [o["value"] for o in rows[2]["options"]])           # moves elsewhere only
             view._handle_assign(SimpleNamespace(args={"uid": loose.uid, "sample": "Oil 3_rep3"}))   # moved in one step
-            self.assertEqual((loose.sample_id, [f["name"] for f in view._files_rows()[3]["images"]]),
+            self.assertEqual((loose.sample_id, [f["name"] for f in view._files_rows()[3]["folders"]]),
                              ("Oil 3_rep3", ["plate3_A1"]))
             view._handle_unassign(SimpleNamespace(args={"uid": loose.uid}))
             self.assertTrue(loose.unassigned)                                                   # back to Unassigned
