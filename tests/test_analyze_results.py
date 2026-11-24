@@ -288,8 +288,8 @@ class SetStyleTests(unittest.TestCase):
     def test_files_of_one_set_share_a_hue_and_sets_take_the_hues_in_the_lists_order(self):
         from admet.ui.analyze_results import plot_styles
 
-        water = [_result(sample_id=f"w{n}", source_path=f"/w{n}.avi", set="water") for n in (1, 2)]
-        oil = [_result(sample_id=f"o{n}", source_path=f"/o{n}.avi", set="oil") for n in (1, 2, 3)]
+        water = [_result(sample_id=f"w{n}", source_path=f"/w{n}.avi", condition="water") for n in (1, 2)]
+        oil = [_result(sample_id=f"o{n}", source_path=f"/o{n}.avi", condition="oil") for n in (1, 2, 3)]
         loose = _result(sample_id="loose rep 1", source_path="/l.avi")
 
         styles = plot_styles([*water, *oil, loose], listed=["oil", "oil", "oil", "water", "water", "loose rep 1"])
@@ -302,8 +302,8 @@ class SetStyleTests(unittest.TestCase):
         self.assertEqual(hue(loose), 2)                                                   # no set: by its sample name
         self.assertEqual(sorted(styles[(r.run, r.source_path)].shade for r in oil), [0, 1, 2])   # replicates: shades
         cells = aggregated_cells("o1", styles[(oil[0].run, oil[0].source_path)], oil[0], None)
-        self.assertIn("oil", cells["set"])
-        self.assertIn("—", aggregated_cells("l", None, loose, None)["set"])
+        self.assertIn("oil", cells["condition"])
+        self.assertIn("—", aggregated_cells("l", None, loose, None)["condition"])
 
 
 class ChartTests(unittest.TestCase):
@@ -418,7 +418,7 @@ class ExportTests(unittest.TestCase):
 
             self.assertEqual(sorted(archive.namelist()), ["droplets/study_s_opencv.csv", "summary.csv"])
             summary = archive.read("summary.csv").decode().splitlines()
-            self.assertTrue(summary[0].startswith("run,protocol,time,replicate,sample,set,engine"))
+            self.assertTrue(summary[0].startswith("run,protocol,time,replicate,sample,condition,engine"))
             self.assertIn("study,study,,,s,,opencv", summary[1])                     # no stamp: the run as named
             droplets = archive.read("droplets/study_s_opencv.csv").decode().splitlines()
             self.assertEqual(droplets[0], "kind,frame,droplet_id,centroid_x,centroid_y,bbox_x,bbox_width,equivalent_diameter,area")

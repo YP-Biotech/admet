@@ -8,11 +8,11 @@ from pathlib import Path
 from admet.core.runs import RECORD, RUN_ID, RunStore, run_name
 
 
-def plan(tag="", name="dropseq_3n", fields=None, group=""):
+def plan(tag="", name="dropseq_3n", fields=None, condition=""):
     protocol = {"name": name, "steps": [{"name": "collect", "trigger_type": "time", "trigger_params": {"duration_s": 1}}]}
     if fields:
         protocol["measurements"] = fields
-    return {"plan_id": "plan_1", "operation_id": "run_json_protocol", "tag": tag, "set": group, "state": "executing",
+    return {"plan_id": "plan_1", "operation_id": "run_json_protocol", "tag": tag, "condition": condition, "state": "executing",
             "executed_at": "2026-11-18T18:30:00", "normalized_settings": {"protocol": protocol}}
 
 
@@ -27,13 +27,13 @@ class StoreTests(unittest.TestCase):
     def test_a_protocol_run_gets_a_dated_folder_named_after_its_tag_and_its_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
-            run = store.begin(plan(tag="Oil 3", fields={"mass": {"label": "Mass", "unit": "mg"}}, group="oil"))
+            run = store.begin(plan(tag="Oil 3", fields={"mass": {"label": "Mass", "unit": "mg"}}, condition="oil"))
 
             self.assertTrue(RUN_ID.fullmatch(run.run_id), run.run_id)
             self.assertTrue(run.run_id.endswith("_oil_3"))
             self.assertEqual(run.path, Path(tmp) / "runs" / run.run_id)
             record = json.loads((run.path / RECORD).read_text())
-            self.assertEqual((record["run_id"], record["name"], record["kind"], record["tag"], record["set"]),
+            self.assertEqual((record["run_id"], record["name"], record["kind"], record["tag"], record["condition"]),
                              (run.run_id, "oil_3", "protocol", "Oil 3", "oil"))
             self.assertEqual(record["measurements"], {"fields": {"mass": {"label": "Mass", "unit": "mg"}},
                                                       "values": {"mass": None}, "revision": 0})
@@ -60,7 +60,7 @@ class StoreTests(unittest.TestCase):
     def test_the_list_names_runs_by_tag_then_protocol_then_label_newest_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(tmp)
-            tagged = store.begin(plan(tag="Oil 3", group="oil"))
+            tagged = store.begin(plan(tag="Oil 3", condition="oil"))
             tagged.update(executed_at="2026-11-18T10:00:00", state="completed")
             plain = store.begin(plan())
             plain.update(executed_at="2026-11-18T11:00:00", state="failed")
@@ -70,7 +70,7 @@ class StoreTests(unittest.TestCase):
             listed = store.list()
 
             self.assertEqual([entry["name"] for entry in listed], ["cap", "dropseq_3n", "Oil 3"])
-            self.assertEqual([entry["set"] for entry in listed], ["", "", "oil"])        # the set the run was planned with
+            self.assertEqual([entry["condition"] for entry in listed], ["", "", "oil"])        # the set the run was planned with
             self.assertEqual([entry["state"] for entry in listed], ["recording", "failed", "completed"])
             self.assertEqual(listed[2]["directory"], str(tagged.path))
             self.assertEqual([entry["measurements"] for entry in listed], [False, False, False])

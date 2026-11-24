@@ -39,7 +39,7 @@ def files_columns() -> list[dict[str, Any]]:
     return [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
-        {"name": "set", "label": "Set", "field": "set", "align": "left"},
+        {"name": "condition", "label": "Set", "field": "condition", "align": "left"},
         {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
         {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
         {"name": "replicate", "label": "Rep.", "field": "replicate", "align": "left"},
@@ -62,7 +62,7 @@ def analyse_columns(fields) -> list[dict[str, Any]]:
     columns = [
         {"name": "active", "label": "Use", "field": "active", "align": "center"},
         {"name": "sample_id", "label": "Sample", "field": "sample_id", "align": "left"},
-        {"name": "set", "label": "Set", "field": "set", "align": "left"},
+        {"name": "condition", "label": "Set", "field": "condition", "align": "left"},
         {"name": "protocol", "label": "Protocol", "field": "protocol", "align": "left"},
         {"name": "run_time", "label": "Time", "field": "run_time", "align": "left"},
         {"name": "replicate", "label": "Rep.", "field": "replicate", "align": "left"},
@@ -97,7 +97,7 @@ def files_row(row: Any, *, count: str, analyzed: str, removable: bool) -> dict[s
         "active": row.active,
         "sample_id": row.sample_id,            # the name written over, empty when the built one stands
         "name": row.name,                      # the name in force, shown where nothing is written over
-        "set": row.set,
+        "condition": row.condition,
         "protocol": row.protocol,
         "run_time": row.run_time,
         "replicate": f"rep {row.replicate}" if row.replicate else "",
@@ -115,7 +115,7 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
         "uid": row.uid,
         "active": row.to_run,                 # the tick of 2. Analyse: run it
         "sample_id": row.name,
-        "set": row.set,
+        "condition": row.condition,
         "protocol": row.protocol,
         "run_time": row.run_time,
         "replicate": f"rep {row.replicate}" if row.replicate else "",
@@ -136,7 +136,7 @@ def analyse_row(row: Any, *, range_text: str, crop_text: str, analyzed: str) -> 
 def wire_files_table(table: Any, on_change: Any, on_remove: Any) -> None:
     table.add_slot("body-cell-active", _bool_cell_slot("active"))
     table.add_slot("body-cell-sample_id", _text_cell_slot("sample_id", placeholder="name"))
-    table.add_slot("body-cell-set", _text_cell_slot("set"))
+    table.add_slot("body-cell-set", _text_cell_slot("condition"))
     table.add_slot("body-cell-remove", """
     <q-td :props="props">
       <q-btn v-if="props.row.remove" flat dense round size="sm" icon="close" title="Remove from the list"

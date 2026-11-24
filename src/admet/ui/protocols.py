@@ -21,8 +21,8 @@ from admet.workflows.json_protocol import (
     RUN_FIELDS, loads, parameter_declarations, parameter_text, resolve, template_documents,
 )
 
-RUN_LABELS = {"name": "Run", "set": "Set"}
-RUN_HINTS = {"name": "the protocol's name", "set": "none"}
+RUN_LABELS = {"name": "Run", "condition": "Condition"}
+RUN_HINTS = {"name": "the protocol's name", "condition": "from the protocol"}
 
 
 def value_text(value, unit=""):
@@ -324,7 +324,7 @@ class ProtocolEditor(QWidget):
         self.plan = None
         self.dirty = True
         self.parameter_editors = {}
-        self.run_editors = {}                  # the run's name and set, the first rows of the parameter table
+        self.run_editors = {}                  # the run's name and condition, the first rows of the parameter table
         self.parameter_table = None
         self._table_digest = None
         self._edit_generation = 0
@@ -465,7 +465,7 @@ class ProtocolEditor(QWidget):
         self.parameter_box.addWidget(self.parameter_table)
 
     def set_run_field(self, key, value):
-        """The run's name or set, into the document's run block; an empty value takes the field out."""
+        """The run's name or condition, into the document's run block; an empty value takes the field out."""
         document = json.loads(self.editor.toPlainText())
         run = dict(document.get("run") or {}) if isinstance(document.get("run"), dict) else {}
         value = value.strip()

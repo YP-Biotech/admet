@@ -272,13 +272,13 @@ def normalize(document):
     return result
 
 
-RUN_FIELDS = ("name", "set")
+RUN_FIELDS = ("name", "condition")
 
 
 def run_fields(value):
-    """The run block as kept: the run's name and its set, text, trimmed, empty ones dropped."""
+    """The run block as kept: the run's name and its generation condition, text, trimmed, empty ones dropped."""
     if not isinstance(value, dict) or set(value) - set(RUN_FIELDS):
-        raise ValueError("run must be an object with name and/or set")
+        raise ValueError("run must be an object with name and/or condition")
     result = {}
     for key in RUN_FIELDS:
         if key not in value:

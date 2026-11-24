@@ -10,14 +10,16 @@ plan; the runs it executed stay. Steps are not kept between sessions.
 1. **Select** a protocol from the selector. Its parameters appear in the
    *Parameter / Value* table; the JSON can be edited too. The table's first two
    rows are the protocol's [run block](../protocols/format#run): **Run**, what
-   this run is called (the protocol's name when empty), and **Set**, the group it
-   belongs to, one condition or one experiment across runs. The name tags the
-   run: the step takes it at Plan, and its record, the record of each recording
-   and the lists in Review and Calculations carry it. The set is written into the
-   run's record and each recording's, Review lists it, and `admet analyze` puts
-   the run's videos into that set when it scans them, named `<set>_rep1`,
-   `<set>_rep2`, … (see [Sets](../analyze/overview#sets)), so the grouping is
-   done once, at the rig.
+   this run is called (the protocol's name when empty), and **Condition**, the
+   generation condition it belongs to. Left empty, the condition is the protocol
+   with its oil, cells and beads setpoints, `dropseq_3n o300 c40 b40`, which is
+   what analyze groups by; give one only to call it something else. The name
+   tags the run: the step takes it at Plan, and its record, the record of each
+   recording and the lists in Review and Calculations carry it. The condition is
+   written into the run's record and each recording's, Review lists it, and
+   `admet analyze` puts the run's videos into it when it scans them, named
+   `<condition>_rep1`, `<condition>_rep2`, … (see
+   [Generation conditions](../analyze/overview#generation-conditions)).
 2. **Plan** resolves the parameters and freezes the
    steps. Nothing moves and nothing is recorded. The plan table shows, per step:
    **STEP · UNIT ID · TYPE · TARGET · TRIGGER & ETA · END · CONFIRM**.
@@ -62,7 +64,7 @@ Every run is one folder under the home's `data/runs/`, named by date, time and
 the run's name: `20261118_183000_oil_3/`. It holds:
 
 - `run.json`, the run's record: the protocol and the plan as they ran, the run's
-  name and set, the state and times, the rig mapping and corrections in force,
+  name and condition, the state and times, the rig mapping and corrections in force,
   the step events, the measurements typed during the run, the videos made and
   the results calculated from it afterwards;
 - `run.csv`, the timeline: pressure and flow of each channel and the live QC rows,
