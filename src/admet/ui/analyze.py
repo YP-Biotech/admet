@@ -24,6 +24,7 @@ from admet.core.engine import EngineRegistry, ParamKind
 from admet.core.home import AdmetHome
 from admet.core.registry import Registry, infer_engine
 from admet.engines.cellpose.detection import CellposeDetection, read_image_8bit
+from admet.engines.opencv.blur import blur_px
 from admet.engines.opencv.settings import OPENCV_SETTINGS
 from admet.ui import theme
 from admet.ui.analyze_matrix import (
@@ -86,6 +87,8 @@ DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.par
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
 WALL_SCALE_FRAMES = 24      # frames spread over a video its empty channel, and so its walls, are taken over
+BLUR_BACKGROUND_FRAMES = 60   # frames spread over a video its empty channel is taken over, for the blur share
+BLUR_SHARE_FRAMES = 120       # frames the blur share is measured on, spread over the middle of the video
 IMAGING_DEFAULTS = {"px_to_um": 1.14, "frame_limit": 0, "detect_inclusions": True, "slide_height_um": 0.0}
 
 
@@ -969,6 +972,7 @@ class AnalyzeWorkflowView:
                 for origin, scale, how in _scales(row):
                     facts.append((f"Scale, {origin.lower()}", f"{scale:g} µm/px ({how})"))
                 facts.append(("Scale used", f"{_row_float(row, 'microns_per_pixel', 0.0):g} µm/px"))
+                facts += self._blur_facts(row)
                 record = _video_record(source) or {}
                 camera = record.get("camera") or {}
                 if camera.get("exposure_us") is not None:
@@ -1201,6 +1205,12 @@ class AnalyzeWorkflowView:
                 self._slider_editor(target, "satellite_px", "Satellite size, px", 3, 60, default=13)
                 self._slider_editor(target, "min_area", "Min droplet area, px²", 0, 5000, default=800)
                 self._slider_editor(target, "k_sigma", "Threshold, × noise", 1, 12, default=4)
+                ui.label("Blur").classes("muted text-xs font-semibold uppercase mt-2")
+                self._number_editor(target, "exposure_us", "Exposure, µs")
+                self._number_editor(target, "camera_fps", "Camera fps, the camera's own rate")
+                self._number_editor(target, "blur_share", "Blur share (empty: measured)")
+                ui.label("Each droplet is shorter by speed × exposure × camera fps × share; the file's "
+                         "profile shows the numbers. Applied when read: no new run.").classes("muted text-xs")
 
     def _render_timeline(self, target: MatrixRow, frames: int) -> None:
         """Start–end on one bar and the preview frame on another, to the same scale."""
@@ -1542,6 +1552,42 @@ class AnalyzeWorkflowView:
                                on_change=lambda e: scrub(e.value)).props("dense").classes("w-full")
             slider.on("change", lambda e: commit(e.args))
 
+    def _blur_facts(self, row: MatrixRow) -> list[tuple[str, str]]:
+        """The blur correction worked through, each number with where it comes from."""
+        blur = self._blur(row)
+        if not blur["exposure_us"] or not blur["camera_fps"]:
+            missing = " and ".join(name for name, value in (("exposure", blur["exposure_us"]),
+                                                             ("camera fps", blur["camera_fps"])) if not value)
+            return [("Blur", f"not corrected: {missing} unknown; set it on 2. Analyse")]
+        if not blur["speed_px_frame"]:
+            return [("Blur", "not corrected yet: the droplets' speed comes with the analysis")]
+        facts = [("Smear", f"{blur['speed_px_frame']:.1f} px/frame × {blur['exposure_us']:g} µs × "
+                           f"{blur['camera_fps']:g} fps = {blur['smear_px']:.1f} px along the flow")]
+        measured = blur["measured"]
+        if blur["typed"]:
+            facts.append(("Blur share", f"{blur['share']:g} (typed)"))
+        elif measured:
+            low, high = measured["share_iqr"]
+            facts.append(("Blur share", f"{measured['share']:g} (measured on {measured['droplets']} droplets of the "
+                                        f"video, middle half {low:g}–{high:g})"))
+        else:
+            facts.append(("Blur share", "not measured: too few whole droplets in the video"))
+        scale = _row_float(row, "microns_per_pixel", 0.0)
+        removed = blur["smear_px"] * blur["share"]
+        facts.append(("Blur removed", f"{removed:.2f} px" + (f" ({removed * scale:.1f} µm)" if scale else "")
+                      + " off each droplet's length"))
+        return facts
+
+    def _number_editor(self, row: MatrixRow, key: str, label: str) -> None:
+        """A number box for one decimal setting of a file, kept when it loses focus; empty is unset."""
+        from nicegui import ui
+
+        with ui.row().classes("slider-label-row w-full items-center no-wrap"):
+            ui.label(label).classes("muted text-xs font-semibold grow")
+            box = ui.number(value=_numeric(row.settings.get(key)), min=0, format="%g").props(
+                "dense borderless input-class=text-right").classes("slider-number")
+            box.on("blur", lambda _e: self._set_setting(row, key, _numeric(box.value)))
+
     def _set_setting(self, row: MatrixRow, key: str, value: Any) -> None:
         row.settings[key] = value
         self._settings_edited(row)
@@ -1792,9 +1838,30 @@ class AnalyzeWorkflowView:
             return {"frame_limit": _row_int(row, "frame_limit", 0) or None,
                     "detect_inclusions": _row_bool(row, "detect_inclusions", True),
                     "slide_height_um": _row_float(row, "slide_height_um", 0.0) or None}
+        blur = self._blur(row)
         return {"skip_left_pct": _row_float(row, "skip_left_pct", 0.0),
                 "skip_right_pct": _row_float(row, "skip_right_pct", 0.0),
-                "gate_pct": _row_float(row, "gate_pct", 50.0)}
+                "gate_pct": _row_float(row, "gate_pct", 50.0),
+                "exposure_us": blur["exposure_us"], "camera_fps": blur["camera_fps"], "blur_share": blur["share"]}
+
+    def _blur(self, row: MatrixRow) -> dict[str, Any]:
+        """How the file's droplets are unblurred along the flow, and where each number comes from: the
+        exposure and the camera's rate as set on the file (filled from the recording), the speed from the
+        stored analysis, and the share of the smear the outline grew by, typed or measured on the video."""
+        exposure, fps = _row_float(row, "exposure_us", 0.0), _row_float(row, "camera_fps", 0.0)
+        stored = self._stored_result(row)
+        speed = _numeric((stored.metadata if stored is not None else {}).get("speed_px_frame")) or 0.0
+        smear = blur_px(speed, exposure, fps)
+        typed = _numeric(row.settings.get("blur_share"))
+        measured = None
+        if typed is None and smear >= 1.0:
+            detection = {key: _row_float(row, key, default) for key, default in DETECTION_DEFAULTS.items()
+                         if key in {"k_sigma", "satellite_px", "min_area"}}
+            measured = _video_blur_share(str(Path(row.source_path).resolve()), round(smear, 2),
+                                         tuple(sorted(detection.items())))
+        share = typed if typed is not None else (measured or {}).get("share", 0.0)
+        return {"exposure_us": exposure, "camera_fps": fps, "speed_px_frame": speed, "smear_px": smear,
+                "share": float(share or 0.0), "typed": typed is not None, "measured": measured}
 
     def _row_scale(self, row: MatrixRow) -> tuple[float, float]:
         """The µm per px and fps the file's rows are read with now: the table's values, not the run's."""
@@ -2236,6 +2303,14 @@ class AnalyzeWorkflowView:
         measured = _recorded_scale(row)
         if measured and not _row_float(row, "microns_per_pixel", 0.0):
             row.settings["microns_per_pixel"] = round(measured, 4)
+        camera = (_video_record(Path(row.source_path).resolve()) or {}).get("camera") or {}
+        if _numeric(camera.get("exposure_us")) and "exposure_us" not in row.settings:
+            row.settings["exposure_us"] = float(camera["exposure_us"])
+        if "camera_fps" not in row.settings:
+            live = self._live_qc(row)
+            rate = _numeric(camera.get("resulting_frame_rate_hz")) or (live.camera_fps if live is not None else 0.0)
+            if rate:
+                row.settings["camera_fps"] = round(float(rate), 1)
 
     def _load_matrix(self) -> list[MatrixRow]:
         rows = []
@@ -2853,6 +2928,42 @@ def _png_src(image: Any) -> str:
 def _recorded_capture_fps(row: MatrixRow) -> float:
     """The capture rate the recording carries in its own record."""
     return float((_video_record(Path(row.source_path).resolve()) or {}).get("acquisition_fps") or 0.0)
+
+
+@lru_cache(maxsize=256)
+def _video_blur_share(source: str, smear_px: float, detection: tuple[tuple[str, float], ...]) -> dict[str, Any] | None:
+    """The share of the smear the outlines grew by, measured on droplets of the video (see
+    admet.engines.opencv.blur); None when too few whole droplets are found."""
+    import cv2
+    import numpy as np
+
+    from admet.engines.opencv.blur import measure_share
+    from admet.engines.opencv.detection import percentile_background
+    from admet.engines.opencv.engine import pipeline_config
+
+    capture = cv2.VideoCapture(source)
+    try:
+        count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if count < 2:
+            return None
+
+        def frames_at(indices):
+            frames = []
+            for index in indices:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+                ok, frame = capture.read()
+                if ok:
+                    frames.append(frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+            return frames
+
+        empty = frames_at(np.linspace(0, count - 1, BLUR_BACKGROUND_FRAMES).astype(int))
+        frames = frames_at(np.linspace(count * 0.1, count * 0.9, BLUR_SHARE_FRAMES).astype(int))
+    finally:
+        capture.release()
+    if not empty or not frames:
+        return None
+    config = pipeline_config({**dict(detection), "video_path": source})["detection"]
+    return measure_share(frames, percentile_background(empty), config, smear_px)
 
 
 def _recorded_scale(row: MatrixRow) -> float:

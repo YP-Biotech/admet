@@ -428,7 +428,8 @@ class StoredResultTests(unittest.TestCase):
             self.assertIsNone(view._stored_result(clip))                              # made before: run again
             (baked / "result.json").write_text(json.dumps({"settings": {"skip_left_pct": 10.0}, "window": "whole"}))
             self.assertEqual(view._stored_result(clip).result_dir, baked)
-            self.assertEqual(view._read_settings(clip), {"skip_left_pct": 10.0, "skip_right_pct": 0.0, "gate_pct": 50.0})
+            self.assertEqual(view._read_settings(clip), {"skip_left_pct": 10.0, "skip_right_pct": 0.0, "gate_pct": 50.0,
+                                                     "exposure_us": 0.0, "camera_fps": 0.0, "blur_share": 0.0})
             (baked / "rows.jsonl").write_text(json.dumps({"engine": "opencv", "item_id": "v", "file_id": "f", "kind": "detection",
                                                           "values": {"frame": 1, "droplet_id": 1, "centroid_x": 10.0,
                                                                      "centroid_y": 5.0, "equivalent_diameter": 20.0,

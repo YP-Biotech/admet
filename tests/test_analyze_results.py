@@ -235,6 +235,42 @@ class FileResultTests(unittest.TestCase):
         self.assertIn("<rect", spark([1.0, 1.1, 1.2, 5.0]))
 
 
+class BlurCorrectionTests(unittest.TestCase):
+    """A droplet reads longer along the flow by the smear its outline let through; taken off when read."""
+
+    def test_the_streak_comes_off_the_area_and_the_height_is_kept(self):
+        from admet.ui.analyze_results import unblurred_area
+
+        radius, blur = 25.0, 3.0
+        swept = 3.141592653589793 * radius ** 2 + 2 * radius * blur                  # a circle swept 3 px along x
+        self.assertAlmostEqual(unblurred_area(swept, 2 * radius, blur), 3.141592653589793 * radius ** 2)
+        self.assertEqual(unblurred_area(100.0, 10.0, 50.0), 0.0)                    # never below nothing
+
+    def test_the_blur_is_taken_off_when_read_and_listed_with_how_it_was_worked_out(self):
+        import math
+
+        key = ("opencv", str(_stored().source_path))
+        rows = _rows()
+        rows[0]["values"]["speed_px_frame"] = 10.0
+        for row in rows[1:]:
+            row["values"].update(area=400.0, bbox_height=20)
+        plain, = file_results(_stored(), rows)
+        read = {"exposure_us": 50.0, "camera_fps": 4000.0, "blur_share": 0.25}
+        fixed, = file_results(_stored(), rows, settings={key: read})
+        unshared, = file_results(_stored(), rows, settings={key: {**read, "blur_share": 0.0}})
+
+        self.assertEqual(plain.diameters, (40.0, 42.0, 44.0))                       # as found
+        expected = 2 * math.sqrt((400.0 - 0.5 * 20) / math.pi) * 2.0                # smear 2 px × share 0.25 = 0.5 px
+        for diameter in fixed.diameters:
+            self.assertAlmostEqual(diameter, expected, places=6)
+        self.assertEqual({k: fixed.settings[k] for k in ("exposure_us", "camera_fps", "speed_px_frame", "smear_px",
+                                                          "blur_share", "blur_px")},
+                         {"exposure_us": 50.0, "camera_fps": 4000.0, "speed_px_frame": 10.0, "smear_px": 2.0,
+                          "blur_share": 0.25, "blur_px": 0.5})
+        self.assertIn("blur 0.5 px", settings_summary(fixed.settings))
+        self.assertEqual(unshared.diameters, plain.diameters)                       # a share of 0 takes nothing off
+
+
 class ReadTimeSettingTests(unittest.TestCase):
     """The window, the gate, the frame limit and the inclusions are applied to the stored rows, not by a run."""
 
@@ -538,6 +574,7 @@ class LiveQCTests(unittest.TestCase):
             self.assertEqual(live.rate_hz, 1420.0)                                   # the median over the bursts
             self.assertEqual((live.count, live.diameter), (7000.0, 124.0))
             self.assertAlmostEqual(live.cv_percent, 3.4)                             # the last, over the whole recording
+            self.assertAlmostEqual(live.camera_fps, 1420 * 128 / 48, places=0)       # the rate the bursts were taken at
             self.assertIsNone(live_qc(run, run / "unknown.avi"))
             self.assertIsNone(live_qc(Path(tmp) / "nowhere", run / "oil_step01_x.avi"))
             cells = live_cells(live, "", "#000")

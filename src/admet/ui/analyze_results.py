@@ -19,6 +19,7 @@ import numpy as np
 
 from admet.core.droplets import dispersed_flow_ul_min, expected_rate_hz  # noqa: F401  (analyze's names for them)
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
+from admet.engines.opencv.blur import blur_px
 from admet.ui import theme
 from admet.ui.series_style import SeriesStyle, series_styles
 
@@ -198,7 +199,7 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
     frames, so changing either needs no new run. SETTINGS, by the same key, are the file's
     read-time settings: for a video the window (skip left and right, % of the width) and the gate
     (% of the width), which choose among the droplets the whole-width run found and where they are
-    counted; for an image folder the frame limit (the first frames only) and whether inclusions
+    counted, and the blur (exposure, camera rate, share) its outlines are unblurred by; for an image folder the frame limit (the first frames only) and whether inclusions
     are shown. Rows are grouped by the file id they carry, so a rows file holding more than one
     file (as none written now does) still gives one result each.
     """
@@ -215,10 +216,14 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
                                 "fixes": (corrections or {}).get((stored.engine, source), {}),
                                 "scale": tuple((scales or {}).get((stored.engine, source), (0.0, 0.0))),
                                 "read": dict((settings or {}).get((stored.engine, source), {})),
-                                "width": None, "frames_kept": [], "loose_rows": []}
+                                "width": None, "frames_kept": [], "loose_rows": [], "smear_px": 0.0,
+                                "blur_px": 0.0}
         if kind == "run_context":
             acc["context"] = _values(row)
             acc["width"] = _num(acc["context"].get("frame_width"))
+            acc["smear_px"] = blur_px(_num(acc["context"].get("speed_px_frame")),
+                                      _num(acc["read"].get("exposure_us")), _num(acc["read"].get("camera_fps")))
+            acc["blur_px"] = acc["smear_px"] * max(_num(acc["read"].get("blur_share")) or 0.0, 0.0)
             continue
         if kind not in {"detection", "droplet", "track"}:
             continue
@@ -239,6 +244,9 @@ def file_results(stored: StoredResult, rows, corrections: dict[tuple[str, str], 
             diameter, area = _num(values.get("diameter_um")), _num(values.get("area_um2"))
             if diameter is not None or area is not None:
                 acc["um"] = True
+        elif kind == "detection" and area and acc["blur_px"]:
+            area = unblurred_area(area, _num(values.get("bbox_height")) or 0.0, acc["blur_px"])
+            diameter = 2 * math.sqrt(area / math.pi)
         if kind == "droplet":
             acc["inclusions"].append(corrected_inclusions(values, fix))
         cx = _num(values.get("centroid_x", values.get("center_x")))
@@ -318,6 +326,14 @@ def _reservoir(acc: dict[str, Any], point: tuple[float, float, float, float]) ->
     slot = acc["rng"].randrange(acc["seen"])
     if slot < PLOT_POINTS:
         acc["points"][slot] = point
+
+
+def unblurred_area(area: float, height: float, blur: float) -> float:
+    """A droplet's area in px² without the streak it drew along the flow (x) while the shutter was open:
+    what is seen is the droplet swept BLUR px along x, which adds BLUR × its height across the flow, the
+    height itself unchanged. BLUR is the outline's growth, the smear times the share that passed the
+    threshold (see admet.engines.opencv.blur)."""
+    return max(area - blur * max(height, 0.0), 0.0)
 
 
 def unsquashed_diameter(footprint_um: float, height_um: float) -> float:
@@ -406,6 +422,12 @@ def _finish(stored: StoredResult, key: tuple[str, str], acc: dict[str, Any]) -> 
     settings.update({"microns_per_pixel": scale, "fps": fps} if engine != "cellpose" else {"px_to_um": scale})
     if engine == "cellpose" and slide > 0:
         settings["slide_height_um"] = slide
+    if acc["smear_px"]:                                   # how the outline was unblurred, to check it by
+        settings.update({"exposure_us": _num(acc["read"].get("exposure_us")),
+                         "camera_fps": _num(acc["read"].get("camera_fps")),
+                         "speed_px_frame": round(_num(context.get("speed_px_frame")) or 0.0, 2),
+                         "smear_px": round(acc["smear_px"], 2), "blur_share": _num(acc["read"].get("blur_share")),
+                         "blur_px": round(acc["blur_px"], 2)})
     return FileResult(
         run=stored.run_name,
         sample_id=stored.sample_id or str(job.get("sample_id") or key[1]),
@@ -484,7 +506,8 @@ def settings_summary(settings: dict[str, Any]) -> str:
     for key, label in (("skip_left_pct", "skip left"), ("skip_right_pct", "skip right"), ("gate_pct", "gate")):
         if settings.get(key) not in {None, ""}:
             parts.append(f"{label} {_fmt(settings[key])} %")
-    for key, label, unit in (("satellite_px", "satellite", " px"), ("min_area", "min area", " px²"),
+    for key, label, unit in (("blur_px", "blur", " px"),
+                             ("satellite_px", "satellite", " px"), ("min_area", "min area", " px²"),
                              ("px_to_um", "px→µm", ""), ("frame_limit", "frame limit", "")):
         if settings.get(key) not in {None, ""}:
             parts.append(f"{label} {_fmt(settings[key])}{unit}")
@@ -552,6 +575,7 @@ class LiveQC:
     condition: str = ""                    # the file's generation condition, given by the view
     # Burst by burst: s since the first burst, droplets counted, rate /s, diameter, CV %.
     points: tuple[tuple[float, float, float, float, float], ...] = ()
+    camera_fps: float = 0.0          # the camera's rate the bursts were measured with: rate × spacing / speed
 
     @property
     def file_id(self) -> str:
@@ -584,7 +608,11 @@ def live_qc(run_dir: str | Path, video_path: str | Path) -> LiveQC | None:
     points = tuple((round(t - times[0], 3), _num(row.get("count")) or 0.0, _num(row.get("rate_hz")) or 0.0,
                     _num(row.get("diameter")) or 0.0, _num(row.get("cv_percent")) or 0.0)
                    for t, row in zip(times, rows))
+    implied = [rate * spacing / speed for rate, spacing, speed in
+               ((_num(row.get("rate_hz")), _num(row.get("spacing_px")), _num(row.get("speed_px_frame"))) for row in rows)
+               if rate and spacing and speed]
     return LiveQC(
+        camera_fps=round(float(median(implied)), 1) if implied else 0.0,
         rate_hz=float(median(rates)) if rates else 0.0, rate_half=_num(last.get("rate_half")) or 0.0,
         diameter=float(median(diameters)) if diameters else 0.0, diameter_half=_num(last.get("diameter_half")) or 0.0,
         diameter_unit=str(last.get("diameter_unit") or "px"),
