@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from admet.core.rundb import read_record
 from admet.core.runs import RECORD
 from admet.core.files import write_atomic
 
@@ -204,11 +205,8 @@ class Registry:
         added = []
         for root in folders:
             for record_path in sorted(_run_records(root)):
-                try:
-                    record = json.loads(record_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-                if not isinstance(record, dict):
+                record = read_record(record_path)
+                if not record:
                     continue
                 run_dir = record_path.parent
                 protocol = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
@@ -337,7 +335,7 @@ def _canonical(path: Any) -> str:
 
 
 def _run_records(root: Path) -> list[Path]:
-    """The run records under a folder: a data folder (runs/*/run.json), an export folder (*/run.json), or one run."""
+    """The run databases under a folder: a data folder (runs/*/run.db), an export folder (*/run.db), or one run."""
     if (root / RECORD).is_file():
         return [root / RECORD]
     found = list((root / "runs").glob(f"*/{RECORD}")) if (root / "runs").is_dir() else []

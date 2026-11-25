@@ -24,7 +24,7 @@ def run_with_videos(data_dir, tag, videos=2, kind="protocol", condition=""):
         (run.path / name).write_bytes(bytes([index]) * 2048)
         names.append(name)
     if kind == "recording":
-        run.update(state="completed", recording={"video_path": names[0], "fluidics_csv": "run.csv"})
+        run.update(state="completed", recording={"video_path": names[0], "timeline": "run.db"})
     else:
         run.update(state="completed", artifacts={"videos": [{"step": i + 1, "video_path": n} for i, n in enumerate(names)]})
     return run, names

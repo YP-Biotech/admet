@@ -2,7 +2,7 @@
 
 from .acquisition import AcquisitionThread, ChannelStats, DataSnapshot
 from .channels import ChannelManager, ChannelState
-from .csv_logger import CsvLogger
+from .timeline_logger import TimelineLogger
 from .hardware import FluigentConnectionError, HardwareManager, HardwareState
 from .sdk import (
     FluigentSDK,
@@ -19,7 +19,7 @@ __all__ = [
     "ChannelManager",
     "ChannelState",
     "ChannelStats",
-    "CsvLogger",
+    "TimelineLogger",
     "DataSnapshot",
     "FluigentConnectionError",
     "FluigentSDK",

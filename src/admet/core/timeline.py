@@ -1,4 +1,4 @@
-"""A run's timeline, run.csv, read for plots: the fluidics readings and the droplet QC rows on one clock.
+"""A run's timeline, from its run.db, read for plots: the fluidics readings and the droplet QC rows on one clock.
 
 A reading row carries the channels' pressures and flows; a QC row carries a recording's burst (its
 id, rate, size, CV, count, state) and no readings. Both carry elapsed_s, seconds since polling began.
@@ -6,7 +6,6 @@ id, rate, size, CV, count, state) and no readings. Both carry elapsed_s, seconds
 
 from __future__ import annotations
 
-import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from admet.core import rundb
 from admet.core.droplets import dispersed_channels, expected_rate_hz
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 
@@ -47,19 +47,17 @@ class QCSeries:
         return [np.array(piece) for piece in pieces]
 
 
-def read_fluidics_csv(path: Path) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
-    """elapsed_s and every channel's pressure and flow, by channel number; missing or unreadable is NaN."""
-    with Path(path).open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        columns = reader.fieldnames or []
-        if "elapsed_s" not in columns:
-            raise ValueError(f"{Path(path).name}: no elapsed_s column")
-        channels = range(len(FLUIDIC_CHANNEL_LABELS))
-        rows = []
-        for row in reader:
-            rows.append([number(row.get("elapsed_s"))]
-                        + [number(row.get(f"pressure_{i}_mbar")) for i in channels]
-                        + [number(row.get(f"flow_{i}_ul_min")) for i in channels])
+def read_fluidics(path: Path) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
+    """elapsed_s and every channel's pressure and flow, by channel number, from a run's database;
+    missing or unreadable is NaN."""
+    if "elapsed_s" not in rundb.timeline_columns(path):
+        raise ValueError(f"{Path(path).parent.name}: no timeline")
+    channels = range(len(FLUIDIC_CHANNEL_LABELS))
+    rows = []
+    for row in rundb.timeline_rows(path):
+        rows.append([number(row.get("elapsed_s"))]
+                    + [number(row.get(f"pressure_{i}_mbar")) for i in channels]
+                    + [number(row.get(f"flow_{i}_ul_min")) for i in channels])
     data = np.array(rows, dtype=float).reshape(-1, 1 + 2 * len(channels))
     data = data[np.isfinite(data[:, 0]) & np.isfinite(data[:, 1:]).any(axis=1)]   # a QC row is not a reading
     count = len(channels)
@@ -73,24 +71,23 @@ def number(text: Any) -> float:
         return math.nan
 
 
-def read_qc_csv(path: Path) -> QCSeries | None:
-    """The QC rows of a run's timeline file, on its clock: the rows that carry a state."""
+def read_qc(path: Path) -> QCSeries | None:
+    """The QC rows of a run's timeline, on its clock: the rows that carry a state."""
     columns: dict[str, list] = {key: [] for key in ("t", "rate", "rate_half", "cv", "cv_half", "diameter", "count")}
     states, recordings, units = [], [], []
-    with Path(path).open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            if not str(row.get("state") or ""):
-                continue                                   # a reading
-            t = number(row.get("elapsed_s"))
-            if not math.isfinite(t):
-                continue
-            columns["t"].append(t)
-            for key, column in (("rate", "rate_hz"), ("rate_half", "rate_half"), ("cv", "cv_percent"),
-                                ("cv_half", "cv_half"), ("diameter", "diameter"), ("count", "count")):
-                columns[key].append(number(row.get(column)))
-            states.append(str(row.get("state") or ""))
-            recordings.append(str(row.get("recording_id") or ""))
-            units.append(str(row.get("diameter_unit") or ""))
+    for row in rundb.timeline_rows(path):
+        if not str(row.get("state") or ""):
+            continue                                   # a reading
+        t = number(row.get("elapsed_s"))
+        if not math.isfinite(t):
+            continue
+        columns["t"].append(t)
+        for key, column in (("rate", "rate_hz"), ("rate_half", "rate_half"), ("cv", "cv_percent"),
+                            ("cv_half", "cv_half"), ("diameter", "diameter"), ("count", "count")):
+            columns[key].append(number(row.get(column)))
+        states.append(str(row.get("state") or ""))
+        recordings.append(str(row.get("recording_id") or ""))
+        units.append(str(row.get("diameter_unit") or ""))
     if not columns["t"]:
         return None
     arrays = {key: np.array(values, dtype=float) for key, values in columns.items()}

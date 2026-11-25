@@ -1,4 +1,3 @@
-import csv
 import json
 from pathlib import Path
 import tempfile
@@ -6,6 +5,7 @@ import unittest
 from copy import deepcopy
 from unittest.mock import patch
 
+from tests.rundb_helpers import set_timeline, timeline_text
 from admet.workflows.fluid_density import (
     GRAVITY_CONVERSION_MBAR_PER_CM_PER_G_ML,
     FluidDensityMeasurement,
@@ -53,14 +53,11 @@ def recorded_density(directory, *, densities=(1.2, 1.2), missing=False, unsettle
             if unsettled and index == 3 and elapsed >= 15:
                 value += 5
             rows.append((start + elapsed, "" if missing and index == 3 else value, flow))
-    csv_path = Path(directory) / "fluidics.csv"
-    with csv_path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["elapsed_s", f"pressure_{channel}_mbar", f"flow_{channel}_ul_min"])
-        writer.writerows(rows)
+    timeline = set_timeline(Path(directory) / "run.db", timeline_text(
+        rows, ["elapsed_s", f"pressure_{channel}_mbar", f"flow_{channel}_ul_min"]))
     events_path = Path(directory) / "events.jsonl"
     events_path.write_text("".join(json.dumps(event) + "\n" for event in events))
-    return document, csv_path, events_path, origin
+    return document, timeline, events_path, origin
 
 
 class RecordedDensityTests(unittest.TestCase):

@@ -92,7 +92,7 @@ class ServiceTests(unittest.TestCase):
             finally:
                 admet.do("disconnect_fluidics")
 
-            self.assertTrue(Path(started["csv_path"]).is_relative_to(Path(tmp) / "data"))
+            self.assertTrue(Path(started["timeline_path"]).is_relative_to(Path(tmp) / "data"))
             self.assertEqual(admet.describe_home()["data"], str(Path(tmp) / "data"))
 
 

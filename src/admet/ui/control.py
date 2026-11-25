@@ -482,7 +482,7 @@ class ControlWindow(QMainWindow):
         self.channel_panel: ChannelControlPanel | None = None
         self.monitor_table: FluidicsMonitorTable | None = None
         self.video_table: QTableWidget | None = None
-        self.csv_status: QLabel | None = None
+        self.timeline_status: QLabel | None = None
         self._latest_pipeline_event: Any | None = None
         self._pipeline_stage_id = ""
         self._pipeline_pending_confirmation = ""
@@ -966,7 +966,7 @@ class ControlWindow(QMainWindow):
         self._clear_layout(self.action_layout)
         self._clear_layout(self.log_layout)
         self.channel_panel = None
-        self.csv_status = None
+        self.timeline_status = None
         self.action_table = None
         self.video_table = None
         self._transport_button_refs = []
@@ -993,7 +993,7 @@ class ControlWindow(QMainWindow):
         self._clear_layout(self.results_layout)
         self.camera_selector = None
         self.channel_panel = None
-        self.csv_status = None
+        self.timeline_status = None
         self.video_table = None
         self._render_main(stage)
         self._render_channel_manager(stage)
@@ -1440,7 +1440,7 @@ class ControlWindow(QMainWindow):
                 channel_count = min(len(getattr(state, "sensor_channels", [])), len(FLUIDIC_CHANNEL_LABELS))
                 if self.monitor_table.table.rowCount() != channel_count:
                     self.monitor_table.setup_channels(channel_count)
-            self._update_csv_status()
+            self._update_timeline_status()
             if self._latest_snapshot is not None:
                 self.monitor_table.update_from_snapshot(self._latest_snapshot)
             self.results_layout.addWidget(self.monitor_table)
@@ -1451,7 +1451,7 @@ class ControlWindow(QMainWindow):
             self.results_layout.addWidget(self.video_table)
 
     def _sync_results(self) -> None:
-        self._update_csv_status()
+        self._update_timeline_status()
         if self._latest_snapshot is not None:
             if self.monitor_table is not None:
                 self.monitor_table.update_from_snapshot(self._latest_snapshot)
@@ -2124,7 +2124,7 @@ class ControlWindow(QMainWindow):
                 self.channel_panel.update_from_snapshot(latest)
             if self.monitor_table is not None:
                 self.monitor_table.update_from_snapshot(latest)
-        self._update_csv_status()
+        self._update_timeline_status()
 
     def _rejected_readings(self, sensor: int) -> list[tuple[float, float]]:
         engine = getattr(self.api, "engine", None)
@@ -2162,13 +2162,13 @@ class ControlWindow(QMainWindow):
                 color = Theme.TEXT_MUTED if outcome == "completed" else Theme.DANGER_HOVER
                 self.plot_panel.add_marker(at, f"■ {number}", color)
 
-    def _update_csv_status(self) -> None:
+    def _update_timeline_status(self) -> None:
         if self.monitor_table is None:
             return
-        logger = getattr(self.api.engine, "csv_logger", None)
+        logger = getattr(self.api.engine, "timeline_logger", None)
         filepath = getattr(logger, "filepath", None)
         row_count = int(getattr(logger, "row_count", 0) or 0)
-        self.monitor_table.update_csv_status(filepath, row_count)
+        self.monitor_table.update_timeline_status(filepath, row_count)
 
     def _subscribe_camera_frames(self) -> None:
         subscribe = getattr(self.api.engine, "subscribe_camera_frames", None)
@@ -3371,7 +3371,7 @@ class FluidicsMonitorTable(QFrame):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
-        self.status = QLabel("CSV: not recording")
+        self.status = QLabel("Timeline: not recording")
         self.status.setObjectName("MutedText")
         root.addWidget(self.status)
 
@@ -3420,11 +3420,11 @@ class FluidicsMonitorTable(QFrame):
         self.table.resizeRowsToContents()
         fit_table_height(self.table)
 
-    def update_csv_status(self, filepath: str | None, row_count: int) -> None:
+    def update_timeline_status(self, filepath: str | None, row_count: int) -> None:
         if filepath:
-            self.status.setText(f"CSV: {Path(filepath).name} | {row_count} rows")
+            self.status.setText(f"Timeline: {Path(filepath).name} | {row_count} rows")
         else:
-            self.status.setText("CSV: not recording")
+            self.status.setText("Timeline: not recording")
 
     def _set_item(self, row: int, column: int, text: str) -> None:
         item = self.table.item(row, column)

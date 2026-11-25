@@ -63,16 +63,33 @@ A new run starts with an empty table. To review or correct an earlier run, use
 Every run is one folder under the home's `data/runs/`, named by date, time and
 the run's name: `20261118_183000_oil_3/`. It holds:
 
-- `run.json`, the run's record: the protocol and the plan as they ran, the run's
-  name and condition, the state and times, the rig mapping and corrections in force,
-  the step events, the measurements typed during the run, the videos made and
-  the results calculated from it afterwards;
-- `run.csv`, the timeline: pressure and flow of each channel and the live QC rows,
-  on one clock;
+- `run.db`, one SQLite file holding
+  - the run's record: the protocol and the plan as they ran, the run's name and
+    condition, the state and times, the rig mapping and corrections in force, the
+    step events, the measurements typed during the run, the videos made and the
+    results calculated from it afterwards;
+  - the timeline: pressure and flow of each channel ten times a second and the
+    live QC rows once a second, on one clock;
 - the step videos, one file per step marked `"record": true`
   (see [Video](../protocols/format#video)), named after the run and the step.
 
 Nothing in the folder points outside it, so a folder copied elsewhere is whole.
+Every change to the record is one transaction, and the timeline is committed once a
+second while the run records, so a crash loses at most the last second. When the
+recording closes the file is left whole on its own, so a copy of it, or analyze
+reading it from a network share, sees everything.
+
+To read a run in another program, write its record and timeline out as the files
+runs used to have:
+
+```bash
+admet export-run data/runs/20261118_183000_oil_3              # run.json and run.csv in the run folder
+admet export-run data/runs/20261118_183000_oil_3 --into out/  # or elsewhere
+```
+
+Run folders recorded before `run.db`, with `run.json` and `run.csv`, are read
+once they are migrated: `admet migrate <data folder>` gives each its `run.db`
+and leaves the two old files beside it, to be removed once checked.
 A recording started by hand, outside a protocol, is a run folder too.
 The step videos are encoded once the run is over, one after another, so no encode
 competes with the next step's recording for the disk; each is noted in the record

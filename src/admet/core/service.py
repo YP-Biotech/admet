@@ -30,7 +30,7 @@ from typing import Any
 from admet.core.engine import ActionSpec, action_spec
 from admet.core.clock import now_iso as _now_iso
 from admet.core.home import AdmetHome
-from admet.core.runs import RECORD, TIMELINE, Run, RunStore
+from admet.core.runs import RECORD, Run, RunStore
 from admet.core.run import RunJob, RunResult
 from admet.workflows.operations import operation as find_operation
 
@@ -570,11 +570,11 @@ class Admet:
                     engine.arm_step_video(run.path, run.name, {
                         "run_id": run.run_id, "tag": plan.get("tag", ""), "condition": plan.get("condition", ""),
                         "protocol": str(plan.get("name") or plan.get("protocol_name") or plan.get("operation_id") or ""),
-                        "fluidics_csv": TIMELINE,
+                        "timeline": RECORD,
                     })
                 artifact = self._run_artifacts[plan_id]
                 artifact["recording"] = True
-                artifact["artifacts"]["fluidics_csv"] = TIMELINE
+                artifact["artifacts"]["timeline"] = RECORD
                 artifact["artifacts"]["polling_origin_monotonic"] = self.polling_started_monotonic()
                 artifact["artifacts"]["recording_closed"] = False
                 run.update(artifacts=artifact["artifacts"])
@@ -1040,7 +1040,7 @@ class Admet:
             run = self.runs.begin_recording(label)
             recording_id = f"{run.name}_{time.strftime('%Y%m%d_%H%M%S')}"
             run.update(recording_id=recording_id)
-        targets = {"video": run.path / f"{recording_id}.avi", "fluidics_csv": run.csv_path}
+        targets = {"video": run.path / f"{recording_id}.avi", "timeline": run.db_path}
         missing = set(spec.outputs) - set(targets)
         if missing:
             raise LookupError(
@@ -1053,12 +1053,12 @@ class Admet:
         """What the recording left behind goes into its run's record, named within the folder."""
         if not recording:
             return
-        folder = Path(str(recording.get("fluidics_csv") or recording.get("video_path") or "")).parent
+        folder = Path(str(recording.get("timeline") or recording.get("video_path") or "")).parent
         if not (folder / RECORD).is_file():
             return
         run = Run(folder)
         kept = {**recording, "context": self.run_context()}
-        for key in ("video_path", "fluidics_csv"):
+        for key in ("video_path", "timeline"):
             if kept.get(key):
                 kept[key] = Path(str(kept[key])).name
         fields: dict[str, Any] = {"recording": kept}

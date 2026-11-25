@@ -8,6 +8,7 @@ import io
 import json
 import math
 import random
+import sqlite3
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,6 +18,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
+from admet.core import rundb
 from admet.core.droplets import dispersed_flow_ul_min, expected_rate_hz  # noqa: F401  (analyze's names for them)
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.engines.opencv.blur import blur_px
@@ -584,17 +586,14 @@ class LiveQC:
 
 def live_qc(run_dir: str | Path, video_path: str | Path) -> LiveQC | None:
     """The live QC of one video, from the rows of its run's timeline that carry its recording id."""
-    path = Path(run_dir) / "run.csv"
+    path = Path(run_dir) / rundb.DB_NAME
     stem = Path(video_path).stem
     if not path.is_file():
         return None
-    rows = []
     try:
-        with path.open(newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                if str(row.get("state") or "") and str(row.get("recording_id") or "") == stem:
-                    rows.append(row)
-    except OSError:
+        rows = [row for row in rundb.timeline_rows(path)
+                if str(row.get("state") or "") and str(row.get("recording_id") or "") == stem]
+    except (OSError, sqlite3.DatabaseError):
         return None
     if not rows:
         return None
@@ -1136,19 +1135,19 @@ def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
     its bursts fall in; a recording outside any step (a run without events) is its bursts' span.
     """
     from admet.core.runs import Run
-    from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics_csv, read_qc_csv, step_segments
+    from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics, read_qc, step_segments
 
     xname = "s since the step began"
     readings: dict[str, list[dict[str, Any]]] = {"pressure": [], "flow": []}
     rate_series: list[dict[str, Any]] = []
     cv_series: list[dict[str, Any]] = []
     for run in runs:
-        path = Path(run.run_dir) / "run.csv"
+        path = Path(run.run_dir) / rundb.DB_NAME
         if not path.is_file():
             continue
         try:
-            t, pressures, flows = read_fluidics_csv(path)
-            qc = read_qc_csv(path)
+            t, pressures, flows = read_fluidics(path)
+            qc = read_qc(path)
         except (OSError, ValueError):
             continue
         if qc is None:

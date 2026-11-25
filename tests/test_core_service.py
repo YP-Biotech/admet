@@ -5,12 +5,12 @@ folder by accident: an action that writes gets its paths from core, and what it
 produced is listed afterwards.
 """
 
-import json
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+from admet.core import rundb
 from admet.core.engine import ActionSpec
 from admet.core.run import RunJob, RunResult
 from admet.core.service import Admet
@@ -28,7 +28,7 @@ class RecordingEngine:
             "Start Recording",
             "recording",
             params=("recording_label",),
-            outputs=("video", "fluidics_csv"),
+            outputs=("video", "timeline"),
         ),
         ActionSpec("stop_recording", "Stop Recording", "recording", artifact="control_recording"),
     )
@@ -44,9 +44,12 @@ class RecordingEngine:
     def run(self, job: RunJob) -> RunResult:
         self.jobs.append(job)
         if job.action == "start_recording":
-            for path in job.outputs.values():
+            for name, path in job.outputs.items():
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
-                Path(path).write_text("data", encoding="utf-8")
+                if name == "timeline":                       # the timeline goes into the run's database
+                    rundb.write_timeline(path, [{"elapsed_s": "0", "pressure_0_mbar": "1"}], 1, 1)
+                else:
+                    Path(path).write_text("data", encoding="utf-8")
             return RunResult(job.id, self.id, job.action)
         if job.action == "stop_recording":
             started = self.jobs[0]
@@ -58,7 +61,7 @@ class RecordingEngine:
                     "recording": {
                         "recording_id": started.metadata["recording_id"],
                         "video_path": str(started.outputs["video"]),
-                        "fluidics_csv": str(started.outputs["fluidics_csv"]),
+                        "timeline": str(started.outputs["timeline"]),
                     }
                 },
             )
@@ -87,13 +90,13 @@ class HomeTests(unittest.TestCase):
 
             admet.do("emergency_stop")
 
-            on_disk = list(admet.home.data_dir.rglob("*.csv"))
+            on_disk = list(admet.home.data_dir.rglob("*.db"))
             self.assertEqual(len(on_disk), 1)
             [run] = admet.runs.list()
             self.assertEqual((run["kind"], run["state"]), ("recording", "completed"))
-            record = json.loads((Path(run["directory"]) / "run.json").read_text())
-            self.assertEqual(record["recording"]["fluidics_csv"], "run.csv")
-            self.assertEqual(on_disk, [Path(run["directory"]) / "run.csv"])
+            record = rundb.read_record(Path(run["directory"]) / "run.db")
+            self.assertEqual(record["recording"]["timeline"], "run.db")
+            self.assertEqual(on_disk, [Path(run["directory"]) / "run.db"])
 
     def test_a_second_service_on_the_same_home_finds_the_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,12 +107,12 @@ class HomeTests(unittest.TestCase):
             time.sleep(0.3)
             admet.do("stop_recording")
             [run] = admet.runs.list()
-            record_path = Path(run["directory"]) / "run.json"
-            before = json.loads(record_path.read_text())
+            record_path = Path(run["directory"]) / "run.db"
+            before = rundb.read_record(record_path)
 
             reopened = Admet(home=tmp)
 
-            self.assertEqual(json.loads(record_path.read_text()), before)
+            self.assertEqual(rundb.read_record(record_path), before)
             self.assertEqual(len(reopened.runs.list()), 1)
 
     def test_the_home_is_made_with_its_rooms_and_described(self):
@@ -133,7 +136,7 @@ class PathOwnershipTests(unittest.TestCase):
             admet.run("acquisition", "start_recording", {"recording_label": "set01"})
 
             job = engine.jobs[-1]
-            self.assertEqual(set(job.outputs), {"video", "fluidics_csv"})
+            self.assertEqual(set(job.outputs), {"video", "timeline"})
             for path in job.outputs.values():
                 self.assertTrue(str(path).startswith(str(admet.home.data_dir / "runs")))
             self.assertIn("set01", job.metadata["recording_id"])
@@ -289,7 +292,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
             admet.do("stop_recording")
 
             self.assertTrue(recording["active"])
-            self.assertEqual(recording["fluidics_csv"], started["csv_path"])
+            self.assertEqual(recording["timeline"], started["timeline_path"])
 
     def test_two_stops_at_once_close_one_recording(self):
         import threading
@@ -315,7 +318,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
             admet, started = self._recorded(tmp)
 
             self.assertFalse(admet.state()["camera"])
-            self.assertTrue(started["csv_path"])
+            self.assertTrue(started["timeline_path"])
 
     def test_the_csv_path_is_known_as_soon_as_it_starts(self):
         # The operator needs somewhere to look while the run is going, not
@@ -323,24 +326,24 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _admet_service, started = self._recorded(tmp)
 
-            self.assertTrue(Path(started["csv_path"]).is_file())
+            self.assertTrue(Path(started["timeline_path"]).is_file())
 
     def test_the_fluidics_log_has_rows_in_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             _admet_service, started = self._recorded(tmp)
 
-            self.assertGreater(len(Path(started["csv_path"]).read_text().splitlines()), 1)
+            self.assertGreater(len(rundb.timeline_rows(started["timeline_path"])), 0)
 
     def test_no_video_is_claimed_that_was_never_written(self):
         with tempfile.TemporaryDirectory() as tmp:
             admet, _started = self._recorded(tmp)
 
             [run] = admet.runs.list()
-            recorded = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]
+            recorded = rundb.read_record(Path(run["directory"]) / "run.db")["recording"]
 
             self.assertEqual([p for p in admet.home.data_dir.rglob("*.avi")], [])
             self.assertEqual(recorded["video_path"], "")
-            self.assertEqual(recorded["fluidics_csv"], "run.csv")
+            self.assertEqual(recorded["timeline"], "run.db")
 
     def test_what_was_true_during_the_run_is_kept_with_it(self):
         # Flows measured under different correction factors are not comparable,
@@ -349,7 +352,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
             admet, _started = self._recorded(tmp)
 
             [run] = admet.runs.list()
-            context = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]["context"]
+            context = rundb.read_record(Path(run["directory"]) / "run.db")["recording"]["context"]
 
             self.assertEqual(context["corrections"]["oil_l_scale"], 1.07)
             self.assertEqual(context["channels"][0]["label"], "Oil L")
@@ -367,8 +370,8 @@ class RegistrationTests(unittest.TestCase):
             admet.run("acquisition", "stop_recording")
 
             [run] = admet.runs.list()
-            recording = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]
-            self.assertEqual(recording["fluidics_csv"], "run.csv")
+            recording = rundb.read_record(Path(run["directory"]) / "run.db")["recording"]
+            self.assertEqual(recording["timeline"], "run.db")
             self.assertEqual(recording["video_path"], f"{recording['recording_id']}.avi")
             self.assertTrue(recording["recording_id"].startswith("set01_"))
             self.assertTrue((Path(run["directory"]) / recording["video_path"]).is_file())
@@ -407,9 +410,9 @@ class PhantomFileTests(unittest.TestCase):
             admet.run("acquisition", "disconnect_fluidics")
 
             [run] = admet.runs.list()
-            recording = json.loads((Path(run["directory"]) / "run.json").read_text())["recording"]
+            recording = rundb.read_record(Path(run["directory"]) / "run.db")["recording"]
             self.assertEqual(recording["video_path"], "")
-            self.assertTrue((Path(run["directory"]) / recording["fluidics_csv"]).is_file())
+            self.assertTrue((Path(run["directory"]) / recording["timeline"]).is_file())
 
 
 class RoutingTests(unittest.TestCase):
@@ -425,7 +428,7 @@ class RoutingTests(unittest.TestCase):
 
         described = {action["id"]: action for action in admet.describe("acquisition")["actions"]}
 
-        self.assertEqual(described["start_recording"]["outputs"], ["video", "fluidics_csv"])
+        self.assertEqual(described["start_recording"]["outputs"], ["video", "timeline"])
         self.assertEqual(described["stop_recording"]["artifact"], "control_recording")
 
 
@@ -442,7 +445,7 @@ class RealEngineTests(unittest.TestCase):
             admet.run("acquisition", "stop_recording")
             time.sleep(0.3)
 
-            written = [path for path in admet.home.data_dir.rglob("*.csv") if path.is_file()]
+            written = [path for path in admet.home.data_dir.rglob("*.db") if path.is_file()]
             self.assertTrue(written, "the fluidics log should be inside the data folder")
             self.assertTrue(str(written[0]).startswith(str(admet.home.data_dir / "runs")))
             self.assertEqual(len(admet.runs.list()), 1)

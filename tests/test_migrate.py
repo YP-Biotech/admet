@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from admet.app import main
+from admet.core import rundb
 from admet.core.migrate import migrate_project
 from admet.core.registry import Registry
 from admet.core.runs import Run, RunStore
@@ -104,8 +105,8 @@ class MigrateTests(unittest.TestCase):
             self.assertEqual([folder.name for folder in report.made],
                              ["20261117_164326_oil_3", "20261115_100000_oil_2", "20261116_190500_by_hand"])
             self.assertEqual((report.videos, report.skipped, report.registered), (3, [], 3))
-            with (Path(tmp) / "data" / "runs" / "20261115_100000_oil_2" / "run.csv").open(newline="") as handle:
-                self.assertEqual(list(csv.DictReader(handle))[0]["flow_0_ul_min"], "70")   # found by the run's name
+            self.assertEqual(rundb.timeline_rows(Path(tmp) / "data" / "runs" / "20261115_100000_oil_2" / "run.db")[0]
+                             ["flow_0_ul_min"], "70")                                   # found by the run's name
             self.assertEqual(report.left, {"run_bad": "failed", "run_stuck": "executing"})   # not laid out
             self.assertIn("2 run(s) not completed left in the project: 1 executing, 1 failed", report.lines())
             self.assertTrue((project / "records" / "camera" / "run_bad_20261117_170005.avi").is_file())   # stays
@@ -115,7 +116,7 @@ class MigrateTests(unittest.TestCase):
             self.assertEqual((record["kind"], record["name"], record["state"], record["run_id"]),
                              ("protocol", "oil_3", "completed", "20261117_164326_oil_3"))
             self.assertEqual(record["normalized_settings"]["protocol"]["name"], "Oil 3")
-            self.assertEqual(record["artifacts"]["fluidics_csv"], "run.csv")
+            self.assertEqual(record["artifacts"]["timeline"], "run.db")
             self.assertEqual(record["artifacts"]["polling_origin_monotonic"], 1000.0)
             video, unlisted = record["artifacts"]["videos"]
             self.assertEqual((video["video_path"], video["step_name"], video["encoded"]),
@@ -125,13 +126,12 @@ class MigrateTests(unittest.TestCase):
             self.assertTrue((run.path / "run_abc_20261117_164340.avi").is_file())
             self.assertFalse((project / "records" / "camera" / "run_abc_step01_20261117_164331.avi").exists())  # moved
             self.assertEqual([e["sequence"] for e in record["events"]], [1, 3])          # the tick between is not kept
-            with run.csv_path.open(newline="") as handle:
-                rows = list(csv.DictReader(handle))
+            rows = rundb.timeline_rows(run.db_path)
             self.assertEqual(len(rows), 5)
             self.assertEqual(rows[0]["pressure_0_mbar"], "1300")
             self.assertEqual((rows[3]["recording_id"], rows[3]["elapsed_s"]),
-                             ("run_abc_step01_20261117_164331", "505.000"))             # 16:43:31 on the readings' clock
-            self.assertEqual(rows[4]["elapsed_s"], "506.000")
+                             ("run_abc_step01_20261117_164331", "505"))                 # 16:43:31 on the readings' clock
+            self.assertEqual(rows[4]["elapsed_s"], "506")
             self.assertEqual(rows[3]["pressure_0_mbar"], "")
             self.assertEqual([run["name"] for run in RunStore(Path(tmp) / "data").list()],
                              ["Oil 3", "by_hand", "Oil 2"])                             # as control names runs, newest first
@@ -154,8 +154,7 @@ class MigrateTests(unittest.TestCase):
             self.assertEqual(record["recording"]["acquisition_fps"], 1000.0)
             self.assertTrue((run.path / "by_hand_20261116_190500.avi").is_file())
             self.assertTrue((project / "records" / "camera" / "by_hand_20261116_190500.avi").is_file())   # copied
-            with run.csv_path.open(newline="") as handle:
-                self.assertEqual(list(csv.DictReader(handle))[0]["flow_0_ul_min"], "100")
+            self.assertEqual(rundb.timeline_rows(run.db_path)[0]["flow_0_ul_min"], "100")
 
     def test_migrating_again_leaves_the_runs_laid_out_alone(self):
         with tempfile.TemporaryDirectory() as tmp:

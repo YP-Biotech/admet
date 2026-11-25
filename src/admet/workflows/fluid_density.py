@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-import csv
 import json
 from pathlib import Path
 from statistics import mean, stdev
 from typing import Iterable
 
+from admet.core import rundb
 from admet.core.engine import Param, ParamKind
 
 GRAVITY_CONVERSION_MBAR_PER_CM_PER_G_ML = 0.980665
@@ -371,7 +371,7 @@ PARAMETERS = (
 )
 
 
-def analyze_density_run(document, csv_path, events, polling_origin, *, completed, parameters=None):
+def analyze_density_run(document, timeline, events, polling_origin, *, completed, parameters=None):
     """Read closed artifacts only. Sensor samples are not independent replicates.
 
     EVENTS is the run's event list, or the path of a file holding one event a line."""
@@ -392,11 +392,10 @@ def analyze_density_run(document, csv_path, events, polling_origin, *, completed
         result["issues"].append("missing recording clock origin")
         return result
     try:
-        with Path(csv_path).open(newline="", encoding="utf-8") as handle:
-            channel = config["channel"]
-            rows = [tuple(_finite(row.get(key)) for key in
-                          ("elapsed_s", f"pressure_{channel}_mbar", f"flow_{channel}_ul_min"))
-                    for row in csv.DictReader(handle)]
+        channel = config["channel"]
+        rows = [tuple(_finite(row.get(key)) for key in
+                      ("elapsed_s", f"pressure_{channel}_mbar", f"flow_{channel}_ul_min"))
+                for row in rundb.timeline_rows(timeline)]
         if not isinstance(events, list):
             events = [json.loads(line) for line in Path(events).read_text().splitlines() if line.strip()]
     except (OSError, ValueError, TypeError) as exc:

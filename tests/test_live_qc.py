@@ -3,6 +3,7 @@
 import math
 import os
 import tempfile
+from pathlib import Path
 import threading
 import time
 import unittest
@@ -156,13 +157,12 @@ class WorkerTests(unittest.TestCase):
 
 
 class TimelineRowTests(unittest.TestCase):
-    def test_a_qc_row_joins_the_fluidics_file_on_its_clock(self):
-        import csv
-
-        from admet.engines.acquisition.fluidics.csv_logger import CsvLogger
+    def test_a_qc_row_joins_the_fluidics_readings_on_their_clock_in_the_runs_database(self):
+        from admet.core import rundb
+        from admet.engines.acquisition.fluidics.timeline_logger import TimelineLogger
 
         with tempfile.TemporaryDirectory() as tmp:
-            logger = CsvLogger(tmp, filename="run.csv")
+            logger = TimelineLogger(tmp, filename="run.db")
             path = logger.start(3, 3, origin_monotonic=1000.0)
             logger.write_row("10:00:00.000", 5.0, [1300, 420, 410], [300, 40, 40], [10, 2, 2], [True, True, True])
             summary = QCSummary(at=1005.3, rate_hz=1170.0, rate_half=21.0, count=1234.0, diameter=124.0,
@@ -170,14 +170,19 @@ class TimelineRowTests(unittest.TestCase):
                                 speed_px_frame=48.0, spacing_px=128.0, state="STABLE")
             logger.write_qc(summary.at, {"recording_id": "run_a_step01", "step": 1, "part": 1}, summary)
             logger.write_row("10:00:00.100", 5.1, [1300, 420, 410], [300, 40, 40], [10, 2, 2], [True, True, True])
+            self.assertEqual(logger.row_count, 3)
             logger.stop()
-            rows = list(csv.DictReader(open(path, newline="")))
+            rows = rundb.timeline_rows(path)
+            leftovers = sorted(p.name for p in Path(tmp).iterdir())
 
-        self.assertEqual([r["elapsed_s"] for r in rows], ["5.000", "5.300", "5.100"])   # the QC row on the same clock
-        qc = rows[1]
-        self.assertEqual((qc["recording_id"], qc["step"], qc["state"], qc["rate_hz"]), ("run_a_step01", "1", "STABLE", "1170.00"))
-        self.assertEqual((qc["flow_0_ul_min"], qc["pressure_0_mbar"]), ("", ""))         # fluidics columns empty
-        self.assertEqual((rows[0]["state"], rows[0]["rate_hz"]), ("", ""))                # and the other way round
+        self.assertEqual(leftovers, ["run.db"])                                      # folded whole: no WAL beside it
+        self.assertEqual([float(r["elapsed_s"]) for r in rows], [5.0, 5.1, 5.3])     # one clock, in time order
+        qc = rows[2]
+        self.assertEqual((qc["recording_id"], qc["step"], qc["state"], float(qc["rate_hz"])),
+                         ("run_a_step01", "1", "STABLE", 1170.0))
+        self.assertEqual((qc["flow_0_ul_min"], qc["pressure_0_mbar"]), ("", ""))     # fluidics columns empty
+        self.assertEqual((rows[0]["state"], rows[0]["rate_hz"]), ("", ""))            # and the other way round
+        self.assertEqual((float(rows[0]["pressure_2_mbar"]), rows[0]["stable_0"]), (410.0, "1"))
         self.assertRegex(qc["timestamp"], r"\d{2}:\d{2}:\d{2}\.\d{3}")
 
 

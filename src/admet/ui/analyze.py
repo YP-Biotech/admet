@@ -23,6 +23,7 @@ from typing import Any
 from admet.core.engine import EngineRegistry, ParamKind
 from admet.core.home import AdmetHome
 from admet.core.registry import Registry, infer_engine
+from admet.core.rundb import DB_NAME as RUN_DB
 from admet.engines.cellpose.detection import CellposeDetection, read_image_8bit
 from admet.engines.opencv.blur import blur_px
 from admet.engines.opencv.settings import OPENCV_SETTINGS
@@ -1718,7 +1719,7 @@ class AnalyzeWorkflowView:
         if not row.run or row.engine != "opencv":
             return None
         try:
-            mtime = (Path(row.run) / "run.csv").stat().st_mtime
+            mtime = (Path(row.run) / RUN_DB).stat().st_mtime
         except OSError:
             return None
         return _live_qc_of(row.run, str(Path(row.source_path)), mtime)
@@ -2652,7 +2653,7 @@ def _run_channels_of(run_dir: str, _mtime: float) -> tuple[dict[str, Any], ...]:
 def _run_channels(run_dir: str) -> list[dict[str, Any]]:
     """Each channel as the run's recording step set it, from the run's record."""
     try:
-        mtime = (Path(run_dir) / "run.json").stat().st_mtime
+        mtime = (Path(run_dir) / RUN_DB).stat().st_mtime
     except OSError:
         return []
     return list(_run_channels_of(run_dir, mtime))

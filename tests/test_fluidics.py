@@ -6,11 +6,12 @@ from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from admet.core import rundb
 from admet.engines.acquisition.fluidics.acquisition import FlowIntegral
 from admet.engines.acquisition.fluidics import (
     AcquisitionThread,
     ChannelManager,
-    CsvLogger,
+    TimelineLogger,
     FluigentConnectionError,
     FluigentSDK,
     FluigentSDKUnavailableError,
@@ -333,9 +334,9 @@ class AcquisitionTests(unittest.TestCase):
 
         self.assertEqual(first.volumes_ul, [0.0, 0.0])
 
-    def test_csv_logger_writes_header_and_rows(self):
+    def test_the_timeline_logger_writes_its_rows_into_the_runs_database(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            logger = CsvLogger(tmpdir)
+            logger = TimelineLogger(tmpdir)
             path = Path(logger.start(pressure_count=1, sensor_count=1))
             logger.write_row(
                 "12:00:00.000",
@@ -347,10 +348,11 @@ class AcquisitionTests(unittest.TestCase):
             )
             logger.stop()
 
-            contents = path.read_text(encoding="utf-8")
+            rows = rundb.timeline_rows(path)
 
-        self.assertIn("pressure_0_mbar", contents)
-        self.assertIn("12:00:00.000,1.234,10.00,2.500,0.500,1", contents)
+        self.assertEqual(path.suffix, ".db")
+        self.assertEqual([(r["timestamp"], r["elapsed_s"], r["pressure_0_mbar"], r["flow_0_ul_min"], r["volume_0_ul"],
+                           r["stable_0"]) for r in rows], [("12:00:00.000", "1.234", "10", "2.5", "0.5", "1")])
         self.assertEqual(logger.row_count, 1)
 
 

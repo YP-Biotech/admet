@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from admet.core import rundb
 from admet.core.run import RunJob
 from admet.ui.backend import DesktopBackend
 from admet.workflows.json_protocol import loads, template_documents
@@ -154,9 +155,9 @@ class DesktopBackendTests(unittest.TestCase):
         events = self.backend.call("protocol_events")["events"]
         self.assertEqual([e["sequence"] for e in events], sorted({e["sequence"] for e in events}))
         path = Path(self.backend.workdir) / "runs" / completed["run_id"]
-        summary = json.loads((path / "run.json").read_text())
+        summary = rundb.read_record(path / "run.db")
         self.assertEqual(summary["state"], "completed")
-        self.assertTrue((path / summary["artifacts"]["fluidics_csv"]).is_file())
+        self.assertTrue((path / summary["artifacts"]["timeline"]).is_file())
         with self.assertRaisesRegex(RuntimeError, "completed"):
             self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.backend.shutdown()
@@ -179,7 +180,7 @@ class DesktopBackendTests(unittest.TestCase):
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
         completed = self.wait_completed(plan["plan_id"])
-        record = json.loads((Path(self.backend.workdir) / "runs" / completed["run_id"] / "run.json").read_text())
+        record = rundb.read_record(Path(self.backend.workdir) / "runs" / completed["run_id"] / "run.db")
         archived = record["normalized_settings"]["protocol"]
         self.assertEqual(archived["parameter_values"]["oil"], "EvaGreen mix")
         self.assertIs(archived["parameter_values"]["filtered"], False)
@@ -217,9 +218,9 @@ class DesktopBackendTests(unittest.TestCase):
         completed = self.wait_completed(plan["plan_id"])
         self.assertFalse(self.backend.call("observe")["recording"]["active"])
         directory = Path(self.backend.workdir) / "runs" / completed["run_id"]
-        summary = json.loads((directory / "run.json").read_text())
+        summary = rundb.read_record(directory / "run.db")
         self.assertEqual(summary["normalized_settings"]["protocol"], document)
-        self.assertTrue((directory / summary["artifacts"]["fluidics_csv"]).is_file())
+        self.assertTrue((directory / summary["artifacts"]["timeline"]).is_file())
         events = self.backend.call("protocol_events", {"limit": 1000})["events"]
         for name in ("set01_rep01", "set01_rep02", "set01_rep03"):
             done = next(e for e in events if e["step_name"] == name and e["outcome"] == "completed")
@@ -291,16 +292,16 @@ class DesktopBackendTests(unittest.TestCase):
         completed = self.wait_completed(plan["plan_id"])
         self.assertFalse(camera.recording)
         run = Path(self.backend.workdir) / "runs" / completed["run_id"]
-        summary = json.loads((run / "run.json").read_text())
+        summary = rundb.read_record(run / "run.db")
         videos = summary["artifacts"]["videos"]
         self.assertEqual([(v["step"], v["part"], v["stopped_by"]) for v in videos], [(1, 1, "completed")])
         self.assertTrue((run / videos[0]["video_path"]).is_file())           # the video sits in the run's folder
-        self.assertTrue((run / summary["artifacts"]["fluidics_csv"]).is_file())
+        self.assertTrue((run / summary["artifacts"]["timeline"]).is_file())
         self.assertEqual([p for p in Path(self.backend.workdir).rglob("*.avi") if "runs" not in p.parts], [])
         # The run's timeline, name and set are in the run's record and in the recording's own record.
         record = writers[-1].record
-        self.assertEqual((record["fluidics_csv"], record["run_id"], record["tag"], record["condition"]),
-                         ("run.csv", completed["run_id"], "oil 3", "oil"))
+        self.assertEqual((record["timeline"], record["run_id"], record["tag"], record["condition"]),
+                         ("run.db", completed["run_id"], "oil 3", "oil"))
 
     def test_a_camera_that_cannot_start_pauses_the_protocol_with_channels_at_zero(self):
         camera = self.camera_fake()
@@ -322,7 +323,7 @@ class DesktopBackendTests(unittest.TestCase):
             if aborted["state"] == "failed":
                 break
             time.sleep(0.01)
-        summary = json.loads((Path(self.backend.workdir) / "runs" / aborted["run_id"] / "run.json").read_text())
+        summary = rundb.read_record(Path(self.backend.workdir) / "runs" / aborted["run_id"] / "run.db")
         self.assertEqual(summary["artifacts"]["videos"][0]["stopped_by"], "camera failed to start")
 
     def test_one_transient_preview_per_scope_and_run_id_only_on_execution(self):
@@ -343,7 +344,7 @@ class DesktopBackendTests(unittest.TestCase):
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
         completed = self.wait_completed(current["plan_id"])
         self.assertEqual(completed["run_id"], result["run_id"])
-        self.assertTrue((Path(self.backend.workdir) / "runs" / result["run_id"] / "run.json").exists())
+        self.assertTrue((Path(self.backend.workdir) / "runs" / result["run_id"] / "run.db").exists())
 
     def test_a_named_plan_tags_its_run_and_the_run_lists_carry_the_name_and_the_set(self):
         from admet.workflows.calculations import recorded_runs
@@ -356,7 +357,7 @@ class DesktopBackendTests(unittest.TestCase):
         completed = self.wait_completed(plan["plan_id"])
 
         run = Path(self.backend.workdir) / "runs" / completed["run_id"]
-        record = json.loads((run / "run.json").read_text())
+        record = rundb.read_record(run / "run.db")
         self.assertEqual((record["tag"], record["condition"]), ("oil 3", "oil"))
         self.assertTrue(run.name.endswith("_oil_3"))                      # the folder carries the name
         self.assertEqual([(r["name"], r["condition"]) for r in recorded_runs(self.backend.workdir)], [("oil 3", "oil")])
@@ -376,7 +377,7 @@ class DesktopBackendTests(unittest.TestCase):
         run.update(events=[json.loads(line) for line in events_path.read_text().splitlines() if line.strip()])
         service._run_artifacts[plan["plan_id"]] = {
             "run": run, "recording": True,
-            "artifacts": {"fluidics_csv": "run.csv", "polling_origin_monotonic": origin},
+            "artifacts": {"timeline": "run.db", "polling_origin_monotonic": origin},
         }
         stored["state"] = "completed"
         with patch.object(service, "do") as stop, patch(

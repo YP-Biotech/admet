@@ -9,6 +9,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from admet.core import rundb
 from admet.ui import theme
 from admet.ui.analyze_results import (
     FileResult,
@@ -539,9 +540,9 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(files["droplet.csv"].splitlines()[1:], [])                     # no droplets of its own
 
 
-def _run_csv(directory: Path, stem: str = "oil_step01_x") -> Path:
-    """A run's timeline with readings and the live QC rows of two recordings."""
-    import csv
+def _run_timeline(directory: Path, stem: str = "oil_step01_x") -> Path:
+    """A run's timeline with readings and the live QC rows of two recordings, in its run.db."""
+    from tests.rundb_helpers import set_timeline, timeline_text
 
     columns = ["timestamp", "elapsed_s", "pressure_0_mbar", "flow_0_ul_min", "recording_id", "step", "part", "rate_hz",
                "rate_half", "count", "diameter", "diameter_unit", "diameter_half", "cv_percent", "cv_half", "n",
@@ -553,12 +554,7 @@ def _run_csv(directory: Path, stem: str = "oil_step01_x") -> Path:
                      "48", "128", "SETTLING" if k < 2 else "STABLE"])
     rows.append(["10:00:07.100", "7.100", "", "", "other_step02_x", "2", "1", "900", "20", "900", "100.0", "um",
                  "0.5", "6.0", "0.3", "200", "1", "48", "128", "UNSTABLE"])
-    path = Path(directory) / "run.csv"
-    with path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(columns)
-        writer.writerows(rows)
-    return path
+    return set_timeline(Path(directory) / "run.db", timeline_text(rows, columns))
 
 
 class LiveQCTests(unittest.TestCase):
@@ -566,7 +562,7 @@ class LiveQCTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp) / "20261119_100000_oil"
             run.mkdir()
-            _run_csv(run)
+            _run_timeline(run)
 
             live = live_qc(run, run / "oil_step01_x.avi")
 
@@ -593,7 +589,7 @@ class LiveQCTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp) / "20261119_100000_oil"
             run.mkdir()
-            _run_csv(run)
+            _run_timeline(run)
             live = replace(live_qc(run, run / "oil_step01_x.avi"), sample_id="oil")
         result = _result(sample_id="oil", run=run.name, source_path=live.source_path,      # the same file
                          diameters=(120.0, 124.0, 128.0), arrivals_s=(0.0, 0.5, 1.0),
@@ -635,10 +631,10 @@ class LiveQCTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp) / "20261119_100000_oil"
             run.mkdir()
-            _run_csv(run)
-            (run / "run.json").write_text(json.dumps({"artifacts": {"polling_origin_monotonic": 100.0}, "events": [
+            _run_timeline(run)
+            rundb.write_record(run / "run.db", {"artifacts": {"polling_origin_monotonic": 100.0}, "events": [
                 {"monotonic": 102.0, "step_index": 0, "step_name": "collect", "outcome": "running"},
-                {"monotonic": 105.0, "step_index": 0, "step_name": "collect", "outcome": "completed"}]}))
+                {"monotonic": 105.0, "step_index": 0, "step_name": "collect", "outcome": "completed"}]})
             style = series_styles(["oil"])["oil"]
 
             charts = dict(run_charts(run, {"oil_step01_x": ("oil", style)}))
@@ -672,7 +668,7 @@ class LiveQCTests(unittest.TestCase):
             for name in ("20261119_100000_oil", "20261119_110000_water"):
                 run = Path(tmp) / name
                 run.mkdir()
-                _run_csv(run)
+                _run_timeline(run)
                 runs.append(run)
             styles = series_styles(["oil", "water"])
             plots = [RunPlot(str(runs[0]), run_label(runs[0]), {"oil_step01_x": ("oil", styles["oil"])}),

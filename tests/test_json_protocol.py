@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from admet.core import rundb
 from admet.core.service import Admet
 from admet.workflows.json_protocol import normalize, resolve, template_documents, validate_channels
 
@@ -73,7 +74,7 @@ class JsonProtocolTests(unittest.TestCase):
                     self.assertEqual(result["measurement_revision"], 1)
                     self.assertEqual(list(result["result"]["units"]), ["1", "2"])
                     self.assertIn(result["result"]["status"], {"usable", "inconclusive"})
-                    self.assertTrue(json.loads((directory / "run.json").read_text())["events"])
+                    self.assertTrue(rundb.read_record(directory / "run.db")["events"])
                 finally:
                     backend.shutdown()
 
@@ -324,12 +325,12 @@ class JsonProtocolTests(unittest.TestCase):
                                     for c in observation["channels"]))
                 completed = admet.planned_protocols()["plans"][0]
                 run_dir = Path(tmp) / "data" / "runs" / completed["run_id"]
-                summary = json.loads((run_dir / "run.json").read_text())
+                summary = rundb.read_record(run_dir / "run.db")
                 self.assertEqual(summary["state"], "completed")
-                self.assertTrue((run_dir / summary["artifacts"]["fluidics_csv"]).is_file())
+                self.assertTrue((run_dir / summary["artifacts"]["timeline"]).is_file())
                 self.assertTrue(summary["events"])
                 self.assertEqual(summary["normalized_settings"]["protocol"], normalize(DOCUMENT))
-                self.assertEqual(sorted(p.name for p in run_dir.iterdir()), ["run.csv", "run.json"])
+                self.assertEqual(sorted(p.name for p in run_dir.iterdir()), ["run.db"])
             finally:
                 admet.do("disconnect_fluidics", {})
 
@@ -352,7 +353,7 @@ class JsonProtocolTests(unittest.TestCase):
                         self.fail("plan did not complete")
                     time.sleep(0.01)
                 run_id = admet.planned_protocols()["plans"][0]["run_id"]
-                self.assertEqual(json.loads((path / "runs" / run_id / "run.json").read_text())["state"], "completed")
+                self.assertEqual(rundb.read_record(path / "runs" / run_id / "run.db")["state"], "completed")
             finally:
                 admet.do("disconnect_fluidics", {})
 

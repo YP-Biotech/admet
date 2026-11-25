@@ -1,17 +1,17 @@
 """Read-only run inputs, event windows and trace integration.
 
-A calculation reads one run folder: run.json for the protocol, the execution, the events
-and the measurements, run.csv for the timeline. A result records a digest of each input,
-so a later change to either marks it outdated.
+A calculation reads one run folder's run.db: its record for the protocol, the execution, the
+events and the measurements, its timeline for the readings. A result records a digest of each
+input, so a later change to either marks it outdated.
 """
 
-import csv
 import hashlib
 import json
 import math
 from pathlib import Path
 
-from admet.core.runs import FINISHED, RECORD, TIMELINE, Run
+from admet.core import rundb
+from admet.core.runs import FINISHED, RECORD, Run
 from admet.workflows.calculation_schema import declarations
 from admet.workflows.json_protocol import resolve, validate_measurement
 
@@ -20,10 +20,14 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+TIMELINE_INPUT = "timeline"      # how a result names the run's timeline among its inputs
+RECORD_INPUT = "record"
+
+
 def recording_path(directory, summary=None):
-    """The run's timeline file."""
-    path = Path(directory) / TIMELINE
-    if not path.is_file():
+    """The run's database, when it holds a timeline."""
+    path = Path(directory) / RECORD
+    if not path.is_file() or not rundb.timeline_columns(path):
         raise ValueError("This run has no fluidics recording")
     return path
 
@@ -53,16 +57,18 @@ def _result_digest(payload):
 def _input_digest(directory, name):
     if "#" in str(name):
         return _result_digest(load_result(name))
-    if name == RECORD:
+    if name == RECORD_INPUT:
         return Run(directory).inputs_digest()
-    return hashlib.sha256((Path(directory) / name).read_bytes()).hexdigest()
+    if name == TIMELINE_INPUT:
+        return rundb.timeline_digest(Path(directory) / RECORD)
+    raise ValueError(f"not an input of a run: {name}")
 
 
 def fingerprint(context):
     """A digest of each input the calculation read: the record (results aside), the timeline, the references."""
     directory = context["directory"]
-    inputs = [{"path": RECORD, "sha256": _input_digest(directory, RECORD)},
-              {"path": TIMELINE, "sha256": _input_digest(directory, TIMELINE)}]
+    inputs = [{"path": RECORD_INPUT, "sha256": _input_digest(directory, RECORD_INPUT)},
+              {"path": TIMELINE_INPUT, "sha256": _input_digest(directory, TIMELINE_INPUT)}]
     for reference in context.get("references", {}).values():
         inputs.append({"path": reference["path"], "sha256": _result_digest(reference)})
     return inputs
@@ -86,7 +92,7 @@ def load_context(directory, calculation_id, entry, references=None):
         raise ValueError("Wait until the recording has finished before calculating")
     if summary.get("artifacts", {}).get("recording_closed") is False:
         raise ValueError("This recording was not successfully closed; do not analyze an active file")
-    csv_path = recording_path(directory)
+    timeline = recording_path(directory)
     document = (summary.get("normalized_settings") or {}).get("protocol")
     resolved = resolve(document) if document and "parameters" in document else document
     config = next((item for item in declarations(resolved or {}) if item.get("type") == calculation_id), {})
@@ -113,7 +119,7 @@ def load_context(directory, calculation_id, entry, references=None):
         if payload["result"].get("status") not in {"complete", "consistent", "usable"}:
             raise ValueError(f"{role}: reference result is inconclusive")
         loaded_references[role] = payload
-    return {"directory": directory, "summary": summary, "document": document, "csv": csv_path,
+    return {"directory": directory, "summary": summary, "document": document, "timeline": timeline,
             "config": config, "measurements": measurements, "references": loaded_references,
             "events": [event for event in summary.get("events", []) if isinstance(event, dict)]}
 
@@ -206,18 +212,17 @@ def settled_after(context, channel, step, end, setpoint, *, hold_s=0.5, limit_s=
 
 def _read_rows(context, columns):
     rows = []
-    with context["csv"].open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
+    for row in rundb.timeline_rows(context["timeline"]):
+        try:
+            t = float(row["elapsed_s"])
+            values = [float(row.get(column, "")) for column in columns]
+        except (ValueError, TypeError, KeyError):
             try:
                 t = float(row["elapsed_s"])
-                values = [float(row.get(column, "")) for column in columns]
             except (ValueError, TypeError, KeyError):
-                try:
-                    t = float(row["elapsed_s"])
-                except (ValueError, TypeError, KeyError):
-                    raise ValueError("Recording has invalid timestamps") from None
-                values = [math.nan] * len(columns)
-            rows.append((t, *values))
+                raise ValueError("Recording has invalid timestamps") from None
+            values = [math.nan] * len(columns)
+        rows.append((t, *values))
     if any(not math.isfinite(row[0]) for row in rows) or any(b[0] <= a[0] for a, b in zip(rows, rows[1:])):
         raise ValueError("Recording timestamps are not strictly increasing")
     return rows

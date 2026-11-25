@@ -19,7 +19,7 @@ from .config import (
     STABILITY_WINDOW_SAMPLES,
     STATS_WINDOW_SAMPLES,
 )
-from .csv_logger import CsvLogger
+from .timeline_logger import TimelineLogger
 from .sdk import FluigentSDK
 
 log = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ class AcquisitionThread(threading.Thread):
         pressure_count: int,
         sensor_count: int,
         data_queue: Queue[DataSnapshot],
-        csv_logger: CsvLogger | None = None,
+        timeline_logger: TimelineLogger | None = None,
         *,
         interval_ms: int = ACQUISITION_INTERVAL_MS,
         stats_window_samples: int = STATS_WINDOW_SAMPLES,
@@ -132,8 +132,8 @@ class AcquisitionThread(threading.Thread):
         self._pressure_count = pressure_count
         self._sensor_count = sensor_count
         self._data_queue = data_queue
-        self._csv_logger = csv_logger
-        self._csv_lock = threading.Lock()
+        self._timeline_logger = timeline_logger
+        self._timeline_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._start_time = 0.0
         self._interval_ms = interval_ms
@@ -158,9 +158,9 @@ class AcquisitionThread(threading.Thread):
         self._recent: deque[DataSnapshot] = deque(maxlen=recent_samples)
         self._observation_lock = threading.Lock()
 
-    def set_csv_logger(self, logger: CsvLogger | None) -> None:
-        with self._csv_lock:
-            self._csv_logger = logger
+    def set_timeline_logger(self, logger: TimelineLogger | None) -> None:
+        with self._timeline_lock:
+            self._timeline_logger = logger
 
     def get_volume(self, sensor_index: int) -> float:
         with self._lock:
@@ -230,9 +230,9 @@ class AcquisitionThread(threading.Thread):
             stability=stability,
         )
 
-        with self._csv_lock:
-            if self._csv_logger:
-                self._csv_logger.write_row(
+        with self._timeline_lock:
+            if self._timeline_logger:
+                self._timeline_logger.write_row(
                     timestamp,
                     elapsed_s,
                     pressures,

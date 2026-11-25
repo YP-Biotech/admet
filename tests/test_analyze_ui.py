@@ -309,12 +309,12 @@ class PathLabelTests(unittest.TestCase):
 class LiveRowTests(unittest.TestCase):
     def test_a_video_from_a_run_brings_the_rigs_live_qc_into_its_samples_row_with_a_tick_of_its_own(self):
         from dataclasses import replace
-        from tests.test_analyze_results import _run_csv
+        from tests.test_analyze_results import _run_timeline
 
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"
             run, names = run_with_videos(data, "oil", videos=1)
-            _run_csv(run.path, Path(names[0]).stem)
+            _run_timeline(run.path, Path(names[0]).stem)
             view = _make_view(Registry(Path(tmp) / "analyze"))
             view._add_root(data)
             view._notify = lambda *a, **k: None
@@ -552,13 +552,13 @@ class BuiltNameTests(unittest.TestCase):
 
 class ResultsTickTests(unittest.TestCase):
     def test_a_samples_sources_are_ticked_one_by_one_and_remembered(self):
-        from tests.test_analyze_results import _run_csv
+        from tests.test_analyze_results import _run_timeline
 
         with tempfile.TemporaryDirectory() as tmp:
             store = Registry(Path(tmp) / "analyze")
             data = Path(tmp) / "data"
             run, names = run_with_videos(data, "oil", videos=1)
-            _run_csv(run.path, Path(names[0]).stem)
+            _run_timeline(run.path, Path(names[0]).stem)
             view = _make_view(store)
             view._add_root(data)
             view._notify = lambda *a, **k: None
@@ -580,14 +580,14 @@ class ResultsTickTests(unittest.TestCase):
             self.assertEqual(len(view._lives()), 1)
 
     def test_every_ticked_run_is_drawn_on_the_live_plots_in_its_videos_colour(self):
-        from tests.test_analyze_results import _run_csv
+        from tests.test_analyze_results import _run_timeline
 
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"
             first, names = run_with_videos(data, "oil", videos=1)
-            _run_csv(first.path, Path(names[0]).stem)
+            _run_timeline(first.path, Path(names[0]).stem)
             second, names = run_with_videos(data, "water", videos=2)
-            _run_csv(second.path, Path(names[0]).stem)
+            _run_timeline(second.path, Path(names[0]).stem)
             view = _make_view(Registry(Path(tmp) / "analyze"))
             view._add_root(data)
             view._notify = lambda *a, **k: None
@@ -754,12 +754,12 @@ class SampleTests(unittest.TestCase):
 
 class RedrawTests(unittest.TestCase):
     def _view(self, tmp):
-        from tests.test_analyze_results import _run_csv
+        from tests.test_analyze_results import _run_timeline
 
         data = Path(tmp) / "data"
         run, names = run_with_videos(data, "oil", videos=2)
         for name in names:
-            _run_csv(run.path, Path(name).stem)
+            _run_timeline(run.path, Path(name).stem)
         view = _make_view(Registry(Path(tmp) / "analyze"))
         view._add_root(data)
         view._notify = lambda *a, **k: None
@@ -833,12 +833,12 @@ class RedrawTests(unittest.TestCase):
 
 class ExportDetailsTests(unittest.TestCase):
     def test_details_hold_the_conditions_with_their_setpoints_and_each_sample_with_its_files(self):
-        from tests.test_analyze_results import _run_csv
+        from tests.test_analyze_results import _run_timeline
 
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "data"
             run, names = run_with_videos(data, "oil", videos=1)
-            _run_csv(run.path, Path(names[0]).stem)
+            _run_timeline(run.path, Path(names[0]).stem)
             view = _make_view(Registry(Path(tmp) / "analyze"))
             view._add_root(data)
             video = view.matrix[0]

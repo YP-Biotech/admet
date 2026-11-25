@@ -323,7 +323,7 @@ class AcquisitionEngineTests(unittest.TestCase):
                     "recording_label": "set01_rep01",
                 },
             )
-            csv_path = Path(result.metadata["csv_path"])
+            csv_path = Path(result.metadata["timeline_path"])
             self.assertTrue(result.metadata["recording_active"])
             run_engine(engine, "stop_recording", {})
 
@@ -332,7 +332,7 @@ class AcquisitionEngineTests(unittest.TestCase):
         self.assertTrue(csv_path.name.startswith("set01_rep01_"))
         self.assertFalse(engine.recording_active)
 
-    def test_start_recording_pairs_camera_video_and_fluidics_csv(self):
+    def test_start_recording_pairs_camera_video_and_timeline(self):
         sdk = FakeControlSDK()
         engine = make_engine(sdk, video_writer_factory=FakeVideoWriter)
         camera = FakeCameraAcquisition()
@@ -367,13 +367,13 @@ class AcquisitionEngineTests(unittest.TestCase):
             metadata_path = report_dir / "metadata.json"
             metadata_exists = metadata_path.exists()
 
-        self.assertTrue(result.metadata["csv_path"].endswith(".csv"))
+        self.assertTrue(result.metadata["timeline_path"].endswith(".db"))
         self.assertEqual(second.metadata["report_dir"], result.metadata["report_dir"])
         self.assertEqual(report_dir.name, "records")
         self.assertFalse(metadata_exists)
         self.assertTrue(Path(stop.metadata["video_path"]).name.startswith("set01_rep02_"))
         self.assertTrue(Path(second_stop.metadata["video_path"]).name.startswith("set01_rep03_"))
-        self.assertEqual(Path(stop.metadata["recording"]["fluidics_csv"]).parent.name, "fluidics")
+        self.assertEqual(Path(stop.metadata["recording"]["timeline"]).parent.name, "fluidics")
         self.assertEqual(stop.metadata["recording"]["width"], 16)
         self.assertEqual(stop.metadata["recording"]["height"], 12)
         self.assertEqual(stop.metadata["recording"]["converted_fps"], 120.0)
@@ -392,7 +392,7 @@ class AcquisitionEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             video_path = root / "records" / "camera" / "explicit.avi"
-            csv_path = root / "records" / "fluidics" / "explicit.csv"
+            csv_path = root / "records" / "fluidics" / "explicit.db"
             result = run_engine(
                 engine,
                 "start_recording",
@@ -403,13 +403,13 @@ class AcquisitionEngineTests(unittest.TestCase):
                     "camera_video_fps": 120.0,
                     "camera_preview_off_recording": False,
                 },
-                outputs={"video": video_path, "fluidics_csv": csv_path},
+                outputs={"video": video_path, "timeline": csv_path},
             )
             stop = run_engine(engine, "stop_recording", {})
 
-        self.assertEqual(Path(result.metadata["csv_path"]), csv_path)
+        self.assertEqual(Path(result.metadata["timeline_path"]), csv_path)
         self.assertEqual(Path(stop.metadata["video_path"]), video_path)
-        self.assertEqual(Path(stop.metadata["recording"]["fluidics_csv"]), csv_path)
+        self.assertEqual(Path(stop.metadata["recording"]["timeline"]), csv_path)
 
     def test_camera_frame_delivery_waits_for_ui_acknowledgement(self):
         engine = make_engine(FakeControlSDK())

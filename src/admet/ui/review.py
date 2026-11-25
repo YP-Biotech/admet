@@ -1,4 +1,4 @@
-"""Review runs: recorded pressure and flow from saved CSVs, run over run. Reads files only."""
+"""Review runs: recorded pressure and flow from the runs' databases, run over run. Reads files only."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from admet.core import timeline
 from admet.core.runs import Run
-from admet.core.timeline import QCSeries, expected_rates, read_fluidics_csv, read_qc_csv
+from admet.core.timeline import QCSeries, expected_rates, read_fluidics, read_qc
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.ui import theme as ui
 from admet.ui.tables import GridTable, fit_table_height
@@ -107,7 +107,7 @@ def placements(runs: list[ReviewRun], mode: str) -> list[list[tuple[float, float
 
 
 def step_markers(events: list[dict], origin: float) -> list[tuple[float, str, str]]:
-    """Step starts and ends on the CSV's clock, marked as on the live plots: (seconds, label, colour)."""
+    """Step starts and ends on the timeline's clock, marked as on the live plots: (seconds, label, colour)."""
     colours = {"start": Theme.SUCCESS_HOVER, "completed": Theme.TEXT_MUTED, "failed": Theme.DANGER_HOVER}
     return [(at, label, colours[kind]) for at, label, kind in timeline.step_markers(events, origin)]
 
@@ -116,7 +116,7 @@ def project_run(directory: Path, name: str) -> ReviewRun:
     directory = Path(directory)
     summary = Run(directory).read()
     fluidics = recording_path(directory)
-    t, pressures, flows = read_fluidics_csv(fluidics)
+    t, pressures, flows = read_fluidics(fluidics)
     origin = summary.get("artifacts", {}).get("polling_origin_monotonic")
     events = [event for event in summary.get("events", []) if isinstance(event, dict)] \
         if type(origin) in (int, float) else []
@@ -125,9 +125,9 @@ def project_run(directory: Path, name: str) -> ReviewRun:
 
 
 def run_qc(directory: Path, summary: dict, fluidics: Path, t: np.ndarray, flows: list[np.ndarray]) -> QCSeries | None:
-    """The run's droplet QC: the QC rows of its timeline file, with the expected rate from the flows."""
+    """The run's droplet QC: the QC rows of its timeline, with the expected rate from the flows."""
     try:
-        qc = read_qc_csv(fluidics)
+        qc = read_qc(fluidics)
     except (OSError, ValueError):
         return None
     if qc is not None:
@@ -136,8 +136,9 @@ def run_qc(directory: Path, summary: dict, fluidics: Path, t: np.ndarray, flows:
 
 
 def file_run(path: Path) -> ReviewRun:
-    t, pressures, flows = read_fluidics_csv(path)
-    return ReviewRun(Path(path).stem, t, pressures, flows)
+    """A run's database loaded by hand, named after its run folder."""
+    t, pressures, flows = read_fluidics(path)
+    return ReviewRun(Path(path).parent.name if Path(path).name == "run.db" else Path(path).stem, t, pressures, flows)
 
 
 def _bin(t: np.ndarray, y: np.ndarray, size: float) -> tuple[np.ndarray, np.ndarray]:
@@ -346,7 +347,7 @@ class ReviewPanel(QWidget):
                 if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.CheckState.Checked]
 
     def load_files(self) -> None:
-        paths, _filter = QFileDialog.getOpenFileNames(self, "Load fluidics CSV", "", "CSV files (*.csv)")
+        paths, _filter = QFileDialog.getOpenFileNames(self, "Load a run's timeline", "", "Run databases (run.db *.db)")
         self.add_files(paths)
 
     def add_files(self, paths) -> None:

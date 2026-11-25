@@ -2,11 +2,11 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
-import csv
 from pathlib import Path
 import re
 from statistics import mean, stdev
 
+from admet.core import rundb
 from admet.core.runs import FINISHED, Run, RunStore
 from admet.engines.acquisition.fluidics.config import FLUIDIC_CHANNEL_LABELS
 from admet.workflows.fluid_density import _finite, analyze_density_run
@@ -76,7 +76,7 @@ def _density(context):
                 raise ValueError("Recorded height confirmation and calculation height disagree")
         previous = group
     result = analyze_density_run(
-        document, context["csv"], context["events"],
+        document, context["timeline"], context["events"],
         context["summary"].get("artifacts", {}).get("polling_origin_monotonic"),
         completed=context["summary"].get("state") == "completed", parameters=context.get("parameters"),
     )
@@ -85,18 +85,17 @@ def _density(context):
 
 
 def _recording_summary(context):
-    with context["csv"].open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        columns = [key for key in (reader.fieldnames or [])
-                   if re.fullmatch(r"(?:pressure_[0-9]+_mbar|flow_[0-9]+_ul_min)", key)]
-        values = {key: [] for key in columns}
-        total = 0
-        for row in reader:
-            total += 1
-            for key in columns:
-                value = _finite(row.get(key))
-                if value is not None:
-                    values[key].append(value)
+    reader = rundb.timeline_rows(context["timeline"])
+    columns = [key for key in rundb.timeline_columns(context["timeline"])
+               if re.fullmatch(r"(?:pressure_[0-9]+_mbar|flow_[0-9]+_ul_min)", key)]
+    values = {key: [] for key in columns}
+    total = 0
+    for row in reader:
+        total += 1
+        for key in columns:
+            value = _finite(row.get(key))
+            if value is not None:
+                values[key].append(value)
     return {"status": "complete", "rows": total,
             "note": "Whole-recording statistics include settling and operator waits; these are not density fits.",
             "statistics": {key: {"samples": len(v), "missing": total - len(v),

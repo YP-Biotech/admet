@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -35,13 +36,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="an operation or engine id; omit for everything",
     )
 
-    migrate = sub.add_parser("migrate", help="lay an old .admetp project out as run folders, as control records now")
-    migrate.add_argument("project", help="the .admetp project folder")
+    migrate = sub.add_parser("migrate", help="lay old data out as control records now: an .admetp project as run "
+                                             "folders, or run folders with run.json and run.csv given their run.db")
+    migrate.add_argument("project", help="the .admetp project folder, or a folder of runs (a data folder, an export "
+                                         "folder, or one run)")
     migrate.add_argument("--into", help="the data folder to lay the runs out in (default: the home's data folder)")
     migrate.add_argument("--copy", action="store_true", help="copy the videos instead of moving them")
     migrate.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
     migrate.add_argument("--rig", action="store_true",
                          help="take the project's rig settings into the home's rig.json (one project's rig is kept)")
+
+    export_run = sub.add_parser("export-run", help="write a run's record and timeline as run.json and run.csv")
+    export_run.add_argument("run", help="the run folder, holding its run.db")
+    export_run.add_argument("--into", help="the folder to write the two files in (default: the run folder)")
 
     sdk = sub.add_parser(
         "install-sdk", help="download Fluigent's SDK from its official GitHub into ADMET's vendor folder"
@@ -89,8 +96,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "migrate":
         from admet.core.home import AdmetHome
-        from admet.core.migrate import migrate_project, rig_settings
+        from admet.core.migrate import migrate_project, migrate_runs, rig_settings, run_folders
         from admet.core.registry import Registry
+
+        if not (Path(args.project) / "manifest.json").is_file() and run_folders(args.project):
+            report = migrate_runs(args.project)
+            print("\n".join(report.lines()))
+            return 1 if report.failed else 0
 
         home = AdmetHome.resolve(args.home).ensure()
         try:
@@ -105,6 +117,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Could not migrate {args.project}: {exc}", file=sys.stderr)
             return 1
         print("\n".join(lines))
+        return 0
+
+    if args.command == "export-run":
+        from admet.core import rundb
+
+        source = Path(args.run) / rundb.DB_NAME
+        if not source.is_file():
+            print(f"{args.run} has no {rundb.DB_NAME}", file=sys.stderr)
+            return 1
+        into = Path(args.into or args.run)
+        into.mkdir(parents=True, exist_ok=True)
+        rundb.export_json(source, into / "run.json")
+        rows = rundb.export_csv(source, into / "run.csv")
+        print(f"{into / 'run.json'} and {into / 'run.csv'} ({rows} timeline rows)")
         return 0
 
     if args.command == "install-sdk":

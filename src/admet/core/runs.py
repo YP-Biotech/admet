@@ -1,10 +1,10 @@
-"""A run is a folder: data/runs/<date>_<name>/ with run.json, run.csv and its videos.
+"""A run is a folder: data/runs/<date>_<name>/ with run.db and its videos.
 
-run.json is the run's one record: the plan and the protocol as they ran, the state and
-the times, the rig mapping and the corrections in force, the step events, the measurements
-typed during the run, the videos it made, and the results calculated from it afterwards.
-run.csv is the timeline, fluidics and QC rows on one clock. Nothing in the folder points
-outside it, so a folder copied elsewhere is whole.
+run.db (see rundb) holds the run's one record: the plan and the protocol as they ran, the
+state and the times, the rig mapping and the corrections in force, the step events, the
+measurements typed during the run, the videos it made, and the results calculated from it
+afterwards; and its timeline, fluidics and QC rows on one clock. Each change to the record is
+one transaction. Nothing in the folder points outside it, so a folder copied elsewhere is whole.
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from admet.core import rundb
 from admet.core.files import write_atomic
 
-RECORD = "run.json"
-TIMELINE = "run.csv"
+RECORD = rundb.DB_NAME
 RUNS_DIR = "runs"
 RUN_ID = re.compile(r"\d{8}_\d{6}_[a-z0-9_]+")
 FINISHED = frozenset({"completed", "failed", "cancelled"})
@@ -55,28 +55,17 @@ class Run:
         self.run_id = self.path.name
 
     @property
-    def record_path(self) -> Path:
+    def db_path(self) -> Path:
         return self.path / RECORD
 
-    @property
-    def csv_path(self) -> Path:
-        return self.path / TIMELINE
-
     def read(self) -> dict[str, Any]:
-        try:
-            record = read_json(self.record_path)
-        except (OSError, ValueError):
-            return {}
-        return record if isinstance(record, dict) else {}
+        return rundb.read_record(self.db_path)
 
     def write(self, record: dict[str, Any]) -> None:
-        write_json(self.record_path, record)
+        rundb.write_record(self.db_path, record)
 
     def update(self, **fields: Any) -> dict[str, Any]:
-        record = self.read()
-        record.update(fields)
-        self.write(record)
-        return record
+        return rundb.update_record(self.db_path, lambda record: {**record, **fields})
 
     @property
     def name(self) -> str:
@@ -84,33 +73,41 @@ class Run:
 
     def event(self, described: dict[str, Any]) -> bool:
         """Keep a protocol event when it changes what the run is doing; a progress tick is not kept."""
-        record = self.read()
-        events = record.setdefault("events", [])
-        last = events[-1] if events else None
-        if last is not None and all(last.get(key) == described.get(key) for key in EVENT_KEYS):
-            return False
-        events.append(described)
-        self.write(record)
-        return True
+        kept = []
+
+        def add(record: dict[str, Any]) -> dict[str, Any] | None:
+            events = record.setdefault("events", [])
+            last = events[-1] if events else None
+            if last is not None and all(last.get(key) == described.get(key) for key in EVENT_KEYS):
+                return None
+            events.append(described)
+            kept.append(True)
+            return record
+
+        rundb.update_record(self.db_path, add)
+        return bool(kept)
 
     def measurements(self, changes: dict[str, Any] | None = None) -> dict[str, Any]:
         """The values typed during the run; with changes, the ones declared are updated and the revision moves."""
         from admet.workflows.json_protocol import validate_measurement
 
-        record = self.read()
-        payload = record.get("measurements")
+        payload = self.read().get("measurements")
         if not isinstance(payload, dict):
             raise ValueError("this run declares no measurements")
-        if changes is not None:
-            if not isinstance(changes, dict) or set(changes) - set(payload["fields"]):
-                raise ValueError("undeclared measurement")
-            for key, value in changes.items():
-                validate_measurement(value, payload["fields"][key])
-            payload["values"].update(changes)
-            payload["revision"] += 1
-            record["measurements"] = payload
-            self.write(record)
-        return payload
+        if changes is None:
+            return payload
+        if not isinstance(changes, dict) or set(changes) - set(payload["fields"]):
+            raise ValueError("undeclared measurement")
+        for key, value in changes.items():
+            validate_measurement(value, payload["fields"][key])
+
+        def change(record: dict[str, Any]) -> dict[str, Any]:
+            kept = record["measurements"]
+            kept["values"].update(changes)
+            kept["revision"] += 1
+            return record
+
+        return rundb.update_record(self.db_path, change)["measurements"]
 
     def inputs_digest(self) -> str:
         """What a calculation reads from the record, hashed: everything but the results themselves."""
@@ -125,30 +122,35 @@ class Run:
         return next((item for item in self.results() if item.get("id") == result_id), None)
 
     def add_result(self, payload: dict[str, Any]) -> dict[str, Any]:
-        record = self.read()
         kept = {**payload, "id": uuid.uuid4().hex}
-        results = record.get("calculations")
-        record["calculations"] = [*(results if isinstance(results, list) else []), kept]
-        self.write(record)
+
+        def add(record: dict[str, Any]) -> dict[str, Any]:
+            results = record.get("calculations")
+            record["calculations"] = [*(results if isinstance(results, list) else []), kept]
+            return record
+
+        rundb.update_record(self.db_path, add)
         return kept
 
     def video_finished(self, video_name: str, encoded: bool, reason: str) -> bool:
         """A video of this run finished encoding, or could not; its entry says so."""
-        record = self.read()
-        videos = list(record.get("artifacts", {}).get("videos", []))
-        recording = record.get("recording")
-        if isinstance(recording, dict):
-            videos.append(recording)
-        found = False
-        for video in videos:
-            if Path(str(video.get("video_path") or "")).name == video_name:
-                video["encoded"] = bool(encoded)
-                if not encoded:
-                    video["encode_error"] = reason
-                found = True
-        if found:
-            self.write(record)
-        return found
+        found = []
+
+        def mark(record: dict[str, Any]) -> dict[str, Any] | None:
+            videos = list(record.get("artifacts", {}).get("videos", []))
+            recording = record.get("recording")
+            if isinstance(recording, dict):
+                videos.append(recording)
+            for video in videos:
+                if Path(str(video.get("video_path") or "")).name == video_name:
+                    video["encoded"] = bool(encoded)
+                    if not encoded:
+                        video["encode_error"] = reason
+                    found.append(True)
+            return record if found else None
+
+        rundb.update_record(self.db_path, mark)
+        return bool(found)
 
 
 class RunStore:
@@ -206,11 +208,8 @@ class RunStore:
         """Every run, newest first: where it is, what it is called, how it ended."""
         entries = []
         for record_path in self.runs_dir.glob(f"*/{RECORD}"):
-            try:
-                record = read_json(record_path)
-            except (OSError, ValueError):
-                continue
-            if not isinstance(record, dict):
+            record = rundb.read_record(record_path)
+            if not record:
                 continue
             protocol = (record.get("normalized_settings") or {}).get("protocol") or {}
             entries.append({

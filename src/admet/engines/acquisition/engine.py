@@ -18,7 +18,7 @@ from admet.engines.acquisition.camera import CameraController
 from admet.engines.acquisition.fluidics import (
     AcquisitionThread,
     ChannelManager,
-    CsvLogger,
+    TimelineLogger,
     FluigentConnectionError,
     FluigentSDK,
     HardwareManager,
@@ -166,7 +166,7 @@ ACQUISITION_ACTIONS = (
             "camera_video_fps",
             "camera_preview_off_recording",
         ),
-        outputs=("video", "fluidics_csv"),
+        outputs=("video", "timeline"),
     ),
     ActionSpec("stop_recording", "Stop Recording", "recording", artifact="control_recording"),
     ActionSpec("pause_protocol", "Pause Protocol", "protocol"),
@@ -235,7 +235,7 @@ class AcquisitionEngine:
         self._writer_factory = writer_factory
         self._video_writer_factory = writer_factory
         self._recordings = RecordingCoordinator(
-            csv_logger=CsvLogger(),
+            timeline_logger=TimelineLogger(),
             hardware_state=lambda: self.hardware.state,
             acquisition=lambda: self._acquisition,
             writer_factory=self._writer_factory,
@@ -392,7 +392,7 @@ class AcquisitionEngine:
         private_settings: dict[str, Any] = {}
         for output_key, setting_key in (
             ("video", "video_path"),
-            ("fluidics_csv", "fluidics_csv_path"),
+            ("timeline", "timeline_path"),
         ):
             path = job.outputs.get(output_key)
             if path is not None:
@@ -419,8 +419,8 @@ class AcquisitionEngine:
         return self._recordings.recording_active
 
     @property
-    def csv_logger(self) -> CsvLogger:
-        return self._recordings.csv_logger
+    def timeline_logger(self) -> TimelineLogger:
+        return self._recordings.timeline_logger
 
     @property
     def pipeline_state(self) -> str:
@@ -445,7 +445,7 @@ class AcquisitionEngine:
             pressure_count=len(state.pressure_channels),
             sensor_count=len(state.sensor_channels),
             data_queue=self.data_queue,
-            csv_logger=self.csv_logger if self.recording_active else None,
+            timeline_logger=self.timeline_logger if self.recording_active else None,
         )
         self._acquisition.start()
 
@@ -1132,7 +1132,7 @@ class AcquisitionEngine:
         return {
             "active": self.recording_active,
             "id": current.get("recording_id"),
-            "fluidics_csv": current.get("fluidics_csv"),
+            "timeline": current.get("timeline"),
             "video": current.get("video_path"),
         }
 
