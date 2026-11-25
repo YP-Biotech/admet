@@ -30,15 +30,16 @@ PREVIEW_HZ = 30.0                 # how often the desktop paints the preview
 class StageResult:
     stage: str
     seconds: float
-    camera_fps: float             # from the camera's frame numbers over its own clock
-    made: int                     # frames the camera numbered while recording
+    camera_fps: float             # from the camera's frame numbers over its own clock, else frames over the PC's
+    made: int                     # frames the camera numbered while recording; the ones handed over when it numbers none
     reached_python: int           # frames pylon handed over
     camera_skipped: int           # numbered by the camera, never handed over
     taken: int                    # frames the writer accepted
     written: int                  # frames on the disk
     writer_dropped: int           # accepted, then dropped because the disk fell behind
-    grab_us_median: float         # time pylon takes to hand over one frame
+    grab_us_median: float         # time one call for a frame takes, the wait for it included
     grab_us_p99: float
+    numbered: bool = True         # the camera's frame numbers and timestamps could be read
 
     @property
     def budget_us(self) -> float:
@@ -62,6 +63,7 @@ class TimedCamera:
         self.last: tuple[int, int] | None = None
         self.skipped = 0
         self.frames = 0
+        self.counting = True              # off just before the recording stops: a frame after it is not one of its
 
     def start_grabbing(self, *, latest_only: bool = True) -> None:
         self.camera.start_grabbing(latest_only=latest_only)
@@ -72,8 +74,8 @@ class TimedCamera:
     def grab(self, timeout_ms: int = 5) -> tuple[np.ndarray, int, int] | None:
         started = time.perf_counter_ns()
         grabbed = self.camera.grab(timeout_ms)
-        if grabbed is None:
-            return None
+        if grabbed is None or not self.counting:
+            return grabbed
         self.durations_ns.append(time.perf_counter_ns() - started)
         _frame, ticks, number = grabbed
         self.frames += 1
@@ -159,6 +161,7 @@ def run_stage(camera: Any, stage: str, seconds: float, out_dir: Path, *, fps_hin
         timed.reset()
         started = time.monotonic()
         time.sleep(seconds)
+        timed.counting = False
         acquisition.stop_recording()
         elapsed = time.monotonic() - started
         if isinstance(writer, VideoWorker):
@@ -176,21 +179,25 @@ def run_stage(camera: Any, stage: str, seconds: float, out_dir: Path, *, fps_hin
 
 
 def _result(stage: str, elapsed: float, timed: TimedCamera, writer: Any, tick_hz: float) -> StageResult:
-    made, camera_fps = timed.frames, 0.0
+    """The stage's counts. The camera's frame numbers and clock are used only when they make sense:
+    numbers that span fewer frames than arrived, or a clock that disagrees with the PC's by more than
+    half, are not the camera's count; then the frames handed over and the PC's clock are all there is."""
+    pc_fps = timed.frames / elapsed if elapsed > 0 else 0.0
+    made, camera_fps, numbered = timed.frames, pc_fps, False
     if timed.first is not None and timed.last is not None:
-        made = timed.last[1] - timed.first[1] + 1
+        numbers = timed.last[1] - timed.first[1] + 1
         span_s = (timed.last[0] - timed.first[0]) / tick_hz if tick_hz else 0.0
-        if span_s > 0 and timed.last[0] > timed.first[0]:
-            camera_fps = (made - 1) / span_s
-        elif elapsed > 0:
-            camera_fps = made / elapsed
+        clocked = (numbers - 1) / span_s if span_s > 0 else 0.0
+        if numbers >= timed.frames > 1 and pc_fps and 0.5 <= clocked / pc_fps <= 2.0 * numbers / timed.frames:
+            made, camera_fps, numbered = numbers, clocked, True
     durations = np.array(timed.durations_ns, dtype=float) / 1000.0
     return StageResult(
         stage=stage, seconds=round(elapsed, 2), camera_fps=round(camera_fps, 1), made=made,
-        reached_python=timed.frames, camera_skipped=timed.skipped, taken=int(writer.frame_count),
+        reached_python=timed.frames, taken=int(writer.frame_count),
         written=int(writer.written), writer_dropped=int(writer.frame_count - writer.written),
         grab_us_median=round(float(np.median(durations)), 1) if len(durations) else 0.0,
         grab_us_p99=round(float(np.percentile(durations, 99)), 1) if len(durations) else 0.0,
+        camera_skipped=timed.skipped if numbered else 0, numbered=numbered,
     )
 
 
@@ -212,6 +219,8 @@ def bench(settings: dict[str, Any], *, seconds: float = 10.0, out_dir: str | Pat
     fps_hint = float(camera.get_resulting_framerate() or 0.0)
     width, height = controller.recording_frame_size(settings)
     results = []
+    if out_dir is not None:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="admet-camera-bench-", dir=out_dir) as folder:
             for stage in stages:
@@ -238,8 +247,14 @@ def report_lines(results: list[StageResult]) -> list[str]:
                          f"(grab takes {r.grab_us_median:.0f} µs of a {r.budget_us:.0f} µs budget, plus the loop)")
         if r.writer_dropped:
             lines.append(f"{r.stage}: {r.writer_dropped} frames dropped by the writer: the disk fell behind")
+    if any(not r.numbered for r in results):
+        lines.append("the camera gave no usable frame numbers or timestamps: frames it made but never handed over "
+                     "cannot be counted, and the rate is the frames that arrived over the PC's clock")
+    lines.append("grab µs includes the wait for the next frame: near the budget means Python keeps up, well above "
+                 "it means it falls behind")
     if all(not r.lost for r in results):
-        lines.append("no frame lost at any stage")
+        lines.append("no frame lost at any stage" + ("" if all(r.numbered for r in results)
+                                                     else " that the PC can see"))
     return lines
 
 
