@@ -46,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--rig", action="store_true",
                          help="take the project's rig settings into the home's rig.json (one project's rig is kept)")
 
+    rig = sub.add_parser("rig", help="show the home's rig settings, or take them from a project's manifest.json")
+    rig.add_argument("--from", dest="source", metavar="PROJECT",
+                     help="an .admetp project folder (or its manifest.json) whose rig settings replace the home's; "
+                          "nothing of its runs is touched")
+    rig.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
+
     export_run = sub.add_parser("export-run", help="write a run's record and timeline as run.json and run.csv")
     export_run.add_argument("run", help="the run folder, holding its run.db")
     export_run.add_argument("--into", help="the folder to write the two files in (default: the run folder)")
@@ -119,6 +125,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(lines))
         return 0
 
+    if args.command == "rig":
+        return run_rig(args.source, home=args.home)
+
     if args.command == "export-run":
         from admet.core import rundb
 
@@ -167,6 +176,42 @@ def run_camera_bench(args: argparse.Namespace) -> int:
     if args.json:
         return _print(as_dicts(results))
     print("\n".join(report_lines(results)))
+    return 0
+
+
+def run_rig(source: str | None, *, home: str | None = None) -> int:
+    """The home's rig settings shown; with SOURCE, the project's rig settings put in their place first, the
+    file as it was kept beside it as rig.before.json."""
+    import shutil
+
+    from admet.core.home import AdmetHome
+    from admet.core.migrate import rig_settings
+
+    resolved = AdmetHome.resolve(home).ensure()
+    if source:
+        project = Path(source)
+        project = project.parent if project.name == "manifest.json" else project
+        try:
+            settings = rig_settings(project)
+        except ValueError as exc:
+            print(f"Could not read the rig settings: {exc}", file=sys.stderr)
+            return 1
+        if not settings:
+            print(f"{project / 'manifest.json'} holds no rig settings; the home's rig is unchanged", file=sys.stderr)
+            return 1
+        if resolved.rig_path.is_file():
+            shutil.copy2(resolved.rig_path, resolved.rig_path.with_name("rig.before.json"))
+            print(f"the rig as it was: {resolved.rig_path.with_name('rig.before.json')}")
+        resolved.update_rig(**settings)
+        print(f"taken from {project.name}: {', '.join(sorted(settings))}")
+    rig = resolved.rig()
+    print(f"rig: {resolved.rig_path}")
+    for key in sorted(rig):
+        value = rig[key]
+        size = f"{len(value)} entries" if isinstance(value, (dict, list)) else str(value)
+        print(f"  {key}: {size}")
+    if not rig:
+        print("  nothing kept yet")
     return 0
 
 
