@@ -969,6 +969,10 @@ class AnalyzeWorkflowView:
                 camera = record.get("camera") or {}
                 if camera.get("exposure_us") is not None:
                     facts.append(("Exposure", f"{float(camera['exposure_us']):g} µs (from the video)"))
+                if camera.get("gain") is not None:
+                    facts.append(("Gain", f"{float(camera['gain']):.2f} dB (from the video)"))
+                if camera.get("resulting_frame_rate_hz"):
+                    facts.append(("Camera rate", f"{float(camera['resulting_frame_rate_hz']):g} fps (from the video)"))
                 if camera.get("pixel_size_um"):
                     facts.append(("Sensor pixel", f"{float(camera['pixel_size_um']):g} µm"))
                 if record.get("frames_dropped"):

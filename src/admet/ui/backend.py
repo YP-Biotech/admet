@@ -64,6 +64,15 @@ class DesktopBackend:
     def save_optics(self, optics):
         self.service.update_rig(optics=optics or None)       # recordings from now on carry it
 
+    @property
+    def camera_settings(self):
+        """The camera as last set on this rig: exposure, gain, frame, rate; empty until something was set."""
+        camera = self.service.rig().get("camera")
+        return dict(camera) if isinstance(camera, dict) else {}
+
+    def save_camera_settings(self, settings):
+        self.service.update_rig(camera=dict(settings) or None)
+
     def save_checkup(self, checkup):
         """The preflight's state of the rig, kept with its settings."""
         self.service.update_rig(qt_checkup=checkup)

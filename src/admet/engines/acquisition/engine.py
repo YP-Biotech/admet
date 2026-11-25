@@ -679,7 +679,7 @@ class AcquisitionEngine:
             model = camera.get("model")
             facts["camera"] = {key: camera.get(key) for key in (
                 "model", "serial_number", "frame_width", "frame_height", "pixel_format",
-                "configured_frame_rate_hz", "exposure_us", "gain") if camera.get(key) is not None}
+                "configured_frame_rate_hz", "resulting_frame_rate_hz", "exposure_us", "gain") if camera.get(key) is not None}
             parameters = self._camera.read_parameters().get("camera_parameters", {})
             binning = tuple(int((parameters.get(name) or {}).get("value") or 1)
                             for name in ("BinningHorizontal", "BinningVertical"))
