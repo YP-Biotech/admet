@@ -31,6 +31,18 @@ acquisition mode, calibration, profiles, liquids, optics and preflight checkup i
 the home's `control/rig.json`, over what is there. Migrate the project whose rig is
 the current one with `--rig`, the others without, and the home keeps one rig.
 
+To take only a project's rig settings, without laying out any of its runs, and to see
+what the home keeps:
+
+```bash
+admet rig                                   # where rig.json is and what it holds
+admet rig --from D:\projects\rtqc.admetp     # the project's rig settings into the home
+```
+
+`--from` reads the project's `manifest.json` (the folder or the file itself) and puts
+its calibration, profiles, liquids, optics and the rest in place of the home's; any
+other setting of the home stays, and the file as it was is kept as `rig.before.json`.
+
 `admet control` no longer writes projects. It records one folder per run into the
 admet home's `data/runs/` and keeps the rig's settings in `control/rig.json`; see
 [the home](../control/overview#the-home) and [Recording](../control/running#recording).

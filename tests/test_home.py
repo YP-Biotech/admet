@@ -122,3 +122,41 @@ class WindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RigCommandTests(unittest.TestCase):
+    def test_a_projects_rig_settings_replace_the_homes_and_the_old_file_is_kept(self):
+        import json
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from admet.app import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            project = Path(tmp) / "rtqc.admetp"
+            project.mkdir()
+            (project / "manifest.json").write_text(json.dumps({
+                "files": [{"path": "records/camera/a.avi"}],
+                "metadata": {"calibration": {"oil_l": {"scale": 1.07}}, "optics": {"microns_per_pixel": 2.5},
+                             "liquids": [], "project_name": "rtqc"}}))
+            AdmetHome(home).ensure().update_rig(calibration={"oil_l": {"scale": 1.0}}, export={"path": "/srv"})
+
+            with redirect_stdout(StringIO()) as printed:
+                self.assertEqual(main(["rig", "--from", str(project / "manifest.json"), "--home", str(home)]), 0)
+
+            rig = AdmetHome(home).rig()
+            self.assertEqual(rig["calibration"], {"oil_l": {"scale": 1.07}})                 # the project's
+            self.assertEqual(rig["optics"], {"microns_per_pixel": 2.5})
+            self.assertEqual(rig["export"], {"path": "/srv"})                               # the home's own, kept
+            self.assertNotIn("project_name", rig)                                          # not a rig setting
+            before = json.loads((home / "control" / "rig.before.json").read_text())
+            self.assertEqual(before["calibration"], {"oil_l": {"scale": 1.0}})              # as it was
+            self.assertIn("taken from rtqc.admetp: calibration, optics", printed.getvalue())
+            self.assertEqual(sorted(p.name for p in project.iterdir()), ["manifest.json"])  # the project untouched
+
+            with redirect_stdout(StringIO()) as shown:
+                self.assertEqual(main(["rig", "--home", str(home)]), 0)
+            self.assertIn("calibration: 1 entries", shown.getvalue())
+            with redirect_stderr(StringIO()):
+                self.assertEqual(main(["rig", "--from", str(Path(tmp) / "nowhere"), "--home", str(home)]), 1)
