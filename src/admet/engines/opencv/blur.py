@@ -44,14 +44,27 @@ def smear_matrix(length: int, blur: float) -> np.ndarray:
 def unsmear(profile: np.ndarray, blur: float, smoothing: float = SMOOTHING) -> np.ndarray:
     """The still profile whose smear is PROFILE: non-negative least squares with a light smoothness
     term. It is shorter than the smeared one by the window, less one pixel."""
-    from scipy.optimize import nnls
-
     profile = np.asarray(profile, dtype=float)
     smear = smear_matrix(len(profile) - int(np.ceil(blur)) + 1, blur)
     n = smear.shape[1]
     difference = np.diff(np.eye(n), axis=0)
-    system = np.vstack([smear, np.sqrt(smoothing) * difference])
-    return nnls(system, np.r_[profile, np.zeros(n - 1)], maxiter=20 * n)[0]
+    return _non_negative_lstsq(np.vstack([smear, np.sqrt(smoothing) * difference]), np.r_[profile, np.zeros(n - 1)])
+
+
+def _non_negative_lstsq(matrix: np.ndarray, target: np.ndarray, rounds: int = 50) -> np.ndarray:
+    """Least squares with every value at least 0, numpy alone (control has no scipy): solve on the free
+    values, hold at 0 the ones that came out below it, and solve again until none does."""
+    free = np.ones(matrix.shape[1], dtype=bool)
+    values = np.zeros(matrix.shape[1])
+    for _ in range(rounds):
+        values = np.zeros(matrix.shape[1])
+        if free.any():
+            values[free] = np.linalg.lstsq(matrix[:, free], target, rcond=None)[0]
+        below = free & (values < 0)
+        if not below.any():
+            break
+        free &= ~below
+    return np.clip(values, 0.0, None)
 
 
 def extent(profile: np.ndarray, threshold: float) -> int:
