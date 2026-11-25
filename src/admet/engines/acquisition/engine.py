@@ -5,6 +5,7 @@ import statistics
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from dataclasses import asdict
 from queue import Queue
 from statistics import mean, stdev
@@ -686,6 +687,12 @@ class AcquisitionEngine:
             facts["camera"]["binning"] = list(binning)
             if pixel_size_um(model) is not None:
                 facts["camera"]["pixel_size_um"] = pixel_size_um(model) * max(binning)
+            # The scale measured now on the channel's walls, beside the one kept with the rig.
+            width = (self.recording_context.get("optics") or {}).get("channel_width_um")
+            measure = getattr(self._camera, "measured_scale", None)
+            measured = measure(float(width)) if width and measure else None
+            if measured:
+                facts["optics_measured"] = {**measured, "measured_at": datetime.now().isoformat(timespec="seconds")}
         if self.hardware.state.connected:
             channels = []
             for index, channel in enumerate(self.channel_manager.channels):

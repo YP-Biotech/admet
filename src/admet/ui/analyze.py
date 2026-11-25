@@ -85,6 +85,7 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 DETECTION_DEFAULTS = {param.name: param.default for param in OPENCV_SETTINGS.params
                       if param.name in {"k_sigma", "satellite_px", "min_area", "skip_left_pct",
                                         "skip_right_pct", "gate_pct"}}
+WALL_SCALE_FRAMES = 24      # frames spread over a video its empty channel, and so its walls, are taken over
 IMAGING_DEFAULTS = {"px_to_um": 1.14, "frame_limit": 0, "detect_inclusions": True, "slide_height_um": 0.0}
 
 
@@ -965,6 +966,9 @@ class AnalyzeWorkflowView:
                               else "unknown: set FPS on 2. Analyse"))
                 if captured and frames:
                     facts.append(("Duration", f"{frames / captured:.1f} s"))
+                for origin, scale, how in _scales(row):
+                    facts.append((f"Scale, {origin.lower()}", f"{scale:g} µm/px ({how})"))
+                facts.append(("Scale used", f"{_row_float(row, 'microns_per_pixel', 0.0):g} µm/px"))
                 record = _video_record(source) or {}
                 camera = record.get("camera") or {}
                 if camera.get("exposure_us") is not None:
@@ -2852,12 +2856,67 @@ def _recorded_capture_fps(row: MatrixRow) -> float:
 
 
 def _recorded_scale(row: MatrixRow) -> float:
-    """The µm per pixel the recording carries, measured on control's preview; 0 when it has none."""
-    optics = (_video_record(Path(row.source_path).resolve()) or {}).get("optics") or {}
+    """The µm per pixel a file starts with: the first of the scales it has (see _scales); 0 when none."""
+    scales = _scales(row)
+    return scales[0][1] if scales else 0.0
+
+
+def _scales(row: MatrixRow) -> list[tuple[str, float, str]]:
+    """Every scale known for a video, best first, as (where from, µm per px, how): the channel's walls
+    measured when the recording started, the walls measured now on the video itself (for a recording
+    made before control measured them), and the scale control kept with the rig, clicked or typed."""
+    source = Path(row.source_path).resolve()
+    record = _video_record(source) or {}
+    optics = record.get("optics") if isinstance(record.get("optics"), dict) else {}
+    found: list[tuple[str, float, str]] = []
+    measured = record.get("optics_measured") if isinstance(record.get("optics_measured"), dict) else {}
+    if _numeric(measured.get("microns_per_pixel")):
+        found.append(("Walls at the recording's start", float(measured["microns_per_pixel"]), _walls_text(measured)))
+    elif _numeric(optics.get("channel_width_um")):
+        walls = _video_wall_scale(str(source), float(optics["channel_width_um"]))
+        if walls:
+            found.append(("Walls in the video", float(walls["microns_per_pixel"]), _walls_text(walls)))
+    if _numeric(optics.get("microns_per_pixel")):
+        how = {"walls": "walls clicked on control", "typed": "typed on control"}.get(str(optics.get("method")),
+                                                                                     "kept with the rig")
+        found.append(("Set on control", float(optics["microns_per_pixel"]), how))
+    return found
+
+
+def _walls_text(walls: dict[str, Any]) -> str:
+    top, bottom = (walls.get("wall_px") or [0, 0])[:2]
+    return (f"walls at {float(top):.2f} and {float(bottom):.2f} px, {float(bottom) - float(top):.2f} px apart, "
+            f"channel {float(walls.get('channel_width_um') or 0):g} µm")
+
+
+def _video_wall_scale(source: str, channel_width_um: float) -> dict[str, Any] | None:
     try:
-        return float(optics.get("microns_per_pixel") or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+        stat = Path(source).stat()
+    except OSError:
+        return None
+    return _video_wall_scale_of(source, stat.st_mtime, stat.st_size, channel_width_um)
+
+
+@lru_cache(maxsize=256)
+def _video_wall_scale_of(source: str, _mtime: float, _size: int, channel_width_um: float) -> dict[str, Any] | None:
+    """The scale the channel's walls give on the empty channel of the video, from frames spread over it."""
+    import cv2
+    import numpy as np
+
+    from admet.engines.opencv.scale import background, scale_from_background
+
+    capture = cv2.VideoCapture(source)
+    try:
+        count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        frames = []
+        for index in np.linspace(0, max(count - 1, 0), WALL_SCALE_FRAMES).astype(int) if count else ():
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            ok, frame = capture.read()
+            if ok:
+                frames.append(frame)
+    finally:
+        capture.release()
+    return scale_from_background(background(frames), channel_width_um) if len(frames) >= 8 else None
 
 
 def _video_record(source: Path) -> dict[str, Any] | None:

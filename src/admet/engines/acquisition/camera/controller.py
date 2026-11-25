@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict
 from threading import Lock
@@ -18,6 +19,9 @@ log = logging.getLogger(__name__)
 
 
 PARAMETER_READ_INTERVAL_S = 1.0     # the status line's parameter reads, when not recording
+SCALE_FRAMES = 40                   # preview frames the empty channel is taken over for the scale
+SCALE_FRAME_INTERVAL_S = 0.25       # one kept this often, so droplets passing move on between them
+SCALE_MIN_FRAMES = 8
 
 
 class CameraController:
@@ -43,6 +47,9 @@ class CameraController:
         # Where a QC row goes while a run's timeline is open: (time taken, the recording's record, the summary).
         self.qc_row_sink: Callable[[float, dict[str, Any], QCSummary], None] | None = None
         self._qc_record: dict[str, Any] = {}
+        # Preview frames a few a second, for the empty channel the scale is measured on at a recording's start.
+        self._scale_frames: deque[np.ndarray] = deque(maxlen=SCALE_FRAMES)
+        self._scale_frame_at = 0.0
 
     @property
     def live(self) -> bool:
@@ -406,12 +413,29 @@ class CameraController:
         if self._acquisition:
             self._acquisition.frame_processed()
 
+    def measured_scale(self, channel_width_um: float) -> dict[str, Any] | None:
+        """The µm per px the channel's walls give on the recent preview frames; None without enough
+        frames or a clear pair of walls."""
+        from admet.engines.opencv.scale import background, scale_from_background
+
+        with self._lock:
+            frames = list(self._scale_frames)
+        if len(frames) < SCALE_MIN_FRAMES or len({frame.shape for frame in frames}) != 1:
+            return None
+        return scale_from_background(background(frames), channel_width_um)
+
     def _on_frame(self, frame: np.ndarray) -> None:
         frame = frame.copy()
+        now = time.monotonic()
         with self._lock:
             self._last_frame = frame
             self._preview_size = (frame.shape[1], frame.shape[0])
             callbacks = tuple(self._frame_callbacks)
+            if now - self._scale_frame_at >= SCALE_FRAME_INTERVAL_S:
+                if self._scale_frames and self._scale_frames[-1].shape != frame.shape:
+                    self._scale_frames.clear()             # a new frame size: the old frames say nothing of it
+                self._scale_frames.append(frame)
+                self._scale_frame_at = now
         if not callbacks:
             self.acknowledge_frame()
             return
