@@ -49,6 +49,24 @@ def build_parser() -> argparse.ArgumentParser:
     sdk.add_argument("--version", help="an fgt-SDK release tag (default: the one ADMET is tested with)")
     sdk.add_argument("--force", action="store_true", help="replace an SDK already there")
 
+    bench = sub.add_parser(
+        "camera-bench", help="record with the rig's camera for a few seconds a stage and count where frames are lost"
+    )
+    bench.add_argument("--seconds", type=float, default=10.0, help="how long each stage records (default 10)")
+    bench.add_argument("--out", help="the folder to write the test recordings in, on the disk recordings go to "
+                                     "(default: the system's temporary folder); they are removed after")
+    bench.add_argument("--stage", action="append", choices=("grab", "disk", "preview+qc"),
+                       help="run only this stage; repeat for several (default: all three)")
+    bench.add_argument("--width", type=int, default=320)
+    bench.add_argument("--height", type=int, default=60)
+    bench.add_argument("--offset-x", type=int, default=0)
+    bench.add_argument("--offset-y", type=int, default=0)
+    bench.add_argument("--exposure", type=float, default=59.0, help="µs")
+    bench.add_argument("--gain", type=float, default=0.0)
+    bench.add_argument("--fps", type=float, default=0.0, help="limit the camera to this rate; 0 runs it free")
+    bench.add_argument("--camera", type=int, default=0, help="the camera's index")
+    bench.add_argument("--json", action="store_true", help="print the counts as JSON")
+
     return parser
 
 
@@ -101,8 +119,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Fluigent SDK {version} installed in {path}")
         return 0
 
+    if args.command == "camera-bench":
+        return run_camera_bench(args)
+
     parser.error(f"unknown command {args.command!r}")
     return 2
+
+
+def run_camera_bench(args: argparse.Namespace) -> int:
+    from admet.engines.acquisition.camera.bench import STAGES, as_dicts, bench, report_lines
+
+    settings = {"camera_index": args.camera, "camera_width": args.width, "camera_height": args.height,
+                "camera_offset_x": args.offset_x, "camera_offset_y": args.offset_y,
+                "camera_exposure_us": args.exposure, "camera_gain": args.gain,
+                "camera_framerate_enabled": args.fps > 0, "camera_framerate_hz": args.fps or 30.0}
+    try:
+        results = bench(settings, seconds=args.seconds, out_dir=args.out, stages=tuple(args.stage or STAGES))
+    except Exception as exc:
+        print(f"Camera bench failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        return _print(as_dicts(results))
+    print("\n".join(report_lines(results)))
+    return 0
 
 
 def analyze_registry(home: str | None = None, data: str | None = None):
