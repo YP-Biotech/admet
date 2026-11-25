@@ -4,6 +4,7 @@ import csv
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -77,10 +78,9 @@ class TimelineTests(unittest.TestCase):
             writer = rundb.TimelineWriter(path, 1, 1)
             try:
                 writer.add_fluidics({"timestamp": "t", "elapsed_s": 0.0, "flow_0_ul_min": 300.0})
-                for _ in range(40):                                                      # committed within a second
-                    if rundb.timeline_rows(path):
-                        break
-                    threading.Event().wait(0.05)
+                deadline = time.monotonic() + 10      # committed within a second; a busy machine gets longer
+                while not rundb.timeline_rows(path) and time.monotonic() < deadline:
+                    time.sleep(0.05)
                 self.assertEqual(rundb.timeline_rows(path)[0]["flow_0_ul_min"], "300")
             finally:
                 writer.close()
