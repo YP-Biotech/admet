@@ -232,6 +232,105 @@ def bench(settings: dict[str, Any], *, seconds: float = 10.0, out_dir: str | Pat
     return results
 
 
+@dataclass
+class SystemCheck:
+    """What the PC can give a recording: memory to hold frames the disk has not taken yet, and the
+    disk's sustained write speed where the recordings go."""
+    ram_total_gb: float
+    ram_free_gb: float | None     # None where the system does not say
+    disk_mb_s: float              # sustained: written and forced to the disk, not into its cache
+    disk_gb: float                # how much was written to measure it
+    needed_mb_s: float            # a frame's bytes times the camera's rate
+    folder: str
+
+    @property
+    def ram_seconds(self) -> float | None:
+        """How many seconds of recording the free memory holds."""
+        if self.ram_free_gb is None or not self.needed_mb_s:
+            return None
+        return self.ram_free_gb * 1024 / self.needed_mb_s
+
+    @property
+    def behind_mb_s(self) -> float:
+        """How far the disk falls behind the camera; 0 when it keeps up."""
+        return max(0.0, self.needed_mb_s - self.disk_mb_s) if self.disk_mb_s else 0.0
+
+
+def memory_gb() -> tuple[float, float | None]:
+    """The PC's memory, total and free, in GB; free is None where the system does not say."""
+    import os
+    import sys
+
+    if sys.platform == "win32":
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
+                        ("free", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
+                        ("page_free", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
+                        ("virtual_free", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
+
+        status = Status()
+        status.length = ctypes.sizeof(Status)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))     # type: ignore[attr-defined]
+        return status.total / 2**30, status.free / 2**30
+    page = os.sysconf("SC_PAGE_SIZE")
+    total = os.sysconf("SC_PHYS_PAGES") * page / 2**30
+    try:
+        free = os.sysconf("SC_AVPHYS_PAGES") * page / 2**30
+    except (ValueError, OSError):
+        free = None
+    return total, free
+
+
+def disk_speed(folder: str | Path, gigabytes: float = 4.0, *, chunk_mb: int = 64) -> float:
+    """MB/s written to a file in FOLDER and forced to the disk, GIGABYTES of it; the file is removed."""
+    import os
+
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"admet-disk-speed-{os.getpid()}.bin"
+    block = os.urandom(chunk_mb << 20)                 # not zeros: a compressing disk would flatter itself
+    chunks = max(1, int(round(gigabytes * 1024 / chunk_mb)))
+    started = time.perf_counter()
+    try:
+        with open(path, "wb") as handle:
+            for _ in range(chunks):
+                handle.write(block)
+            handle.flush()
+            os.fsync(handle.fileno())
+        elapsed = time.perf_counter() - started
+    finally:
+        path.unlink(missing_ok=True)
+    return chunks * chunk_mb / elapsed if elapsed > 0 else 0.0
+
+
+def system_check(folder: str | Path, frame_bytes: int, fps: float, *, disk_gb: float = 4.0) -> SystemCheck:
+    total, free = memory_gb()
+    speed = disk_speed(folder, disk_gb) if disk_gb > 0 else 0.0
+    return SystemCheck(ram_total_gb=round(total, 1), ram_free_gb=round(free, 1) if free is not None else None,
+                       disk_mb_s=round(speed, 1), disk_gb=disk_gb, needed_mb_s=round(frame_bytes * fps / 2**20, 1),
+                       folder=str(Path(folder).resolve()))
+
+
+def system_lines(check: SystemCheck) -> list[str]:
+    """The memory and the disk against what the camera makes."""
+    free = f", {check.ram_free_gb:.1f} GB free" if check.ram_free_gb is not None else ""
+    holds = f": holds {check.ram_seconds:.0f} s of recording" if check.ram_seconds is not None else ""
+    lines = [f"camera makes {check.needed_mb_s:.0f} MB/s",
+             f"RAM {check.ram_total_gb:.1f} GB{free}{holds}"]
+    if not check.disk_mb_s:
+        lines.append("disk not measured")
+        return lines
+    lines.append(f"disk {check.disk_mb_s:.0f} MB/s sustained ({check.disk_gb:g} GB written in {check.folder})")
+    if check.behind_mb_s:
+        lines.append(f"the disk falls {check.behind_mb_s:.0f} MB/s behind the camera: a 60 s recording leaves "
+                     f"{check.behind_mb_s * 60 / 1024:.1f} GB to hold in memory")
+    else:
+        lines.append("the disk keeps up with the camera")
+    return lines
+
+
 def report_lines(results: list[StageResult]) -> list[str]:
     """One line a stage, then where the frames went."""
     lines = [f"{'stage':11s} {'camera fps':>10s} {'made':>8s} {'to python':>9s} {'cam skip':>8s} "

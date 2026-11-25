@@ -78,6 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--gain", type=float, default=0.0)
     bench.add_argument("--fps", type=float, default=0.0, help="limit the camera to this rate; 0 runs it free")
     bench.add_argument("--camera", type=int, default=0, help="the camera's index")
+    bench.add_argument("--disk-gb", type=float, default=4.0,
+                       help="GB written to measure the disk's sustained speed in --out, then removed (0 skips it)")
     bench.add_argument("--json", action="store_true", help="print the counts as JSON")
 
     return parser
@@ -162,20 +164,30 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_camera_bench(args: argparse.Namespace) -> int:
-    from admet.engines.acquisition.camera.bench import STAGES, as_dicts, bench, report_lines
+    import tempfile
+    from dataclasses import asdict, replace
+
+    from admet.engines.acquisition.camera.bench import (STAGES, as_dicts, bench, report_lines, system_check,
+                                                        system_lines)
 
     settings = {"camera_index": args.camera, "camera_width": args.width, "camera_height": args.height,
                 "camera_offset_x": args.offset_x, "camera_offset_y": args.offset_y,
                 "camera_exposure_us": args.exposure, "camera_gain": args.gain,
                 "camera_framerate_enabled": args.fps > 0, "camera_framerate_hz": args.fps or 30.0}
+    frame_bytes = args.width * args.height
     try:
+        # The disk first, while its cache holds nothing of the bench's own recordings.
+        check = system_check(args.out or tempfile.gettempdir(), frame_bytes, 0.0, disk_gb=args.disk_gb)
         results = bench(settings, seconds=args.seconds, out_dir=args.out, stages=tuple(args.stage or STAGES))
     except Exception as exc:
         print(f"Camera bench failed: {exc}", file=sys.stderr)
         return 1
+    fps = max((result.camera_fps for result in results), default=0.0)
+    check = replace(check, needed_mb_s=round(frame_bytes * fps / 2**20, 1))
     if args.json:
-        return _print(as_dicts(results))
-    print("\n".join(report_lines(results)))
+        return _print({"system": {**asdict(check), "ram_seconds": check.ram_seconds, "behind_mb_s": check.behind_mb_s},
+                       "stages": as_dicts(results)})
+    print("\n".join([*system_lines(check), "", *report_lines(results)]))
     return 0
 
 

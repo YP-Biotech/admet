@@ -85,5 +85,34 @@ class UnnumberedBenchTests(unittest.TestCase):
         self.assertEqual(results[0].stage, "disk")
 
 
+class SystemCheckTests(unittest.TestCase):
+    def test_the_disk_is_timed_on_a_file_it_then_removes_and_the_memory_is_read(self):
+        from admet.engines.acquisition.camera.bench import disk_speed, memory_gb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            speed = disk_speed(Path(tmp) / "out", 0.004, chunk_mb=1)
+            self.assertGreater(speed, 0)
+            self.assertEqual(list((Path(tmp) / "out").iterdir()), [])
+        total, free = memory_gb()
+        self.assertGreater(total, 0)
+        self.assertTrue(free is None or 0 < free <= total)
+
+    def test_a_disk_slower_than_the_camera_says_how_much_memory_a_minute_needs(self):
+        from admet.engines.acquisition.camera.bench import SystemCheck, system_lines
+
+        slow = SystemCheck(ram_total_gb=16.0, ram_free_gb=10.0, disk_mb_s=60.0, disk_gb=4.0, needed_mb_s=74.0,
+                           folder="D:\\data")
+        self.assertAlmostEqual(slow.ram_seconds, 10 * 1024 / 74)
+        self.assertEqual(slow.behind_mb_s, 14.0)
+        lines = system_lines(slow)
+        self.assertIn("RAM 16.0 GB, 10.0 GB free: holds 138 s of recording", lines)
+        self.assertTrue(any("falls 14 MB/s behind" in line and "0.8 GB" in line for line in lines))
+        fast = SystemCheck(ram_total_gb=16.0, ram_free_gb=None, disk_mb_s=900.0, disk_gb=4.0, needed_mb_s=74.0,
+                           folder="D:\\data")
+        self.assertIn("the disk keeps up with the camera", system_lines(fast))
+        self.assertIn("RAM 16.0 GB", system_lines(fast))
+        self.assertIn("disk not measured", system_lines(SystemCheck(16.0, None, 0.0, 0.0, 74.0, ".")))
+
+
 if __name__ == "__main__":
     unittest.main()
