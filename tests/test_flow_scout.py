@@ -1,5 +1,4 @@
 from copy import deepcopy
-import csv
 import json
 import math
 from pathlib import Path
@@ -7,6 +6,8 @@ import random
 import tempfile
 import unittest
 
+from admet.core import rundb
+from tests.rundb_helpers import set_timeline, set_timeline_rows, timeline_text
 from admet.workflows.calculation_schema import declarations
 from admet.workflows.flow_scout import analyze_scout
 from admet.workflows.json_protocol import normalize, resolve, template_documents
@@ -70,12 +71,8 @@ def scout_context(directory, *, drift=0, missing=False, short=False, curved=Fals
             rows.append((now, "" if missing else p, q))
         clock += duration + 2
     directory = Path(directory)
-    csv_path = directory / "fluidics.csv"
-    with csv_path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["elapsed_s", "pressure_1_mbar", "flow_1_ul_min"])
-        writer.writerows(rows)
-    return {"directory": directory, "document": source, "csv": csv_path, "events": events,
+    timeline = set_timeline(directory / "run.db", timeline_text(rows, ["elapsed_s", "pressure_1_mbar", "flow_1_ul_min"]))
+    return {"directory": directory, "document": source, "timeline": timeline, "events": events,
             "summary": {"state": "completed", "artifacts": {"polling_origin_monotonic": origin}}}
 
 
@@ -103,13 +100,10 @@ def density_recovery(directory, *, seed=16000, drift=0):
             rows.append((now, pressure, flow))
         clock += duration + 2
     directory = Path(directory)
-    csv_path, events_path = directory / "density.csv", directory / "density_events.jsonl"
-    with csv_path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["elapsed_s", "pressure_1_mbar", "flow_1_ul_min"])
-        writer.writerows(rows)
+    timeline = set_timeline(directory / "run.db", timeline_text(rows, ["elapsed_s", "pressure_1_mbar", "flow_1_ul_min"]))
+    events_path = directory / "density_events.jsonl"
     events_path.write_text("".join(json.dumps(e) + "\n" for e in events))
-    return analyze_density_run(document, csv_path, events_path, origin, completed=True)
+    return analyze_density_run(document, timeline, events_path, origin, completed=True)
 
 
 class ScoutTests(unittest.TestCase):
@@ -163,15 +157,11 @@ class ScoutTests(unittest.TestCase):
             context = scout_context(tmp)
             # A slow ramp can pass individual half-window drift/SD tests while
             # successive complete windows disagree. Do not call this settled.
-            with context["csv"].open(newline="") as handle:
-                rows = list(csv.DictReader(handle))
+            rows = rundb.timeline_rows(context["timeline"])
             for row in rows:
                 elapsed = (float(row["elapsed_s"]) - 20) % 62
                 row["pressure_1_mbar"] = 10 + 0.4 * float(row["flow_1_ul_min"]) + 0.065 * elapsed
-            with context["csv"].open("w", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
+            set_timeline_rows(context["timeline"], rows)
             result = analyze_scout(context)
         stable = [(tick / 10, 10 + 0.065 * tick / 10, 20) for tick in range(600)]
         self.assertFalse(_window(stable, 10, 20, 20)["issues"])

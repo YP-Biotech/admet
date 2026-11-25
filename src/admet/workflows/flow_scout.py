@@ -1,11 +1,10 @@
 """Single-height settling and averaging-window assessment from closed recordings."""
 
-import csv
 import math
-from pathlib import Path
 import random
 from statistics import mean, stdev
 
+from admet.core import rundb
 from admet.workflows.fluid_density import _finite, _linear_fit
 
 
@@ -147,9 +146,8 @@ def analyze_scout(context):
     if summary.get("state") != "completed" or origin is None:
         result["issues"].append("completed run and recording clock origin required")
         return result
-    with Path(context["csv"]).open(newline="", encoding="utf-8") as handle:
-        rows = [tuple(_finite(row.get(k)) for k in ("elapsed_s", "pressure_1_mbar", "flow_1_ul_min"))
-                for row in csv.DictReader(handle)]
+    rows = [tuple(_finite(row.get(k)) for k in ("elapsed_s", "pressure_1_mbar", "flow_1_ul_min"))
+            for row in rundb.timeline_rows(context["timeline"])]
     events = context["events"]
     if (any(r[0] is None for r in rows) or any(b[0] <= a[0] for a, b in zip(rows, rows[1:]))
             or any(e.get("state") == "paused" or e.get("outcome") in

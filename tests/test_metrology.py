@@ -1,13 +1,13 @@
 """Synthetic recorded-run acceptance tests; no device connections."""
 
-import csv
 import math
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from admet.core.protocol_store import write_json
+from admet.core import rundb
+from tests.rundb_helpers import set_timeline, set_timeline_rows, timeline_text
 from admet.core.runs import Run
 from admet.core.service import Admet
 from admet.workflows.calculations import calculate_run, calculation_readiness, saved_results
@@ -90,12 +90,9 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
             rows.append(row)
         tail = (end, q)
         clock += duration + 4
-    csv_path = directory / "run.csv"
-    with csv_path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["elapsed_s", *[f"{kind}_{channel}_{unit}" for channel in channels
-                                        for kind, unit in (("flow", "ul_min"), ("pressure", "mbar"))]])
-        writer.writerows(rows)
+    set_timeline(directory / "run.db", timeline_text(rows, ["elapsed_s", *[f"{kind}_{channel}_{unit}" for channel in channels
+                                                                            for kind, unit in (("flow", "ul_min"),
+                                                                                               ("pressure", "mbar"))]]))
     kept = {**plan, "state": "completed", "run_id": run_id or name, "events": events,
                "rig_fingerprint": {"simulated": True,
                                    "channel_mapping": [{"sensor_index": ch, "sensor_device_sn": 41 + ch,
@@ -105,7 +102,7 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
                                                            for prefix in ("oil_l", "cells_m", "beads_m")
                                                            for key, value in (("scale", 2.25), ("calibration", "IPA"),
                                                                               ("offset", 0), ("quadratic", 0))}},
-               "artifacts": {"fluidics_csv": "run.csv", "recording_closed": True,
+               "artifacts": {"timeline": "run.db", "recording_closed": True,
                              "polling_origin_monotonic": 100}}
     fields = document.get("measurements", {})
     values = {key: None for key in fields}
@@ -119,7 +116,7 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
                                            * multiplier * 1.6)
     elif name == "dead_volume":
         values.update(zip(configs[0]["volumes"], (80, 82, 84)))
-    write_json(directory / "run.json", {**kept, "measurements": {"fields": fields, "values": values, "revision": 1}})
+    rundb.write_record(directory / "run.db", {**kept, "measurements": {"fields": fields, "values": values, "revision": 1}})
     return directory
 
 
@@ -356,11 +353,10 @@ class MetrologyTests(unittest.TestCase):
     def test_trace_ignores_missing_values_outside_exact_window(self):
         from admet.workflows.calculation_inputs import trace, volume_ul
 
-        path = Path(self.tmp.name) / "trace.csv"
-        path.write_text("elapsed_s,flow_1_ul_min\n0,\n1,30\n2,30\n3,\n")
-        self.assertEqual(volume_ul(trace({"csv": path}, 1, 1, 2)), 0.5)
+        path = set_timeline(Path(self.tmp.name) / "run.db", "elapsed_s,flow_1_ul_min\n0,\n1,30\n2,30\n3,\n")
+        self.assertEqual(volume_ul(trace({"timeline": path}, 1, 1, 2)), 0.5)
         with self.assertRaisesRegex(ValueError, "Missing samples"):
-            trace({"csv": path}, 1, 0.5, 2)
+            trace({"timeline": path}, 1, 0.5, 2)
 
     def test_viscosity_recovers_resistance_ratio_and_absolute_reference(self):
         reference_dir = archive(self.tmp.name, "viscosity", run_id="reference", slope=2)
@@ -385,15 +381,10 @@ class MetrologyTests(unittest.TestCase):
 
     def test_viscosity_rejects_unstable_data(self):
         directory = archive(self.tmp.name, "viscosity")
-        csv_path = directory / "run.csv"
-        with csv_path.open(newline="") as handle:
-            rows = list(csv.DictReader(handle))
+        rows = rundb.timeline_rows(directory / "run.db")
         for i, row in enumerate(rows):
             row["flow_1_ul_min"] = float(row["flow_1_ul_min"]) * (1.4 if i % 2 else 0.6)
-        with csv_path.open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
+        set_timeline_rows(directory / "run.db", rows)
         result = calculate_run(directory, "viscosity")["result"]
         self.assertEqual(result["status"], "inconclusive")
         self.assertIsNone(result["resistance_mbar_min_ul"])
@@ -477,18 +468,14 @@ class MetrologyTests(unittest.TestCase):
             events = record(directory)["events"]
             windows = [(events[i]["monotonic"] - 101, events[i + 1]["monotonic"] - 99)
                        for i in range(0, len(events), 2)]
-            path = directory / "run.csv"
-            with path.open(newline="") as handle:
-                rows = list(csv.DictReader(handle))
+            path = directory / "run.db"
+            rows = rundb.timeline_rows(path)
             for row in rows:
                 t = float(row["elapsed_s"])
                 affected = (3, 4, 5) if case == "hysteresis" else (1, 4)
                 if any(windows[i][0] <= t <= windows[i][1] for i in affected):
                     row["flow_1_ul_min"] = float(row["flow_1_ul_min"]) * (2 if case == "hysteresis" else 0.1)
-            with path.open("w", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
+            set_timeline_rows(path, rows)
             result = calculate_run(directory, "viscosity")["result"]
             self.assertEqual(result["status"], "inconclusive")
             self.assertEqual(len(result["samples"]), 6)

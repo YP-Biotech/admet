@@ -68,7 +68,7 @@ class ExportPanelTests(unittest.TestCase):
         self.assertTrue(self.cells(panel, 0)[5])
         self.assertIn("1 run(s) exported, 2 video(s)", panel.status.text())
         self.assertIn("1 exported", panel.summary.text())
-        self.assertTrue((server / run.run_id / "run.csv").is_file())
+        self.assertTrue((server / run.run_id / "run.db").is_file())
         self.assertEqual([p for p in run.path.iterdir() if p.suffix == ".avi"], [])
 
     def test_the_export_button_sits_in_the_action_bar_and_waits_for_a_folder(self):

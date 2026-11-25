@@ -1,8 +1,9 @@
 """Export: a run's folder copied whole to the server, each file checked, and its videos then let go.
 
 The copy on the server is the one that lasts. The computer at the rig keeps every run's
-record and timeline, so Review and Calculations keep working there, and gives up the videos
-once they are safely elsewhere. Exporting is a thing to do again: a record that changed since
+run.db, its record and timeline, so Review and Calculations keep working there, and gives up
+the videos once they are safely elsewhere. The database goes last, folded whole first, so the
+copy needs nothing beside it. Exporting is a thing to do again: a record that changed since
 (a result calculated later) is copied again; a video already there and whole is not touched.
 """
 
@@ -14,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from admet.core import rundb
 from admet.core.runs import FINISHED, RECORD, Run, RunStore
 
 CHUNK = 8 << 20
@@ -61,10 +63,11 @@ def _copy_verified(source: Path, target: Path, note: Callable[[int], None] | Non
 
 
 def _exportable(run: Run) -> list[Path]:
-    """The files of a run that go to the server: everything but the record (copied last) and work files."""
+    """The files of a run that go to the server: everything but the database (copied last) and work files."""
     return sorted(path for path in run.path.iterdir()
                   if path.is_file() and path.name != RECORD
-                  and not path.name.endswith((".part", ".tmp", ".video.json")) and path.suffix != ".raw")
+                  and not path.name.endswith((".part", ".tmp", ".video.json", "-wal", "-shm", "-journal"))
+                  and path.suffix != ".raw")
 
 
 def export_run(run: Run, destination: str | Path, progress: Progress | None = None) -> dict[str, Any]:
@@ -113,7 +116,8 @@ def export_run(run: Run, destination: str | Path, progress: Progress | None = No
     }
     record["export"] = note_record
     run.write(record)
-    _copy_verified(run.record_path, target / RECORD)
+    rundb.fold(run.db_path)
+    _copy_verified(run.db_path, target / RECORD)
 
     videos = [path for path in files if path.suffix.lower() == ".avi"]
     for video in videos:                                 # every file read back whole: the local copies can go
@@ -122,7 +126,8 @@ def export_run(run: Run, destination: str | Path, progress: Progress | None = No
         note_record["videos_removed"] = sorted(set(note_record["videos_removed"]) | {video.name for video in videos})
         record["export"] = note_record
         run.write(record)
-        _copy_verified(run.record_path, target / RECORD)
+        rundb.fold(run.db_path)
+        _copy_verified(run.db_path, target / RECORD)
     return {"run_id": run.run_id, "to": str(target), "copied": [path.name for path in files],
             "removed": [video.name for video in videos], "bytes": copied}
 

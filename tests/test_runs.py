@@ -1,10 +1,10 @@
 """A run is a folder under data/runs: its record, its timeline and its videos, nothing pointing outside."""
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from admet.core import rundb
 from admet.core.runs import RECORD, RUN_ID, RunStore, run_name
 
 
@@ -32,13 +32,13 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(RUN_ID.fullmatch(run.run_id), run.run_id)
             self.assertTrue(run.run_id.endswith("_oil_3"))
             self.assertEqual(run.path, Path(tmp) / "runs" / run.run_id)
-            record = json.loads((run.path / RECORD).read_text())
+            record = rundb.read_record(run.path / RECORD)
             self.assertEqual((record["run_id"], record["name"], record["kind"], record["tag"], record["condition"]),
                              (run.run_id, "oil_3", "protocol", "Oil 3", "oil"))
             self.assertEqual(record["measurements"], {"fields": {"mass": {"label": "Mass", "unit": "mg"}},
                                                       "values": {"mass": None}, "revision": 0})
             self.assertEqual((record["events"], record["calculations"], record["artifacts"]), ([], [], {}))
-            self.assertEqual(run.csv_path, run.path / "run.csv")
+            self.assertEqual((run.db_path, RECORD), (run.path / "run.db", "run.db"))
 
     def test_an_unnamed_run_takes_the_protocols_name_and_two_in_one_second_do_not_collide(self):
         with tempfile.TemporaryDirectory() as tmp:

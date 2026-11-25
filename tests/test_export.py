@@ -1,15 +1,16 @@
 """Export: a finished run copied whole to the server, every file checked, then its videos let go here."""
 
-import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from admet.core import rundb
 from admet.core.export import ExportError, export_run, export_runs, file_digest
 from admet.core.runs import Run, RunStore
 from admet.core.service import Admet
+from tests.rundb_helpers import set_timeline
 
 
 def finished_run(data_dir, name="oil", *, state="completed", videos=2, kind="protocol") -> Run:
@@ -23,9 +24,9 @@ def finished_run(data_dir, name="oil", *, state="completed", videos=2, kind="pro
     names = [f"{run.name}_step{i + 1:02d}_20261118_1800{i:02d}.avi" for i in range(videos)]
     for index, video in enumerate(names):
         (run.path / video).write_bytes(os.urandom(4096) + bytes([index]) * 100)
-    run.csv_path.write_text("timestamp,elapsed_s\n10:00:00.000,0.000\n")
+    set_timeline(run.db_path, "timestamp,elapsed_s\n10:00:00.000,0.000\n")
     run.update(state=state, executed_at="2026-11-18T18:00:00", completed_at="2026-11-18T18:01:00",
-               artifacts={"fluidics_csv": "run.csv", "videos": [{"step": i + 1, "video_path": v} for i, v in enumerate(names)]})
+               artifacts={"timeline": "run.db", "videos": [{"step": i + 1, "video_path": v} for i, v in enumerate(names)]})
     return run
 
 
@@ -41,14 +42,16 @@ class ExportRunTests(unittest.TestCase):
             report = export_run(run, server, progress=lambda *args: seen.append(args))
 
             copy = server / run.run_id
-            self.assertEqual(sorted(p.name for p in copy.iterdir()), sorted([*originals, "run.csv", "run.json"]))
+            self.assertEqual(sorted(p.name for p in copy.iterdir()), sorted([*originals, "run.db"]))
             self.assertEqual({name: file_digest(copy / name) for name in originals}, originals)
             self.assertEqual([p.name for p in run.path.iterdir() if p.suffix == ".avi"], [])     # gone from here
-            self.assertTrue(run.csv_path.is_file() and run.record_path.is_file())              # these stay
+            self.assertTrue(run.db_path.is_file())                                              # this stays
             note = run.read()["export"]
             self.assertEqual((note["to"], sorted(note["videos_removed"])), (str(server), sorted(originals)))
             self.assertEqual({name: entry["sha256"] for name, entry in note["files"].items() if name in originals}, originals)
-            self.assertEqual(json.loads((copy / "run.json").read_text())["export"], note)       # both copies agree
+            self.assertEqual(rundb.read_record(copy / "run.db")["export"], note)               # both copies agree
+            self.assertEqual(rundb.timeline_rows(copy / "run.db"), rundb.timeline_rows(run.db_path))
+            self.assertEqual([p.name for p in run.path.iterdir() if p.name.startswith("run.db-")], [])  # whole
             self.assertEqual(sorted(report["removed"]), sorted(originals))
             self.assertTrue(seen and all(args[0] == run.run_id for args in seen))
 
@@ -65,7 +68,7 @@ class ExportRunTests(unittest.TestCase):
 
             report = export_run(run, server)
 
-            self.assertEqual(json.loads((copy / "run.json").read_text())["calculations"][0]["calculation_id"],
+            self.assertEqual(rundb.read_record(copy / "run.db")["calculations"][0]["calculation_id"],
                              "recording_summary")
             self.assertEqual(video.stat().st_mtime_ns, stamp)                                     # not copied again
             self.assertEqual(report["removed"], [])
@@ -134,7 +137,7 @@ class ServiceTests(unittest.TestCase):
             reports = admet.export_runs()
 
             self.assertEqual([r["run_id"] for r in reports], [run.run_id])
-            self.assertTrue((server / run.run_id / "run.csv").is_file())
+            self.assertTrue((server / run.run_id / "run.db").is_file())
             admet.set_export_path("")
             self.assertEqual(admet.export_path(), "")
             self.assertNotIn("export", admet.rig())

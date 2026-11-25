@@ -1,9 +1,14 @@
-"""An old project, a .admetp folder, laid out as run folders: what admet control writes now.
+"""Old data laid out as admet control writes it now: run folders, each with its run.db.
 
-    records/protocols/run_<id>/summary.json   ->  runs/<stamp>_<name>/run.json, with its events
-    records/fluidics/run_<id>_<stamp>.csv     ->  run.csv, the readings
-    records/camera/run_<id>.qc.csv            ->  run.csv too, the QC rows put on the polling clock
+An old project, a .admetp folder:
+
+    records/protocols/run_<id>/summary.json   ->  runs/<stamp>_<name>/run.db, its record with its events
+    records/fluidics/run_<id>_<stamp>.csv     ->  run.db's timeline, the readings
+    records/camera/run_<id>.qc.csv            ->  run.db's timeline too, the QC rows put on the polling clock
     records/camera/run_<id>_stepNN_<stamp>.avi -> the run folder, moved (or copied)
+
+A run folder as control wrote it before run.db, with run.json and run.csv: its run.db is made
+beside them from the two, and the two are left where they are, to be removed once checked.
 
 A video named after a run, run_<id>_<stamp>.avi, belongs to that run even when its summary
 does not list it. A video of no protocol run is a recording of its own. Only completed runs are
@@ -24,8 +29,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from admet.core import rundb
 from admet.core.home import RIG_KEYS
-from admet.core.runs import RUNS_DIR, Run, run_name
+from admet.core.runs import RECORD, RUNS_DIR, Run, run_name
 
 STAMP = re.compile(r"_(\d{8}_\d{6})\.csv$")
 
@@ -115,7 +121,7 @@ def _lay_out_protocol_run(project: Path, run_dir: Path, summary: dict[str, Any],
         fluidics = next(iter(sorted((project / "records" / "fluidics").glob(f"{run_dir.name}_*.csv"))), fluidics)
     stamp = _stamp(fluidics, summary.get("executed_at") or summary.get("created_at"))
     folder = runs_dir / f"{stamp}_{name}"
-    if (folder / "run.json").is_file():
+    if (folder / RECORD).is_file():
         report.skipped.append(folder.name)
         return
     folder.mkdir(exist_ok=True)
@@ -131,7 +137,7 @@ def _lay_out_protocol_run(project: Path, run_dir: Path, summary: dict[str, Any],
     record.update({
         "run_id": folder.name, "name": name, "kind": "protocol", "events": [],
         "measurements": _measurements(run_dir), "calculations": _calculations(run_dir),
-        "artifacts": {"fluidics_csv": "run.csv", "recording_closed": True,
+        "artifacts": {"timeline": RECORD, "recording_closed": True,
                       "polling_origin_monotonic": artifacts.get("polling_origin_monotonic"), "videos": kept_videos},
     })
     run = Run(folder)
@@ -144,7 +150,7 @@ def _lay_out_protocol_run(project: Path, run_dir: Path, summary: dict[str, Any],
         if isinstance(event, dict):
             run.event(event)
     qc = project / str(artifacts["qc_csv"]) if artifacts.get("qc_csv") else project / "records" / "camera" / f"{run_dir.name}.qc.csv"
-    _write_timeline(run.csv_path, fluidics, qc)
+    _write_timeline(run.db_path, fluidics, qc)
     report.made.append(folder)
 
 
@@ -176,20 +182,20 @@ def _lay_out_recording(project: Path, entry: dict[str, Any], runs_dir: Path, rep
     stamp = _stamp(fluidics, metadata.get("started_at")) if fluidics and fluidics.is_file() else \
         _stamp(None, metadata.get("started_at")) if metadata.get("started_at") else _stamp(Path(stem + ".csv"), None)
     folder = runs_dir / f"{stamp}_{name}"
-    if (folder / "run.json").is_file():
+    if (folder / RECORD).is_file():
         report.skipped.append(folder.name)
         return
     folder.mkdir(exist_ok=True)
     _place(source, folder / source.name, copy)
     report.videos += 1
     recording = {key: value for key, value in metadata.items() if key != "fluidics_csv"}
-    recording.update({"video_path": source.name, "fluidics_csv": "run.csv", "recording_id": stem, "encoded": True})
+    recording.update({"video_path": source.name, "timeline": RECORD, "recording_id": stem, "encoded": True})
     run = Run(folder)
     run.write({"run_id": folder.name, "name": name, "kind": "recording", "state": "completed",
                "started_at": metadata.get("started_at") or "", "stopped_at": metadata.get("stopped_at") or "",
-               "artifacts": {"fluidics_csv": "run.csv", "recording_closed": True}, "recording": recording,
+               "artifacts": {"timeline": RECORD, "recording_closed": True}, "recording": recording,
                "events": [], "measurements": None, "calculations": []})
-    _write_timeline(run.csv_path, fluidics, project / "records" / "camera" / f"{stem}.qc.csv")
+    _write_timeline(run.db_path, fluidics, project / "records" / "camera" / f"{stem}.qc.csv")
     report.made.append(folder)
 
 
@@ -213,11 +219,71 @@ def _write_timeline(path: Path, fluidics: Path | None, qc: Path | None) -> None:
                 rows.append(row)
     if not columns:
         return
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({c: row.get(c, "") for c in columns})
+    _timeline_into(path, columns, rows)
+
+
+def _timeline_into(path: Path, columns: list[str], rows: list[dict[str, str]]) -> None:
+    """CSV rows into the run's database, as many channels as the columns name."""
+    rundb.write_timeline(path, rows, *rundb.channel_counts(columns))
+
+
+@dataclass
+class RunsMigration:
+    """What converting run folders did: the run.db made, the folders that had one already, the ones that
+    could not be read."""
+    made: list[Path] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    failed: dict[str, str] = field(default_factory=dict)
+
+    def lines(self) -> list[str]:
+        lines = [f"{len(self.made)} run(s) given a run.db; their run.json and run.csv are left beside it"]
+        if self.skipped:
+            lines.append(f"{len(self.skipped)} run(s) had a run.db already, left alone")
+        lines += [f"{name}: {why}" for name, why in sorted(self.failed.items())]
+        return lines
+
+
+def run_folders(path: str | Path) -> list[Path]:
+    """The run folders as control wrote them before run.db, under PATH: PATH itself, runs/*/ or */."""
+    path = Path(path)
+    if (path / "run.json").is_file():
+        return [path]
+    found = list((path / RUNS_DIR).glob("*/run.json")) if (path / RUNS_DIR).is_dir() else []
+    found += list(path.glob("*/run.json"))
+    return sorted({record.parent for record in found})
+
+
+def migrate_runs(path: str | Path) -> RunsMigration:
+    """Each run folder under PATH with a run.json and no run.db given its run.db: the record from
+    run.json, the timeline from run.csv. Nothing is moved or removed."""
+    report = RunsMigration()
+    for folder in run_folders(path):
+        if (folder / RECORD).is_file():
+            report.skipped.append(folder.name)
+            continue
+        try:
+            record = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError("run.json holds no record")
+            for holder in (record.get("artifacts"), record.get("recording"), *(record.get("artifacts") or {}).get("videos", [])):
+                if isinstance(holder, dict) and "fluidics_csv" in holder:
+                    holder.pop("fluidics_csv")
+                    holder["timeline"] = RECORD
+            target = folder / (RECORD + ".part")
+            target.unlink(missing_ok=True)
+            rundb.write_record(target, record)
+            if (folder / "run.csv").is_file():
+                with (folder / "run.csv").open(newline="", encoding="utf-8") as handle:
+                    reader = csv.DictReader(handle)
+                    _timeline_into(target, list(reader.fieldnames or []), list(reader))
+            rundb.fold(target)
+            target.rename(folder / RECORD)
+        except (OSError, ValueError) as exc:
+            (folder / (RECORD + ".part")).unlink(missing_ok=True)
+            report.failed[folder.name] = str(exc)
+            continue
+        report.made.append(folder)
+    return report
 
 
 def _place(source: Path, target: Path, copy: bool) -> None:

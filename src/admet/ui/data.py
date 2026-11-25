@@ -32,7 +32,7 @@ def video_metadata(recording: dict[str, Any]) -> dict[str, Any]:
         "dimensions": f"{width}x{height}" if width and height else "",
         "acquisition_fps": acquisition_fps,
         "converted_fps": converted_fps,
-        "fluidics_csv": str(recording.get("fluidics_csv") or ""),
+        "timeline": str(recording.get("timeline") or ""),
     }
 
 

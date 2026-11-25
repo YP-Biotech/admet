@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .camera import VideoWorker
-from .fluidics import CsvLogger
+from .fluidics import TimelineLogger
 
 
 def _positive_or_none(value: Any) -> float | None:
@@ -66,7 +66,7 @@ class RecordingMetadata:
     height: int
     converted_fps: float = 0.0
     acquisition_fps: float = 0.0
-    fluidics_csv: str = ""
+    timeline: str = ""
     stopped_at: str = ""
     duration_s: float = 0.0
     frames_recorded: int | None = None
@@ -117,14 +117,14 @@ class RecordingRun:
         max_frames: int | None = None,
         max_time: float | None = None,
         video_path: str | Path | None = None,
-        fluidics_csv_path: str | Path | None = None,
+        timeline_path: str | Path | None = None,
     ) -> RecordingMetadata:
-        if video_path is not None and fluidics_csv_path is not None:
+        if video_path is not None and timeline_path is not None:
             video_file = Path(video_path)
-            csv_file = Path(fluidics_csv_path)
+            timeline_file = Path(timeline_path)
             report_dir = video_file.parent.parent
             video_dir = video_file.parent
-            fluidics_dir = csv_file.parent
+            fluidics_dir = timeline_file.parent
             recording_id = video_file.stem
             video_dir.mkdir(parents=True, exist_ok=True)
             fluidics_dir.mkdir(parents=True, exist_ok=True)
@@ -134,15 +134,15 @@ class RecordingRun:
             video_dir = report_dir / "camera"
             fluidics_dir = report_dir / "fluidics"
             recording_id = create_recording_id(recording_label)
-            csv_file = fluidics_dir / f"{recording_id}.csv"
+            timeline_file = fluidics_dir / f"{recording_id}.db"
         writer = self.writer_factory(video_dir, recording_id, width, height, fps)
         if not self.camera.start_recording(writer, max_frames=max_frames, max_time=max_time):
             raise RuntimeError("Failed to start camera recording")
 
-        csv_path = self.control.start_recording(
+        timeline_path = self.control.start_recording(
             {
                 "fluidics_dir": str(fluidics_dir),
-                "csv_filename": csv_file.name,
+                "timeline_filename": timeline_file.name,
             },
         )
         self.current = RecordingMetadata(
@@ -154,7 +154,7 @@ class RecordingRun:
             width=width,
             height=height,
             converted_fps=fps,
-            fluidics_csv=str(csv_path),
+            timeline=str(timeline_path),
         )
         return self.current
 
@@ -199,20 +199,20 @@ class RecordingCoordinator:
     def __init__(
         self,
         *,
-        csv_logger: CsvLogger,
+        timeline_logger: TimelineLogger,
         hardware_state: Callable[[], Any],
         acquisition: Callable[[], Any | None],
         writer_factory: WriterFactory | None = None,
     ) -> None:
-        self.csv_logger = csv_logger
+        self.timeline_logger = timeline_logger
         self._hardware_state = hardware_state
         self._acquisition = acquisition
         self._writer_factory = writer_factory
         self._recording = False
         self._recording_run: RecordingRun | None = None
-        self._csv_recording: RecordingMetadata | None = None
-        self._csv_recording_report_dir: Path | None = None
-        self._csv_recordings: list[dict[str, Any]] = []
+        self._timeline_recording: RecordingMetadata | None = None
+        self._timeline_recording_report_dir: Path | None = None
+        self._timeline_recordings: list[dict[str, Any]] = []
         self._last_recording: RecordingMetadata | None = None
         # The camera's frame limit, an E-STOP and the end of a protocol can all
         # stop a recording, from different threads; one at a time.
@@ -242,7 +242,7 @@ class RecordingCoordinator:
         if self._recording:
             recording = self.active_recording_metadata()
             return {
-                "csv_path": self.csv_logger.filepath or "",
+                "timeline_path": self.timeline_logger.filepath or "",
                 "report_dir": str(self.active_recording_report_dir() or ""),
                 "recording": recording.to_dict() if recording is not None else {},
             }
@@ -257,7 +257,7 @@ class RecordingCoordinator:
                 recording_label,
                 frame_size,
             )
-        return self._start_csv_only_recording(settings, report_root, recording_label)
+        return self._start_timeline_only_recording(settings, report_root, recording_label)
 
     def stop_recording(self) -> dict[str, Any]:
         with self._lock:
@@ -271,7 +271,7 @@ class RecordingCoordinator:
                 self._last_recording = metadata
                 recording = metadata.to_dict()
                 return {
-                    "csv_path": metadata.fluidics_csv,
+                    "timeline_path": metadata.timeline,
                     "report_dir": str(self._recording_run.report_dir or ""),
                     "video_path": metadata.video_path,
                     "recording": recording,
@@ -279,21 +279,21 @@ class RecordingCoordinator:
         if not self._recording:
             self._restore_camera_preview_after_recording()
             return {}
-        self._stop_csv_recording()
+        self._stop_timeline()
         self._restore_camera_preview_after_recording()
-        metadata = self._csv_recording
+        metadata = self._timeline_recording
         if metadata is None:
-            return {"csv_path": self.csv_logger.filepath or ""}
+            return {"timeline_path": self.timeline_logger.filepath or ""}
         metadata.stopped_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         metadata.duration_s = max(0.0, time.monotonic() - metadata.started_monotonic_s)
         self._last_recording = metadata
-        if self._csv_recording_report_dir is not None:
-            self._csv_recordings.append(metadata.to_dict())
-        self._csv_recording = None
-        report_dir = str(self._csv_recording_report_dir or "")
-        self._csv_recording_report_dir = None
+        if self._timeline_recording_report_dir is not None:
+            self._timeline_recordings.append(metadata.to_dict())
+        self._timeline_recording = None
+        report_dir = str(self._timeline_recording_report_dir or "")
+        self._timeline_recording_report_dir = None
         return {
-            "csv_path": metadata.fluidics_csv,
+            "timeline_path": metadata.timeline,
             "report_dir": report_dir,
             "recording": metadata.to_dict(),
         }
@@ -304,10 +304,10 @@ class RecordingCoordinator:
             metadata["recordings"] = list(self._recording_run.recordings)
             if self._recording_run.current is not None:
                 metadata["current_recording"] = self._recording_run.current.to_dict()
-        elif self._csv_recordings:
-            metadata["recordings"] = list(self._csv_recordings)
-        if self._csv_recording is not None:
-            metadata["current_recording"] = self._csv_recording.to_dict()
+        elif self._timeline_recordings:
+            metadata["recordings"] = list(self._timeline_recordings)
+        if self._timeline_recording is not None:
+            metadata["current_recording"] = self._timeline_recording.to_dict()
         if self._last_recording is not None:
             metadata["last_recording"] = self._last_recording.to_dict()
         return metadata
@@ -318,10 +318,10 @@ class RecordingCoordinator:
             if self._recording_run.current is not None:
                 recordings.append(self._recording_run.current.to_dict())
             recordings.extend(self._recording_run.recordings)
-        elif self._csv_recordings:
-            recordings.extend(self._csv_recordings)
-        if self._csv_recording is not None:
-            recordings.append(self._csv_recording.to_dict())
+        elif self._timeline_recordings:
+            recordings.extend(self._timeline_recordings)
+        if self._timeline_recording is not None:
+            recordings.append(self._timeline_recording.to_dict())
         if self._last_recording is not None:
             recordings.append(self._last_recording.to_dict())
         return recordings
@@ -329,12 +329,12 @@ class RecordingCoordinator:
     def active_recording_metadata(self) -> RecordingMetadata | None:
         if self._recording_run is not None and self._recording_run.current is not None:
             return self._recording_run.current
-        return self._csv_recording
+        return self._timeline_recording
 
     def active_recording_report_dir(self) -> Path | None:
         if self._recording_run is not None:
             return self._recording_run.report_dir
-        return self._csv_recording_report_dir
+        return self._timeline_recording_report_dir
 
     def _start_camera_recording(
         self,
@@ -368,16 +368,16 @@ class RecordingCoordinator:
             max_frames=_frame_limit(settings.get("recording_max_frames")),
             max_time=_positive_or_none(settings.get("recording_max_seconds")),
             video_path=settings.get("video_path"),
-            fluidics_csv_path=settings.get("fluidics_csv_path"),
+            timeline_path=settings.get("timeline_path"),
         )
         self._last_recording = metadata
         return {
-            "csv_path": metadata.fluidics_csv,
+            "timeline_path": metadata.timeline,
             "report_dir": str(recording_run.report_dir or ""),
             "recording": metadata.to_dict(),
         }
 
-    def _start_csv_only_recording(
+    def _start_timeline_only_recording(
         self,
         settings: dict[str, Any],
         report_root: Path,
@@ -387,14 +387,14 @@ class RecordingCoordinator:
         fluidics_dir = report_dir / "fluidics"
         fluidics_dir.mkdir(parents=True, exist_ok=True)
         recording_id = create_recording_id(recording_label)
-        explicit_csv = settings.get("fluidics_csv_path")
-        if explicit_csv:
-            csv_file = Path(str(explicit_csv))
-            fluidics_dir = csv_file.parent
-            csv_filename = csv_file.name
+        explicit_timeline = settings.get("timeline_path")
+        if explicit_timeline:
+            timeline_file = Path(str(explicit_timeline))
+            fluidics_dir = timeline_file.parent
+            timeline_filename = timeline_file.name
         else:
-            csv_filename = f"{recording_id}.csv"
-        csv_path = self._start_csv_recording(str(fluidics_dir), csv_filename=csv_filename)
+            timeline_filename = f"{recording_id}.db"
+        timeline_path = self._start_timeline(str(fluidics_dir), timeline_filename=timeline_filename)
         metadata = RecordingMetadata(
             started_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
             started_monotonic_s=time.monotonic(),
@@ -403,46 +403,46 @@ class RecordingCoordinator:
             output_dir="",
             width=0,
             height=0,
-            fluidics_csv=csv_path,
+            timeline=timeline_path,
         )
-        self._csv_recording = metadata
-        self._csv_recording_report_dir = report_dir
+        self._timeline_recording = metadata
+        self._timeline_recording_report_dir = report_dir
         self._last_recording = metadata
-        return {"csv_path": csv_path, "report_dir": str(report_dir), "recording": metadata.to_dict()}
+        return {"timeline_path": timeline_path, "report_dir": str(report_dir), "recording": metadata.to_dict()}
 
-    def _start_csv_recording(
+    def _start_timeline(
         self,
         fluidics_dir_value: str,
         *,
-        csv_prefix: str = "fluidics",
-        csv_filename: str = "",
+        timeline_prefix: str = "fluidics",
+        timeline_filename: str = "",
     ) -> str:
         fluidics_dir = Path(fluidics_dir_value)
-        self.csv_logger = CsvLogger(fluidics_dir, prefix=csv_prefix, filename=csv_filename)
+        self.timeline_logger = TimelineLogger(fluidics_dir, prefix=timeline_prefix, filename=timeline_filename)
         state = self._hardware_state()
         acquisition = self._acquisition()
         origin = _poll_origin(acquisition)
-        filepath = self.csv_logger.start(
+        filepath = self.timeline_logger.start(
             len(state.pressure_channels),
             len(state.sensor_channels),
             origin_monotonic=float(origin) if origin else None,       # elapsed_s counts from the poll's start
         )
         self._recording = True
         if acquisition:
-            acquisition.set_csv_logger(self.csv_logger)
+            acquisition.set_timeline_logger(self.timeline_logger)
         return filepath
 
     @property
     def qc_sink(self):
         """Where a QC row goes while the timeline is open; None between recordings."""
-        return self.csv_logger.write_qc if self._recording else None
+        return self.timeline_logger.write_qc if self._recording else None
 
-    def _stop_csv_recording(self) -> None:
+    def _stop_timeline(self) -> None:
         self._recording = False
         acquisition = self._acquisition()
         if acquisition:
-            acquisition.set_csv_logger(None)
-        self.csv_logger.stop()
+            acquisition.set_timeline_logger(None)
+        self.timeline_logger.stop()
 
     def _restore_camera_preview_after_recording(self) -> None:
         if self._recording_run is not None:
@@ -454,8 +454,8 @@ class RecordingCoordinator:
     def _recording_root(self, settings: dict[str, Any]) -> Path:
         if settings.get("video_path"):
             return Path(str(settings["video_path"])).parent.parent
-        if settings.get("fluidics_csv_path"):
-            return Path(str(settings["fluidics_csv_path"])).parent.parent
+        if settings.get("timeline_path"):
+            return Path(str(settings["timeline_path"])).parent.parent
         recording_root_value = str(settings["recording_root"]).strip()
         if not recording_root_value:
             raise RuntimeError("Recording root is not configured")
@@ -471,14 +471,14 @@ class _CsvRecordingBackend:
         self.coordinator = coordinator
 
     def start_recording(self, settings: dict[str, Any]) -> str:
-        return self.coordinator._start_csv_recording(
+        return self.coordinator._start_timeline(
             settings["fluidics_dir"],
-            csv_prefix=str(settings.get("csv_prefix") or "fluidics"),
-            csv_filename=str(settings.get("csv_filename") or ""),
+            timeline_prefix=str(settings.get("timeline_prefix") or "fluidics"),
+            timeline_filename=str(settings.get("timeline_filename") or ""),
         )
 
     def stop_recording(self) -> None:
-        self.coordinator._stop_csv_recording()
+        self.coordinator._stop_timeline()
 
 
 def _default_writer_factory(video_dir: Path, prefix: str, width: int, height: int, fps: float):

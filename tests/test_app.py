@@ -22,7 +22,7 @@ def _commands() -> dict:
 
 class SurfaceTests(unittest.TestCase):
     def test_the_command_line_is_control_analyze_describe_migrate_install_sdk_and_camera_bench(self):
-        self.assertEqual(set(_commands()), {"control", "analyze", "describe", "migrate", "install-sdk",
+        self.assertEqual(set(_commands()), {"control", "analyze", "describe", "migrate", "export-run", "install-sdk",
                                              "camera-bench"})
 
     def test_analyze_serves_on_every_interface_by_default(self):

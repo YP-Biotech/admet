@@ -1,6 +1,5 @@
 """The Review runs page: recorded pressure and flow from saved CSVs, offscreen."""
 
-import json
 import os
 import shutil
 import tempfile
@@ -12,8 +11,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from admet.core import rundb
+from admet.core.runs import Run
+from tests.rundb_helpers import set_timeline, timeline_text
 from admet.ui import theme as ui  # noqa: E402
-from admet.ui.review import ReviewPanel, project_run, read_fluidics_csv, step_markers  # noqa: E402
+from admet.ui.review import ReviewPanel, project_run, read_fluidics, step_markers  # noqa: E402
 from tests.test_metrology import archive  # noqa: E402
 
 
@@ -28,12 +30,11 @@ class ReviewTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.run = archive(tmp.name, "gravimetry")
-        record = self.run / "run.json"
-        record.write_text(json.dumps({**json.loads(record.read_text()), "condition": "oil"}))   # planned into a set
+        Run(self.run).update(condition="oil")                                    # planned into a set
 
     def test_a_recorded_run_reads_its_channels_and_step_marks(self):
         run = project_run(self.run, "gravimetry")
-        t, pressures, flows = read_fluidics_csv(self.run / "run.csv")
+        t, pressures, flows = read_fluidics(self.run / "run.db")
 
         # The archive recorded channel 1 only: it stays channel 1, the others are empty.
         self.assertEqual(len(run.flows), 3)
@@ -58,8 +59,8 @@ class ReviewTests(unittest.TestCase):
         panel = ReviewPanel()
         self.addCleanup(panel.close)
         panel.set_project(str(self.root))
-        loaded = self.root / "droplegen_20261022_101500.csv"
-        shutil.copy(self.run / "run.csv", loaded)
+        loaded = self.root / "droplegen_20261022_101500.db"
+        shutil.copy(self.run / "run.db", loaded)
         panel.add_files([str(loaded)])
         self.assertEqual(panel.table.rowCount(), 2)                         # the project run, then the file
         self.assertEqual([panel.table.item(r, 3).text() for r in (0, 1)], ["oil", ""])   # the run's set; a file has none
@@ -190,12 +191,9 @@ if __name__ == "__main__":
 
 def qc_run(root: Path, run_id: str = "run_q") -> Path:
     """A run whose timeline file holds readings and QC rows: one 20 s collection of 1170 droplets a second."""
-    import csv
-    import json
 
     directory = Path(root) / "runs" / run_id
     directory.mkdir(parents=True)
-    fluidics = directory / "run.csv"
     qc_columns = ["recording_id", "step", "part", "rate_hz", "rate_half", "count", "diameter", "diameter_unit",
                   "diameter_half", "cv_percent", "cv_half", "n", "bursts", "speed_px_frame", "spacing_px", "state"]
     fluidics_columns = ["pressure_0_mbar", "pressure_1_mbar", "pressure_2_mbar", "flow_0_ul_min", "flow_1_ul_min",
@@ -212,17 +210,14 @@ def qc_run(root: Path, run_id: str = "run_q") -> Path:
         rows.append((at, [f"10:00:{at:06.3f}", f"{at:.3f}", *[""] * len(fluidics_columns), f"{run_id}_step01", 1, 1,
                           1170, 21 if k > 2 else "", 1170 * (k + 1), 124.0, "um", 0.5, 2.7, 0.3, 200, k + 1, 48, 128,
                           "SETTLING" if k < 2 else "STABLE"]))
-    with fluidics.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["timestamp", "elapsed_s", *fluidics_columns, *qc_columns])
-        for _at, row in sorted(rows, key=lambda item: item[0]):
-            writer.writerow(row)
+    set_timeline(directory / "run.db", timeline_text([row for _at, row in sorted(rows, key=lambda item: item[0])],
+                                                     ["timestamp", "elapsed_s", *fluidics_columns, *qc_columns]))
     events = [{"step_index": 0, "step_name": "collect", "state": "running", "outcome": "running", "monotonic": 110},
               {"step_index": 0, "step_name": "collect", "state": "running", "outcome": "completed", "monotonic": 130}]
-    (directory / "run.json").write_text(json.dumps({
+    rundb.write_record(directory / "run.db", {
         "run_id": run_id, "state": "completed", "executed_at": "2026-11-17T10:00:00", "completed_at": "2026-11-17T10:00:40",
         "events": events,
-        "artifacts": {"fluidics_csv": "run.csv", "polling_origin_monotonic": 100, "recording_closed": True}}))
+        "artifacts": {"timeline": "run.db", "polling_origin_monotonic": 100, "recording_closed": True}})
     return directory
 
 
