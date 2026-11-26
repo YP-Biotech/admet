@@ -7,8 +7,8 @@ through its protocol's run block, and onto whatever is collected from it, such a
 microscopy images, so analyze can put the two together without being told.
 
 A run is a row: its protocol, the values of that protocol's parameters, its condition, a note, and
-where it got to. The table can come whole from a JSON document, which the store keeps under the
-data folder as experiments/<code>.json.
+where it got to. The table can come whole from a JSON document and goes back out as one; the
+store keeps it in the data folder's control.db, beside the runs it made.
 """
 
 from __future__ import annotations
@@ -16,18 +16,17 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import sqlite3
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from admet.core.files import write_atomic
 
 ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"     # no 0 O 1 I L: nothing to mistake when typed
 CODE_LENGTH = 3
 STATES = ("planned", "running", "done", "failed")
-EXPERIMENTS_DIR = "experiments"
 _CODE = f"[{ALPHABET}]{{{CODE_LENGTH}}}"
 RUN_ID = re.compile(rf"{_CODE}-\d{{2,3}}")
 # A sample's id as typed into a folder's name: any case, the parts joined by -, _, . or a space, the
@@ -188,35 +187,57 @@ class Experiment:
 
 
 class ExperimentStore:
-    """The experiments of one data folder: experiments/<code>.json, each written whole."""
+    """The experiments of one data folder, in its control.db beside the runs they made."""
 
     def __init__(self, data_dir: str | Path) -> None:
-        self.root = Path(data_dir) / EXPERIMENTS_DIR
+        from admet.core.rundb import CONTROL_DB
+
+        self.database = Path(data_dir) / CONTROL_DB
+
+    def _rows(self, where: str = "", args: tuple = ()) -> list[tuple[str, str]]:
+        from admet.core.rundb import connect
+
+        if not self.database.is_file():
+            return []
+        connection = connect(self.database, readonly=True)
+        try:
+            return list(connection.execute(f"SELECT code, body FROM experiments {where}", args))
+        except sqlite3.DatabaseError:
+            return []
+        finally:
+            connection.close()
 
     def codes(self) -> set[str]:
-        return {path.stem for path in self.root.glob("*.json")} if self.root.is_dir() else set()
+        return {code for code, _body in self._rows()}
 
-    def save(self, experiment: Experiment) -> Path:
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = self.root / f"{experiment.code}.json"
-        write_atomic(path, json.dumps(experiment.to_json(), indent=2, allow_nan=False) + "\n")
-        return path
+    def save(self, experiment: Experiment) -> None:
+        from admet.core.rundb import connect
+
+        self.database.parent.mkdir(parents=True, exist_ok=True)
+        connection = connect(self.database)
+        try:
+            with connection:
+                connection.execute("INSERT OR REPLACE INTO experiments (code, body) VALUES (?, ?)",
+                                   (experiment.code, json.dumps(experiment.to_json(), allow_nan=False)))
+        finally:
+            connection.close()
 
     def load(self, code: str, protocols: Protocols) -> Experiment:
-        if not re.fullmatch(_CODE, str(code)):
-            raise ValueError(f"no experiment {code}")
-        return Experiment.from_json(json.loads((self.root / f"{code}.json").read_text(encoding="utf-8")), protocols)
+        rows = self._rows("WHERE code = ?", (str(code),))
+        if not rows:
+            raise LookupError(f"no experiment {code}")
+        return Experiment.from_json(json.loads(rows[0][1]), protocols)
 
     def list(self) -> list[dict[str, Any]]:
         """Every experiment, newest first: its code, name, and how many of its runs are done."""
         entries = []
-        for path in self.root.glob("*.json") if self.root.is_dir() else ():
+        for code, body in self._rows():
             try:
-                document = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+                document = json.loads(body)
+            except ValueError:
                 continue
             runs = document.get("runs") or []
-            entries.append({"code": path.stem, "name": document.get("experiment", ""),
+            entries.append({"code": code, "name": document.get("experiment", ""),
                             "created_at": document.get("created_at", ""), "runs": len(runs),
                             "done": sum(1 for run in runs if run.get("state") == "done")})
         return sorted(entries, key=lambda entry: entry["created_at"], reverse=True)

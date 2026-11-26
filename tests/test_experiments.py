@@ -78,9 +78,11 @@ class ExperimentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = ExperimentStore(tmp)
             experiment = Experiment.from_json(DESIGN, protocols, taken=store.codes())
-            path = store.save(experiment)
-            self.assertEqual(path, Path(tmp) / "experiments" / f"{experiment.code}.json")
+            store.save(experiment)
+            self.assertTrue((Path(tmp) / "control.db").is_file())
             self.assertEqual(store.load(experiment.code, protocols).to_json(), experiment.to_json())
+            with self.assertRaises(LookupError):
+                store.load("ZZZ", protocols)
             self.assertEqual(store.list()[0]["code"], experiment.code)
             self.assertEqual((store.list()[0]["runs"], store.list()[0]["done"]), (3, 0))
             self.assertEqual(store.codes(), {experiment.code})
@@ -115,7 +117,7 @@ class ServiceTests(unittest.TestCase):
                 admet.protocol_document("nothing")
             experiment = Experiment.from_json(DESIGN, admet.protocol_document)
             admet.experiments.save(experiment)
-            self.assertTrue((admet.home.data_dir / "experiments" / f"{experiment.code}.json").is_file())
+            self.assertEqual(admet.experiments.codes(), {experiment.code})
 
 
 if __name__ == "__main__":
