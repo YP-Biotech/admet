@@ -91,12 +91,12 @@ class HomeTests(unittest.TestCase):
             admet.do("emergency_stop")
 
             on_disk = list(admet.home.data_dir.rglob("*.db"))
-            self.assertEqual(len(on_disk), 1)
             [run] = admet.runs.list()
             self.assertEqual((run["kind"], run["state"]), ("recording", "completed"))
-            record = rundb.read_record(Path(run["directory"]) / "run.db")
+            record = rundb.read_record(Path(run["directory"]) / "run.db")      # sealed in its folder
             self.assertEqual(record["recording"]["timeline"], "run.db")
-            self.assertEqual(on_disk, [Path(run["directory"]) / "run.db"])
+            self.assertEqual(sorted(path.relative_to(admet.home.data_dir).as_posix() for path in on_disk),
+                             ["control.db", f"runs/{run['run_id']}/run.db"])     # every run, and this one sealed
 
     def test_a_second_service_on_the_same_home_finds_the_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,8 +137,9 @@ class PathOwnershipTests(unittest.TestCase):
 
             job = engine.jobs[-1]
             self.assertEqual(set(job.outputs), {"video", "timeline"})
-            for path in job.outputs.values():
-                self.assertTrue(str(path).startswith(str(admet.home.data_dir / "runs")))
+            self.assertTrue(str(job.outputs["video"]).startswith(str(admet.home.data_dir / "runs")))
+            database, run_id = rundb.locate(job.outputs["timeline"])             # the run in control.db
+            self.assertEqual((database, run_id), (admet.home.data_dir / "control.db", job.metadata["run_id"]))
             self.assertIn("set01", job.metadata["recording_id"])
 
     def test_an_action_that_writes_nothing_is_given_nothing(self):
@@ -326,7 +327,7 @@ class FluidicsOnlyRecordingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _admet_service, started = self._recorded(tmp)
 
-            self.assertTrue(Path(started["timeline_path"]).is_file())
+            self.assertTrue(rundb.locate(started["timeline_path"])[0].is_file())
 
     def test_the_fluidics_log_has_rows_in_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -447,7 +448,8 @@ class RealEngineTests(unittest.TestCase):
 
             written = [path for path in admet.home.data_dir.rglob("*.db") if path.is_file()]
             self.assertTrue(written, "the fluidics log should be inside the data folder")
-            self.assertTrue(str(written[0]).startswith(str(admet.home.data_dir / "runs")))
+            self.assertEqual(sorted(path.relative_to(admet.home.data_dir).parts[0] for path in written),
+                             ["control.db", "runs"])                     # every run, and the run sealed in its folder
             self.assertEqual(len(admet.runs.list()), 1)
             admet.run("acquisition", "disconnect_fluidics")
 

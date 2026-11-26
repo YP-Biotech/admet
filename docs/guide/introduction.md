@@ -24,10 +24,12 @@ Each channel is flow-regulated through its flow unit, or set to a fixed pressure
 
 ## How work is organised
 
-Everything control makes is a **run**: one folder under the admet home's
-`data/runs/`, holding the protocol as it ran, the timeline of pressures, flows
-and droplet QC, the videos, the measurements you typed in and the results
-calculated from them. Copy the folder and you have the whole run. The rig's own
+Everything control makes is a **run**: the protocol as it ran, the timeline of
+pressures, flows and droplet QC, the videos, the measurements you typed in and
+the results calculated from them. Control keeps every run in the home's
+`data/control.db`, and gives each its folder under `data/runs/`: its videos and,
+once it finished, its `run.db`, the run sealed on its own. Copy the folder and you
+have the whole run. The rig's own
 settings live beside the runs in `control/rig.json`. See
 [the home](../control/overview#the-home) and [Recording](../control/running#recording).
 

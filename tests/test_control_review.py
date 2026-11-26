@@ -210,11 +210,11 @@ def qc_run(root: Path, run_id: str = "run_q") -> Path:
         rows.append((at, [f"10:00:{at:06.3f}", f"{at:.3f}", *[""] * len(fluidics_columns), f"{run_id}_step01", 1, 1,
                           1170, 21 if k > 2 else "", 1170 * (k + 1), 124.0, "um", 0.5, 2.7, 0.3, 200, k + 1, 48, 128,
                           "SETTLING" if k < 2 else "STABLE"]))
-    set_timeline(directory / "run.db", timeline_text([row for _at, row in sorted(rows, key=lambda item: item[0])],
+    set_timeline(Run(directory).ref, timeline_text([row for _at, row in sorted(rows, key=lambda item: item[0])],
                                                      ["timestamp", "elapsed_s", *fluidics_columns, *qc_columns]))
     events = [{"step_index": 0, "step_name": "collect", "state": "running", "outcome": "running", "monotonic": 110},
               {"step_index": 0, "step_name": "collect", "state": "running", "outcome": "completed", "monotonic": 130}]
-    rundb.write_record(directory / "run.db", {
+    rundb.write_record(Run(directory).ref, {
         "run_id": run_id, "state": "completed", "executed_at": "2026-11-17T10:00:00", "completed_at": "2026-11-17T10:00:40",
         "events": events,
         "artifacts": {"timeline": "run.db", "polling_origin_monotonic": 100, "recording_closed": True}})
