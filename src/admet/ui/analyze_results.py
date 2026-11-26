@@ -1114,7 +1114,7 @@ class RunPlot:
 
 
 def run_label(run_dir: str | Path) -> str:
-    """A run folder's name as the screen says it: the name with the run's time, "dropseq_1n 16:43"."""
+    """A run folder's name as the screen says it: the name with the run's time, "K7Q-03 16:43"."""
     name = Path(run_dir).name
     stamp, _sep, rest = name.partition("_")
     if len(name) > 15 and name[8] == "_" and name[:8].isdigit() and name[9:15].isdigit():

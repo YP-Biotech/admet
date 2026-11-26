@@ -263,9 +263,10 @@ class HomeTests(unittest.TestCase):
             admet.do("connect_fluidics", {"simulated": True})
             admet.do("apply_corrections")
             try:
-                from admet.workflows.json_protocol import template_documents
+                from admet.core.experiments import Experiment
 
-                admet.do("run_json_protocol", {"protocol": template_documents()["dropseq_3n"], "tick_s": 0.1})
+                experiment = Experiment("K7Q")
+                admet.do("run_json_protocol", {"protocol": experiment.document(experiment.add()), "tick_s": 0.1})
                 self.assertTrue(admet.state()["running"])
             finally:
                 admet.do("stop_protocol")

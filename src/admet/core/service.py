@@ -230,18 +230,6 @@ class Admet:
 
         return ExperimentStore(self.home.data_dir)
 
-    def protocol_document(self, name: str) -> dict[str, Any]:
-        """A protocol by its name: one saved in the data folder first, else a template; LookupError if neither."""
-        from admet.workflows.json_protocol import template_documents
-
-        try:
-            return self.protocol_store().read(name)["protocol"]
-        except (OSError, ValueError):
-            pass
-        templates = template_documents()
-        if name in templates:
-            return templates[name]
-        raise LookupError(f"no protocol {name}")
 
     @property
     def registry(self):

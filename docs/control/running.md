@@ -12,7 +12,7 @@ plan; the runs it executed stay. Steps are not kept between sessions.
    rows are the protocol's [run block](../protocols/format#run): **Run**, what
    this run is called (the protocol's name when empty), and **Condition**, the
    generation condition it belongs to. Left empty, the condition is the protocol
-   with its oil, cells and beads setpoints, `dropseq_3n o300 c40 b40`, which is
+   with its oil, cells and beads setpoints, `collection o300 c40 b40`, which is
    what analyze groups by; give one only to call it something else. The name
    tags the run: the step takes it at Plan, and its record, the record of each
    recording and the lists in Review and Calculations carry it. The condition is
@@ -30,6 +30,60 @@ plan; the runs it executed stay. Steps are not kept between sessions.
 
 Edits and previews stay in memory. Only Execute archives the protocol, its
 parameter values and the run.
+
+## Experiments
+
+An experiment is a table of runs designed before any of them is run, on the
+**Experiment** page. Each row is a whole run; there is no protocol to pick:
+
+| Column | What it is |
+|---|---|
+| **Id** | The run's id, `K7Q-03`, given by control |
+| **Mode** | `flow` (µL/min) or `pressure` (mbar), for all three channels; `f` or `p` will do |
+| **Oil**, **Cells**, **Beads** | The setpoints on L, M1 and M2 |
+| **Stop oil µL**, **Stop total µL**, **Stop s** | What ends each collection: oil delivered, the three channels together, time. An empty stop is off; the first one met ends the collection; at least one is needed |
+| **Replicates** | How many collections the run makes, one after another (1–20) |
+| **Video**, **Video s** | Whether each collection is filmed (`yes`/`no`), and for how long at most (100 s) |
+| **Condition** | What analyze groups the run's videos by; left empty it is the setpoints, `300/40/40` (shown grey) |
+| **Note**, **State**, **Run folder** | A note; planned, running, done or failed; where the run was kept |
+
+A value is checked as you type it; one that cannot run is put back. A run that
+ran cannot be changed.
+
+- **Add run** adds a row like the last one; **Duplicate** copies the selected
+  row; **Remove** takes out a row that has not run.
+- **Import JSON…** fills a new experiment from a document; **Export JSON…**
+  writes the shown one out, with each run's id, state and folder. A value given
+  beside `runs` is every run's unless a run gives its own; a run that names any
+  stop has only the stops it names:
+
+  ```json
+  {"experiment": "ratio sweep 26 Nov", "replicates": 3, "stop_oil_ul": 150,
+   "runs": [{"oil": 300, "cells": 40, "beads": 40},
+            {"oil": 250, "cells": 67, "beads": 67, "stop_s": 90,
+             "condition": "boundary", "note": "near the bulge"}]}
+  ```
+
+  The second run stops at 90 s only. Its keys are those of the table: `mode`,
+  `oil`, `cells`, `beads`, `stop_oil_ul`, `stop_total_ul`, `stop_s`,
+  `replicates`, `video`, `video_s`, `condition`, `note`. An experiment whose
+  `code` is already used gets a new one, and its runs new ids.
+- **Run next** runs the next planned row in the **Run** step that follows the
+  page. Before each collection control asks for a fresh tube (*Replicate 2 of 3,
+  sample K7Q-03-r2: fresh collection in place?*); each collection ends on its
+  first stop, and the record says which one. When the run finishes, its row
+  says done (or failed) with its run folder, and control asks *Run K7Q-03 is
+  finished. Proceed to run K7Q-04?*. A run whose plan has an unmet guard, such
+  as video with a camera that is not live, is planned but not started.
+
+Every experiment has a code of three characters with nothing to mistake when
+typed (no 0, O, 1, I or L), and each run a number in it: run 3 of experiment
+K7Q is **K7Q-03**. The id goes into the run's record, and each replicate the
+run collects is a sample, **K7Q-03-r2**. Name what you collect by it: a folder
+of microscopy images called `K7Q-03-r2` (or `k7q_03_rep2 cells`) is matched to
+that sample by `admet analyze`, see
+[Samples of an experiment](../analyze/overview#samples-of-an-experiment).
+Experiments are kept in the data folder's `control.db`, beside the runs.
 
 ## During a run
 

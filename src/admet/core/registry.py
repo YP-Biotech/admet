@@ -364,7 +364,7 @@ def condition_channels(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 def protocol_condition(record: dict[str, Any]) -> str:
     """The generation condition of a run, by what it did: its protocol and the oil, cells and beads setpoints of
-    its recording step, "dropseq_3n o300 c40 b40"; a pressure setpoint says so, "o600mbar". Nothing known is ""."""
+    its recording step, "collection o300 c40 b40"; a pressure setpoint says so, "o600mbar". Nothing known is ""."""
     protocol = (record.get("normalized_settings") or {}).get("protocol")
     if not isinstance(protocol, dict):
         return ""

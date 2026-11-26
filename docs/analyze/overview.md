@@ -95,7 +95,7 @@ archive is left as it is.
 
 A generation condition is how a file's droplets were made: the protocol and the
 oil, cells and beads setpoints of the step that recorded, written
-`dropseq_3n o300 c40 b40`, a pressure setpoint as `o600mbar`. Every file from a
+`collection o300 c40 b40`, a pressure setpoint as `o600mbar`. Every file from a
 run gets it at scan, from the condition the run was planned with in `admet
 control` when there is one, else from the protocol itself. Runs of one protocol at
 the same setpoints thus fall into one condition on their own, whatever day they

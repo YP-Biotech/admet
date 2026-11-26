@@ -87,22 +87,8 @@ Calculation: [Flow scout](../calculations/other#flow-stability-scout).
 
 ## Drop-Seq
 
-Two templates, `dropseq_3n` and `dropseq_1n`, with the same parameters. The first
-runs three Drop-Seq collections in one set: oil on L, cells on M1 and beads on M2,
-all at once after a gate for each collection. Each stops when L has delivered the
-target volume, then a last gate finishes the run. The second is one collection and
-the finishing gate, for a single run of the same settings.
-
-| Parameter | Default |
-|---|---|
-| Oil L control / setpoint | flow, 300 |
-| Cells M1 control / setpoint | flow, 40 |
-| Beads M2 control / setpoint | flow, 40 |
-| Stop when Oil L has delivered | 150 µL |
-| Replicate timeout | 120 s |
-| Record video during each collection | off |
-| Video limit per collection | 100 s (100 at most) |
-
-Each channel's control is *flow* (setpoint in µL/min) or *pressure* (setpoint in
-mbar). L counts the delivered volume under either. With video on, each collection
-records from its start to its end, never at its gate, and needs a live camera.
+Drop-Seq collections are not a template: each is a row of an experiment in
+`admet control`, with its setpoints, stops and replicates (see
+[Experiments](../control/running#experiments)). A protocol written for a case a row
+cannot express, such as one channel under pressure and the others under flow, is
+run on its own.
