@@ -100,6 +100,3 @@ Every run it records is a folder under the home's `data/runs/`.
 listed without a step of your own; a folder added on its Files page, or given
 with `--data`, is watched beside it. Its registry and results live in the home's
 `analyze/`.
-
-Older `.admetp` projects are not read; `admet migrate <project>` lays one out as
-run folders in the home's data folder, see [Projects](projects#migrating-a-project).

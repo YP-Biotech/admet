@@ -87,9 +87,6 @@ admet export-run data/runs/20261118_183000_oil_3              # run.json and run
 admet export-run data/runs/20261118_183000_oil_3 --into out/  # or elsewhere
 ```
 
-Run folders recorded before `run.db`, with `run.json` and `run.csv`, are read
-once they are migrated: `admet migrate <data folder>` gives each its `run.db`
-and leaves the two old files beside it, to be removed once checked.
 A recording started by hand, outside a protocol, is a run folder too.
 The step videos are encoded once the run is over, one after another, so no encode
 competes with the next step's recording for the disk; each is noted in the record
