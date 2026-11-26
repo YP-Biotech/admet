@@ -1,6 +1,6 @@
 """Read-only run inputs, event windows and trace integration.
 
-A calculation reads one run folder's run.db: its record for the protocol, the execution, the
+A calculation reads one run in control.db: its record for the protocol, the execution, the
 events and the measurements, its timeline for the readings. A result records a digest of each
 input, so a later change to either marks it outdated.
 """
@@ -25,11 +25,11 @@ RECORD_INPUT = "record"
 
 
 def recording_path(directory, summary=None):
-    """The run's database, when it holds a timeline."""
-    path = Path(directory) / RECORD
-    if not path.is_file() or not rundb.timeline_columns(path):
+    """Where the run's timeline is, when it has one: its locator in control.db."""
+    run = Run(directory)
+    if not rundb.has_timeline(run.ref) and not (run.read().get("artifacts") or {}).get("timeline"):
         raise ValueError("This run has no fluidics recording")
-    return path
+    return run.ref
 
 
 def result_ref(directory, result_id):
@@ -60,7 +60,7 @@ def _input_digest(directory, name):
     if name == RECORD_INPUT:
         return Run(directory).inputs_digest()
     if name == TIMELINE_INPUT:
-        return rundb.timeline_digest(Path(directory) / RECORD)
+        return rundb.timeline_digest(Run(directory).ref)
     raise ValueError(f"not an input of a run: {name}")
 
 

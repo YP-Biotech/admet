@@ -1134,7 +1134,7 @@ def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
     A recording is drawn in its sample's colour, a channel in its line pattern. Its step is the one
     its bursts fall in; a recording outside any step (a run without events) is its bursts' span.
     """
-    from admet.core.runs import Run
+    from admet.core.runs import sealed_record
     from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics, read_qc, step_segments
 
     xname = "s since the step began"
@@ -1152,7 +1152,7 @@ def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
             continue
         if qc is None:
             continue                                          # no recording, nothing a ticked file is of
-        record = Run(run.run_dir).read()
+        record = sealed_record(run.run_dir)
         polling = record.get("artifacts", {}).get("polling_origin_monotonic")
         events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
         segments = step_segments(events, polling or 0.0) if events else []

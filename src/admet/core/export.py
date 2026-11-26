@@ -1,9 +1,9 @@
 """Export: a run's folder copied whole to the server, each file checked, and its videos then let go.
 
-The copy on the server is the one that lasts. The computer at the rig keeps every run's
-run.db, its record and timeline, so Review and Calculations keep working there, and gives up
-the videos once they are safely elsewhere. The database goes last, folded whole first, so the
-copy needs nothing beside it. Exporting is a thing to do again: a record that changed since
+The copy on the server is the one that lasts. The computer at the rig keeps every run in its
+control.db, so Review and Calculations keep working there, and gives up the videos once they are
+safely elsewhere. What goes is the run's folder: its videos, then its run.db, the run sealed on
+its own, so the copy needs nothing beside it. Exporting is a thing to do again: a record that changed since
 (a result calculated later) is copied again; a video already there and whole is not touched.
 """
 
@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tarfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from admet.core import rundb
 from admet.core.runs import FINISHED, RECORD, Run, RunStore
 
 CHUNK = 8 << 20
@@ -115,9 +115,8 @@ def export_run(run: Run, destination: str | Path, progress: Progress | None = No
         "videos_removed": sorted(previous.get("videos_removed") or []),
     }
     record["export"] = note_record
-    run.write(record)
-    rundb.fold(run.db_path)
-    _copy_verified(run.db_path, target / RECORD)
+    run.write(record)                                    # a finished run seals itself as it is written
+    _copy_verified(run.seal(), target / RECORD)
 
     videos = [path for path in files if path.suffix.lower() == ".avi"]
     for video in videos:                                 # every file read back whole: the local copies can go
@@ -126,8 +125,7 @@ def export_run(run: Run, destination: str | Path, progress: Progress | None = No
         note_record["videos_removed"] = sorted(set(note_record["videos_removed"]) | {video.name for video in videos})
         record["export"] = note_record
         run.write(record)
-        rundb.fold(run.db_path)
-        _copy_verified(run.db_path, target / RECORD)
+        _copy_verified(run.seal(), target / RECORD)
     return {"run_id": run.run_id, "to": str(target), "copied": [path.name for path in files],
             "removed": [video.name for video in videos], "bytes": copied}
 
@@ -148,3 +146,33 @@ def export_runs(store: RunStore, destination: str | Path, progress: Progress | N
         except ExportError as exc:
             reports.append({"run_id": run.run_id, "error": str(exc)})
     return reports
+
+
+def export_tar(store: RunStore, archive: str | Path, run_ids: list[str] | None = None) -> dict[str, Any]:
+    """Finished runs into one tar archive, each as its folder goes to the server: its videos and its
+    run.db, sealed first. For a server the rig cannot reach: copy the archive over and analyze takes
+    it in. Nothing here is removed. Runs still going or still encoding are left out and named."""
+    archive = Path(archive)
+    chosen = set(run_ids) if run_ids else None
+    packed, skipped = [], {}
+    part = archive.with_name(archive.name + ".part")
+    try:
+        with tarfile.open(part, "w") as tar:
+            for entry in sorted(store.list(), key=lambda run: run["at"]):
+                if chosen is not None and entry["run_id"] not in chosen:
+                    continue
+                run = Run(entry["directory"])
+                if entry["state"] not in FINISHED:
+                    skipped[run.run_id] = "still going"
+                    continue
+                if any(run.path.glob("*.video.json")):
+                    skipped[run.run_id] = "a video is still being encoded"
+                    continue
+                for path in [*_exportable(run), run.seal()]:
+                    tar.add(path, arcname=f"{run.run_id}/{path.name}")
+                packed.append(run.run_id)
+        os.replace(part, archive)
+    except OSError as exc:
+        part.unlink(missing_ok=True)
+        raise ExportError(f"{archive}: {exc}") from exc
+    return {"archive": str(archive), "runs": packed, "skipped": skipped, "bytes": archive.stat().st_size}
