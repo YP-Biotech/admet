@@ -39,6 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     rig = sub.add_parser("rig", help="show the home's rig settings: where rig.json is and what it holds")
     rig.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
 
+    export = sub.add_parser("export", help="put finished runs into one tar archive, each run's folder as the server "
+                                           "takes it: its videos and its run.db")
+    export.add_argument("--tar", required=True, metavar="FILE", help="the archive to write")
+    export.add_argument("--run", action="append", metavar="RUN_ID", help="only this run; repeat for several")
+    export.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
+
     export_run = sub.add_parser("export-run", help="write a run's record and timeline as run.json and run.csv")
     export_run.add_argument("run", help="the run folder, holding its run.db")
     export_run.add_argument("--into", help="the folder to write the two files in (default: the run folder)")
@@ -91,6 +97,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "rig":
         return run_rig(home=args.home)
+
+    if args.command == "export":
+        from admet.core.export import ExportError, export_tar
+        from admet.core.home import AdmetHome
+        from admet.core.runs import RunStore
+
+        home = AdmetHome.resolve(args.home).ensure()
+        try:
+            report = export_tar(RunStore(home.data_dir), args.tar, args.run)
+        except ExportError as exc:
+            print(f"Could not export: {exc}", file=sys.stderr)
+            return 1
+        print(f"{report['archive']}: {len(report['runs'])} run(s), {report['bytes'] / 2**20:.1f} MB")
+        for run_id, why in sorted(report["skipped"].items()):
+            print(f"  left out {run_id}: {why}")
+        return 0
 
     if args.command == "export-run":
         from admet.core import rundb

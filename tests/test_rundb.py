@@ -145,3 +145,51 @@ class CommandLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ControlDatabaseTests(unittest.TestCase):
+    """Every run of a data folder in its control.db; each finished one sealed into its folder as run.db."""
+
+    def test_two_runs_keep_their_records_and_timelines_apart_and_seal_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "control.db"
+            first, second = rundb.locator(database, "20261126_140000_a"), rundb.locator(database, "20261126_141500_b")
+            rundb.write_record(first, {"run_id": "a"})
+            rundb.write_record(second, {"run_id": "b"})
+            for target, flow in ((first, 300.0), (second, 250.0)):
+                writer = rundb.TimelineWriter(target, 1, 1)
+                for k in range(5):
+                    writer.add_fluidics({"timestamp": "t", "elapsed_s": k * 0.1, "flow_0_ul_min": flow})
+                writer.close()
+            wider = rundb.TimelineWriter(second, 3, 3)                   # a rig with more channels later on
+            wider.add_fluidics({"timestamp": "t", "elapsed_s": 1.0, "flow_2_ul_min": 40.0})
+            wider.close()
+
+            self.assertEqual(rundb.run_ids(database), ["20261126_140000_a", "20261126_141500_b"])
+            self.assertEqual({row["flow_0_ul_min"] for row in rundb.timeline_rows(first)}, {"300"})
+            self.assertEqual(len(rundb.timeline_rows(second)), 6)
+            self.assertEqual(rundb.timeline_rows(second)[-1]["flow_2_ul_min"], "40")
+            self.assertFalse(rundb.has_timeline(rundb.locator(database, "20261126_150000_c")))
+
+            (Path(tmp) / "a").mkdir()
+            sealed = rundb.seal(first, Path(tmp) / "a" / "run.db")
+            self.assertEqual(rundb.read_record(sealed), {"run_id": "a"})
+            self.assertEqual(rundb.timeline_rows(sealed), rundb.timeline_rows(first))
+            self.assertEqual(sorted(p.name for p in sealed.parent.iterdir()), ["run.db"])     # whole, nothing beside
+
+    def test_a_run_seals_itself_into_its_folder_once_it_has_finished(self):
+        from admet.core.runs import RunStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            run = store.begin({"plan_id": "p", "tag": "oil 3", "operation_id": "run_json_protocol"})
+            self.assertTrue(run.ref.startswith(str(Path(tmp) / "control.db")))
+            run.update(state="executing")
+            self.assertFalse(run.sealed_path.exists())                   # still going: nothing sealed
+            run.update(state="completed")
+            self.assertEqual(rundb.read_record(run.sealed_path)["state"], "completed")
+            run.add_result({"calculation_id": "recording_summary", "result": {}})
+            self.assertEqual(len(rundb.read_record(run.sealed_path)["calculations"]), 1)    # sealed again
+            self.assertEqual([entry["run_id"] for entry in store.list()], [run.run_id])
+            self.assertTrue(store.exists(run.run_id))
+            self.assertFalse(store.exists("20261126_150000_nothing"))

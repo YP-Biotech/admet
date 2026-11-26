@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from admet.core import rundb
-from admet.core.export import ExportError, export_run, export_runs, file_digest
+from admet.core.export import ExportError, export_run, export_runs, export_tar, file_digest
 from admet.core.runs import Run, RunStore
 from admet.core.service import Admet
 from tests.rundb_helpers import set_timeline
@@ -24,7 +24,7 @@ def finished_run(data_dir, name="oil", *, state="completed", videos=2, kind="pro
     names = [f"{run.name}_step{i + 1:02d}_20261118_1800{i:02d}.avi" for i in range(videos)]
     for index, video in enumerate(names):
         (run.path / video).write_bytes(os.urandom(4096) + bytes([index]) * 100)
-    set_timeline(run.db_path, "timestamp,elapsed_s\n10:00:00.000,0.000\n")
+    set_timeline(run.ref, "timestamp,elapsed_s\n10:00:00.000,0.000\n")
     run.update(state=state, executed_at="2026-11-18T18:00:00", completed_at="2026-11-18T18:01:00",
                artifacts={"timeline": "run.db", "videos": [{"step": i + 1, "video_path": v} for i, v in enumerate(names)]})
     return run
@@ -45,12 +45,12 @@ class ExportRunTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in copy.iterdir()), sorted([*originals, "run.db"]))
             self.assertEqual({name: file_digest(copy / name) for name in originals}, originals)
             self.assertEqual([p.name for p in run.path.iterdir() if p.suffix == ".avi"], [])     # gone from here
-            self.assertTrue(run.db_path.is_file())                                              # this stays
+            self.assertTrue(run.sealed_path.is_file())                                          # this stays
             note = run.read()["export"]
             self.assertEqual((note["to"], sorted(note["videos_removed"])), (str(server), sorted(originals)))
             self.assertEqual({name: entry["sha256"] for name, entry in note["files"].items() if name in originals}, originals)
             self.assertEqual(rundb.read_record(copy / "run.db")["export"], note)               # both copies agree
-            self.assertEqual(rundb.timeline_rows(copy / "run.db"), rundb.timeline_rows(run.db_path))
+            self.assertEqual(rundb.timeline_rows(copy / "run.db"), rundb.timeline_rows(run.ref))
             self.assertEqual([p.name for p in run.path.iterdir() if p.name.startswith("run.db-")], [])  # whole
             self.assertEqual(sorted(report["removed"]), sorted(originals))
             self.assertTrue(seen and all(args[0] == run.run_id for args in seen))
@@ -145,3 +145,29 @@ class ServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TarExportTests(unittest.TestCase):
+    def test_finished_runs_go_into_one_archive_as_their_folders_and_nothing_here_is_removed(self):
+        import tarfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "data"
+            done = finished_run(data, "done")
+            going = finished_run(data, "going", state="executing")
+            archive = Path(tmp) / "runs.tar"
+
+            report = export_tar(RunStore(data), archive)
+
+            self.assertEqual((report["runs"], report["skipped"]), ([done.run_id], {going.run_id: "still going"}))
+            with tarfile.open(archive) as tar:
+                names = sorted(tar.getnames())
+                tar.extractall(Path(tmp) / "server", filter="data")
+            videos = sorted(p.name for p in done.path.iterdir() if p.suffix == ".avi")
+            self.assertEqual(names, sorted([f"{done.run_id}/run.db", *(f"{done.run_id}/{v}" for v in videos)]))
+            copied = Path(tmp) / "server" / done.run_id / "run.db"
+            self.assertEqual(rundb.read_record(copied)["run_id"], done.run_id)            # the run on its own
+            self.assertEqual(len(videos), 2)                                              # still here
+            self.assertFalse(archive.with_name("runs.tar.part").exists())
+            only, = export_tar(RunStore(data), Path(tmp) / "one.tar", [going.run_id])["skipped"].values()
+            self.assertEqual(only, "still going")
