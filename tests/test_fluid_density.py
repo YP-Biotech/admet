@@ -25,7 +25,7 @@ def density_document(fluid="dsurf", *, parameterized=False, channel=1):
 
 
 def recorded_density(directory, *, densities=(1.2, 1.2), missing=False, unsettled=False, parameterized=False,
-                     curvature=0, channel=1):
+                     curvature=0, channel=1, target=None):
     document = density_document(parameterized=parameterized, channel=channel)
     resolved = resolve(document)
     rows, events = [], []
@@ -53,7 +53,7 @@ def recorded_density(directory, *, densities=(1.2, 1.2), missing=False, unsettle
             if unsettled and index == 3 and elapsed >= 15:
                 value += 5
             rows.append((start + elapsed, "" if missing and index == 3 else value, flow))
-    timeline = set_timeline(Path(directory) / "run.db", timeline_text(
+    timeline = set_timeline(target or Path(directory) / "run.db", timeline_text(
         rows, ["elapsed_s", f"pressure_{channel}_mbar", f"flow_{channel}_ul_min"]))
     events_path = Path(directory) / "events.jsonl"
     events_path.write_text("".join(json.dumps(event) + "\n" for event in events))

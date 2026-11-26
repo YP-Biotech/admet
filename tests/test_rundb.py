@@ -9,7 +9,6 @@ import unittest
 from pathlib import Path
 
 from admet.core import rundb
-from admet.core.migrate import migrate_runs
 
 
 class RecordTests(unittest.TestCase):
@@ -125,7 +124,7 @@ class ExportTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
-    def test_export_run_writes_the_two_files_and_migrate_takes_a_folder_of_runs(self):
+    def test_export_run_writes_the_record_and_the_timeline_as_two_files(self):
         from contextlib import redirect_stdout
         from io import StringIO
 
@@ -143,45 +142,54 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(json.loads((out / "run.json").read_text())["run_id"], run.name)
             self.assertIn("300", (out / "run.csv").read_text())
 
-            old = Path(tmp) / "old" / "runs" / "20261116_100000_oil"
-            old.mkdir(parents=True)
-            (old / "run.json").write_text(json.dumps({"run_id": old.name}))
-            with redirect_stdout(StringIO()) as printed:
-                self.assertEqual(main(["migrate", str(Path(tmp) / "old")]), 0)
-            self.assertIn("1 run(s) given a run.db", printed.getvalue())
-            self.assertEqual(rundb.read_record(old / "run.db")["run_id"], old.name)
-
-
-class MigrateRunsTests(unittest.TestCase):
-    def test_a_run_folder_of_before_gets_its_run_db_and_keeps_its_files(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            folder = Path(tmp) / "data" / "runs" / "20261117_193050_dropseq_3n"
-            folder.mkdir(parents=True)
-            record = {"run_id": folder.name, "state": "completed",
-                      "artifacts": {"fluidics_csv": "run.csv", "videos": [{"video_path": "a.avi", "fluidics_csv": "run.csv"}]},
-                      "recording": {"video_path": "", "fluidics_csv": "run.csv"}}
-            (folder / "run.json").write_text(json.dumps(record))
-            (folder / "run.csv").write_text("timestamp,elapsed_s,pressure_0_mbar,flow_0_ul_min,recording_id,state\n"
-                                            "10:00:00.000,0.000,1300.00,300.000,,\n"
-                                            "10:00:00.050,0.050,,,a,STABLE\n")
-            (Path(tmp) / "data" / "runs" / "broken").mkdir()
-            (Path(tmp) / "data" / "runs" / "broken" / "run.json").write_text("not json")
-
-            report = migrate_runs(Path(tmp) / "data")
-            again = migrate_runs(Path(tmp) / "data")
-
-            self.assertEqual([path.name for path in report.made], [folder.name])
-            self.assertIn("broken", report.failed)
-            self.assertEqual(again.skipped, [folder.name])
-            kept = rundb.read_record(folder / "run.db")
-            self.assertEqual(kept["artifacts"]["timeline"], "run.db")
-            self.assertNotIn("fluidics_csv", json.dumps(kept))
-            rows = rundb.timeline_rows(folder / "run.db")
-            self.assertEqual([(r["pressure_0_mbar"], r["state"]) for r in rows], [("1300", ""), ("", "STABLE")])
-            self.assertEqual(sorted(p.name for p in folder.iterdir()), ["run.csv", "run.db", "run.json"])   # kept
-            self.assertFalse((Path(tmp) / "data" / "runs" / "broken" / "run.db").exists())
-            self.assertIn("1 run(s) given a run.db", report.lines()[0])
-
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ControlDatabaseTests(unittest.TestCase):
+    """Every run of a data folder in its control.db; each finished one sealed into its folder as run.db."""
+
+    def test_two_runs_keep_their_records_and_timelines_apart_and_seal_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "control.db"
+            first, second = rundb.locator(database, "20261126_140000_a"), rundb.locator(database, "20261126_141500_b")
+            rundb.write_record(first, {"run_id": "a"})
+            rundb.write_record(second, {"run_id": "b"})
+            for target, flow in ((first, 300.0), (second, 250.0)):
+                writer = rundb.TimelineWriter(target, 1, 1)
+                for k in range(5):
+                    writer.add_fluidics({"timestamp": "t", "elapsed_s": k * 0.1, "flow_0_ul_min": flow})
+                writer.close()
+            wider = rundb.TimelineWriter(second, 3, 3)                   # a rig with more channels later on
+            wider.add_fluidics({"timestamp": "t", "elapsed_s": 1.0, "flow_2_ul_min": 40.0})
+            wider.close()
+
+            self.assertEqual(rundb.run_ids(database), ["20261126_140000_a", "20261126_141500_b"])
+            self.assertEqual({row["flow_0_ul_min"] for row in rundb.timeline_rows(first)}, {"300"})
+            self.assertEqual(len(rundb.timeline_rows(second)), 6)
+            self.assertEqual(rundb.timeline_rows(second)[-1]["flow_2_ul_min"], "40")
+            self.assertFalse(rundb.has_timeline(rundb.locator(database, "20261126_150000_c")))
+
+            (Path(tmp) / "a").mkdir()
+            sealed = rundb.seal(first, Path(tmp) / "a" / "run.db")
+            self.assertEqual(rundb.read_record(sealed), {"run_id": "a"})
+            self.assertEqual(rundb.timeline_rows(sealed), rundb.timeline_rows(first))
+            self.assertEqual(sorted(p.name for p in sealed.parent.iterdir()), ["run.db"])     # whole, nothing beside
+
+    def test_a_run_seals_itself_into_its_folder_once_it_has_finished(self):
+        from admet.core.runs import RunStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            run = store.begin({"plan_id": "p", "tag": "oil 3", "operation_id": "run_json_protocol"})
+            self.assertTrue(run.ref.startswith(str(Path(tmp) / "control.db")))
+            run.update(state="executing")
+            self.assertFalse(run.sealed_path.exists())                   # still going: nothing sealed
+            run.update(state="completed")
+            self.assertEqual(rundb.read_record(run.sealed_path)["state"], "completed")
+            run.add_result({"calculation_id": "recording_summary", "result": {}})
+            self.assertEqual(len(rundb.read_record(run.sealed_path)["calculations"]), 1)    # sealed again
+            self.assertEqual([entry["run_id"] for entry in store.list()], [run.run_id])
+            self.assertTrue(store.exists(run.run_id))
+            self.assertFalse(store.exists("20261126_150000_nothing"))

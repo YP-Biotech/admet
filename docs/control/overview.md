@@ -65,8 +65,10 @@ which one is in use. There is nothing to create or open before a session.
                      the profiles and liquids you added, the camera's µm per pixel,
                      the preflight set-up, the export folder
   data/protocols/    the saved protocol definitions
-  data/runs/         one folder per run, named by date, time and the run's name; the
-                     folder analyze is pointed at
+  data/control.db    every run: its record and its timeline, in one database
+  data/runs/         one folder per run, named by date, time and the run's name: its
+                     videos and, once it finished, its run.db; the folder analyze is
+                     pointed at and the folders that go to the server
   analyze/           what analyze makes
 ```
 

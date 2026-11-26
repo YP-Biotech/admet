@@ -281,7 +281,7 @@ class Admet:
     def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
         """A video finished encoding after its recording stopped, or could not: its run's record says so."""
         path = Path(video_path)
-        if not (path.parent / RECORD).is_file():
+        if not self.runs.exists(path.parent.name):
             return
         try:
             Run(path.parent).video_finished(path.name, encoded, reason)
@@ -1040,7 +1040,7 @@ class Admet:
             run = self.runs.begin_recording(label)
             recording_id = f"{run.name}_{time.strftime('%Y%m%d_%H%M%S')}"
             run.update(recording_id=recording_id)
-        targets = {"video": run.path / f"{recording_id}.avi", "timeline": run.db_path}
+        targets = {"video": run.path / f"{recording_id}.avi", "timeline": run.ref}
         missing = set(spec.outputs) - set(targets)
         if missing:
             raise LookupError(
@@ -1053,14 +1053,19 @@ class Admet:
         """What the recording left behind goes into its run's record, named within the folder."""
         if not recording:
             return
-        folder = Path(str(recording.get("timeline") or recording.get("video_path") or "")).parent
-        if not (folder / RECORD).is_file():
+        from admet.core.rundb import locate
+
+        _database, run_id = locate(str(recording.get("timeline") or ""))
+        if run_id is None:
+            run_id = Path(str(recording.get("video_path") or "")).parent.name
+        if not self.runs.exists(run_id):
             return
-        run = Run(folder)
+        run = self.runs.open(run_id)
         kept = {**recording, "context": self.run_context()}
-        for key in ("video_path", "timeline"):
-            if kept.get(key):
-                kept[key] = Path(str(kept[key])).name
+        if kept.get("video_path"):
+            kept["video_path"] = Path(str(kept["video_path"])).name
+        if kept.get("timeline"):
+            kept["timeline"] = RECORD                    # the run's timeline: in its run.db once sealed
         fields: dict[str, Any] = {"recording": kept}
         if run.read().get("kind") == "recording":
             fields.update(state="completed", stopped_at=_now_iso())

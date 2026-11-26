@@ -2645,9 +2645,9 @@ def _short_time(run_time: str) -> str:
 @lru_cache(maxsize=256)
 def _run_channels_of(run_dir: str, _mtime: float) -> tuple[dict[str, Any], ...]:
     from admet.core.registry import condition_channels
-    from admet.core.runs import Run
+    from admet.core.runs import sealed_record
 
-    return tuple(condition_channels(Run(run_dir).read()))
+    return tuple(condition_channels(sealed_record(run_dir)))
 
 
 def _run_channels(run_dir: str) -> list[dict[str, Any]]:
@@ -2663,18 +2663,18 @@ def _run_condition(run_dir: str) -> str:
     """A run's generation condition from its record: the one it was planned with, else the protocol with
     its setpoints; for a file listed before conditions were derived."""
     from admet.core.registry import protocol_condition
-    from admet.core.runs import Run
+    from admet.core.runs import sealed_record
 
-    record = Run(run_dir).read()
+    record = sealed_record(run_dir)
     return str(record.get("condition") or "") or protocol_condition(record)
 
 
 def _run_origin(run_dir: str, video_name: str) -> dict[str, str]:
     """A file's protocol, time and step from its run folder, for a file listed before these were fields."""
     from admet.core.registry import replicate_of, run_time
-    from admet.core.runs import Run
+    from admet.core.runs import sealed_record
 
-    record = Run(run_dir).read()
+    record = sealed_record(run_dir)
     protocol = str(record.get("tag") or (record.get("normalized_settings") or {}).get("protocol", {}).get("name")
                    or record.get("name") or Path(run_dir).name[16:] or Path(run_dir).name)
     videos = [v for v in record.get("artifacts", {}).get("videos", []) if isinstance(v, dict) and v.get("video_path")]
