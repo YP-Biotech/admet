@@ -94,7 +94,7 @@ class ExperimentPanel(QWidget):
 
     def refresh(self) -> None:
         """The list of experiments and the table of the one shown."""
-        entries = self.store.list()
+        entries = [entry for entry in self.store.list() if not entry["custom"]]     # custom runs have their page
         self.chooser.blockSignals(True)
         self.chooser.clear()
         for entry in entries:

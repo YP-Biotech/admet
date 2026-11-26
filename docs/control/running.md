@@ -1,25 +1,25 @@
 # Running protocols
 
-Every experiment is a [JSON protocol](../protocols/format). In `admet control` you
-add one with **+ Protocol step**, pick a template, set its parameters, review the
-plan and execute it. The **×** beside an added step takes it out again, with its
-plan; the runs it executed stay. Steps are not kept between sessions.
+There are two ways to run something in `admet control`:
+
+- **An experiment** (**6. Experiment**): a table of runs, each row its setpoints,
+  stops and replicates; **Run next** runs them one after another in **7.
+  Experiment run**. See [Experiments](#experiments).
+- **A custom protocol** (**8. Custom protocol**): any [JSON protocol](../protocols/format),
+  for what a row cannot say, such as one channel under pressure and the others
+  under flow, or a calibration.
 
 ## Plan, review, execute
 
 1. **Select** a protocol from the selector. Its parameters appear in the
-   *Parameter / Value* table; the JSON can be edited too. The table's first two
-   rows are the protocol's [run block](../protocols/format#run): **Run**, what
-   this run is called (the protocol's name when empty), and **Condition**, the
-   generation condition it belongs to. Left empty, the condition is the protocol
-   with its oil, cells and beads setpoints, `collection o300 c40 b40`, which is
-   what analyze groups by; give one only to call it something else. The name
-   tags the run: the step takes it at Plan, and its record, the record of each
-   recording and the lists in Review and Calculations carry it. The condition is
-   written into the run's record and each recording's, Review lists it, and
-   `admet analyze` puts the run's videos into it when it scans them, named
-   `<condition>_rep1`, `<condition>_rep2`, … (see
-   [Generation conditions](../analyze/overview#generation-conditions)).
+   *Parameter / Value* table; the JSON can be edited too. On the Custom protocol
+   step the table's first row is **Condition**, the generation condition the run
+   belongs to; left empty it is the protocol with its oil, cells and beads
+   setpoints, `collection o300 c40 b40`. Each custom run takes the next id of the
+   day's custom runs (an experiment of its own, `Custom 2026-11-26`, that the
+   Experiment page does not list), so what it collects is labelled like any
+   experiment's: `M4T-02-r1`. Once executed, it is a row there with its
+   protocol, condition, state and run folder.
 2. **Plan** resolves the parameters and freezes the
    steps. Nothing moves and nothing is recorded. The plan table shows, per step:
    **STEP · UNIT ID · TYPE · TARGET · TRIGGER & ETA · END · CONFIRM**.

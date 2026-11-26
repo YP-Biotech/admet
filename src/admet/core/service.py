@@ -454,12 +454,14 @@ class Admet:
         settings = _fill_defaults(op, dict(settings or {}))
         return op.run(self, settings)
 
-    def plan_protocol(self, operation_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    def plan_protocol(self, operation_id: str, settings: dict[str, Any] | None = None, *,
+                      run: dict[str, Any] | None = None) -> dict[str, Any]:
         """Validate and freeze a protocol proposal without performing an engine action.
 
-        The protocol's run block names the plan: the tag is the run's name as the operator
-        gave it, which the run's record, its recordings and the lists of runs carry; the condition
-        is how the droplets were made, the group analyze puts its videos in."""
+        RUN names the plan, beside its protocol: the tag is the run's name, which the run's record,
+        its recordings and the lists of runs carry; the condition is how the droplets were made, the
+        group analyze puts its videos in; a run of an experiment has its id and the experiment's name."""
+        from admet.core.experiments import run_identity
         from admet.engines.acquisition.pipeline import expand_protocol_steps
         from admet.workflows.operations import REQUIREMENTS, build_protocol_steps
 
@@ -476,8 +478,7 @@ class Admet:
         }
         channels = self._cached_channel_mapping()
         steps = expand_protocol_steps(build_protocol_steps(op, normalized, channels=channels))
-        protocol = normalized.get("protocol") if isinstance(normalized.get("protocol"), dict) else {}
-        run = protocol.get("run") if isinstance(protocol.get("run"), dict) else {}
+        run = run_identity(run)
         described_steps = [_planned_step(index, step) for index, step in enumerate(steps, 1)]
         video_steps = [step["number"] for step in described_steps if step["record_s"]]
         if video_steps:

@@ -18,11 +18,10 @@ from admet.core.engine import Param, ParamKind
 from admet.engines.acquisition.fluidics.config import STABILITY_DURATION_S, STABILITY_TOLERANCE_UL_MIN
 from admet.workflows.control import builtin_document
 from admet.workflows.json_protocol import (
-    RUN_FIELDS, loads, parameter_declarations, parameter_text, resolve, template_documents,
+    loads, parameter_declarations, parameter_text, resolve, template_documents,
 )
 
-RUN_LABELS = {"name": "Run", "condition": "Condition"}
-RUN_HINTS = {"name": "the protocol's name", "condition": "from the protocol"}
+CUSTOM_STAGE = "custom"       # the page a protocol is run on its own, its condition typed beside it
 
 
 def value_text(value, unit=""):
@@ -330,7 +329,8 @@ class ProtocolEditor(QWidget):
         self.plan = None
         self.dirty = True
         self.parameter_editors = {}
-        self.run_editors = {}                  # the run's name and condition, the first rows of the parameter table
+        self.run_editors = {}                  # the custom run's condition, the first row of the parameter table
+        self.condition = ""
         self.parameter_table = None
         self._table_digest = None
         self._edit_generation = 0
@@ -420,18 +420,16 @@ class ProtocolEditor(QWidget):
         except (ValueError, TypeError):
             return
         declarations = parameter_declarations(document)
-        run = document.get("run") if isinstance(document.get("run"), dict) else {}
         from admet.ui.control import NumericParamEdit
 
         def make_editor(param):
-            if param.name.startswith("run."):
-                key = param.name[4:]
-                widget = QLineEdit(str(run.get(key) or ""))
-                widget.setPlaceholderText(document.get("name", "") if key == "name" else RUN_HINTS[key])
+            if param.name == "run.condition":
+                widget = QLineEdit(self.condition)
+                widget.setPlaceholderText("the protocol and its setpoints")
                 widget.setMaxLength(80)
                 widget.textEdited.connect(self.edited)
-                widget.editingFinished.connect(lambda key=key, widget=widget: self.set_run_field(key, widget.text()))
-                self.run_editors[key] = widget
+                widget.editingFinished.connect(lambda widget=widget: setattr(self, "condition", widget.text().strip()))
+                self.run_editors["condition"] = widget
                 widget.setEnabled(not self._executing)
                 return widget
             value = document["parameter_values"][param.name]
@@ -463,34 +461,13 @@ class ProtocolEditor(QWidget):
             return widget
 
         kinds = {"number": ParamKind.FLOAT, "text": ParamKind.TEXT, "boolean": ParamKind.BOOLEAN, "choice": ParamKind.CHOICE}
-        # The name and the condition are typed; a run's id and experiment come from its experiment.
-        params = [Param("run." + key, RUN_LABELS[key], ParamKind.TEXT, default="") for key in RUN_FIELDS
-                  if key in RUN_LABELS]
+        # A custom run's condition is typed; its id comes from the day's custom runs.
+        params = [Param("run.condition", "Condition", ParamKind.TEXT, default="")] if self.stage.id == CUSTOM_STAGE else []
         params += [Param(name, declaration["label"], kinds[declaration["type"]], default=declaration["default"],
                          minimum=declaration.get("min"), maximum=declaration.get("max"))
                    for name, declaration in declarations.items()]
         self.parameter_table = self.window._param_table(params, editor_factory=make_editor)
         self.parameter_box.addWidget(self.parameter_table)
-
-    def set_run_field(self, key, value):
-        """The run's name or condition, into the document's run block; an empty value takes the field out."""
-        document = json.loads(self.editor.toPlainText())
-        run = dict(document.get("run") or {}) if isinstance(document.get("run"), dict) else {}
-        value = value.strip()
-        if (run.get(key) or "") == value:
-            return
-        if value:
-            run[key] = value
-        else:
-            run.pop(key, None)
-        if run:
-            document["run"] = run
-        else:
-            document.pop("run", None)
-        self.editor.blockSignals(True)
-        self.editor.setPlainText(json.dumps(document, indent=2, ensure_ascii=False))
-        self.editor.blockSignals(False)
-        self.edited()
 
     def set_parameter(self, name, value):
         # Keep other pending cells intact; validation of all resolved steps happens on Build/Save.
@@ -525,8 +502,8 @@ class ProtocolEditor(QWidget):
             if isinstance(widget, QLineEdit) and not isinstance(widget, NumericParamEdit):
                 if json.loads(self.editor.toPlainText()).get("parameter_values", {}).get(name) != widget.text():
                     self.set_parameter(name, widget.text())
-        for key, widget in self.run_editors.items():
-            self.set_run_field(key, widget.text())                        # a value typed but not yet left
+        if "condition" in self.run_editors:
+            self.condition = self.run_editors["condition"].text().strip()   # a value typed but not yet left
         return loads(self.editor.toPlainText())
 
     def populate_templates(self):
@@ -558,16 +535,18 @@ class ProtocolEditor(QWidget):
         except Exception as exc:
             self.error(exc)
             return
-        name = str((document.get("run") or {}).get("name") or "") if not self.builtin else ""
-        if name:
-            self.window._rename_protocol_stage(self.stage.id, name)     # the step is the run from now on
+        try:
+            run = self.window._run_identity(self, document)
+        except (LookupError, ValueError) as exc:
+            self.error(exc)
+            return
         generation = self._edit_generation
 
         def received(plan):
             if generation == self._edit_generation:
                 self.add_plan(plan)
 
-        self.submit(lambda: self.backend.preview(self.stage.id, document), received)
+        self.submit(lambda: self.backend.preview(self.stage.id, document, run), received)
 
     def add_plan(self, plan):
         self.plan = plan

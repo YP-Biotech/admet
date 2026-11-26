@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -178,6 +179,48 @@ class WindowTests(Case):
         self.assertEqual([s.id for s in window.workflow.stages].count("experiment_run"), 1)
         stored = self.api.service.experiments.load(code)
         self.assertEqual([run.state for run in stored.runs], ["done", "done"])
+
+    def test_a_custom_protocol_runs_with_the_next_id_of_the_days_custom_runs(self):
+        window = self.window
+        self.gates = 0
+        self.api.call("connect_fluidics")
+        self.api.call("apply_corrections")
+        index = next(i for i, stage in enumerate(window.workflow.stages) if stage.id == "custom")
+        window._select_stage(index)
+        pump(self.app)
+        editor = window._protocol_editor(window.workflow.stages[index])
+        editor.set_document(CUSTOM)
+        pump(self.app, 0.05)
+        editor.run_editors["condition"].setText("oil only")
+        editor.build_plan()
+        self.wait(lambda: editor.plan is not None)
+        day = self.api.service.experiments.custom(date.today().isoformat())
+        self.assertEqual((editor.plan["run_code"], editor.plan["condition"], editor.plan["experiment"]),
+                         (f"{day.code}-01", "oil only", day.name))
+        editor.execute()
+        self.wait(lambda: editor.plan["state"] == "completed")
+        self.wait(lambda: self.api.service.experiments.load(day.code).runs
+                  and self.api.service.experiments.load(day.code).runs[0].state == "done")
+        row = self.api.service.experiments.load(day.code).runs[0]
+        self.assertEqual((row.protocol, row.condition, row.run_folder), ("custom_test", "oil only", editor.plan["run_id"]))
+
+        previous = editor.plan["plan_id"]
+        editor.build_plan()
+        self.wait(lambda: editor.plan["plan_id"] != previous)
+        self.assertEqual(editor.plan["run_code"], f"{day.code}-02")              # the next one
+        self.assertNotIn(day.code, [window._experiment.chooser.itemData(i) for i in range(window._experiment.chooser.count())]
+                         if window._experiment is not None else [])
+
+        errors = []
+        editor.set_document({**CUSTOM, "run": {"name": "oil 3"}})                 # names are not the protocol's
+        with patch.object(editor, "error", side_effect=lambda exc: errors.append(str(exc))):
+            editor.build_plan()
+            self.wait(lambda: errors)
+        self.assertIn("unknown", errors[0])
+
+
+CUSTOM = {"name": "custom_test", "steps": [{"sensor_setpoints": {"0": 10}, "trigger_type": "time",
+                                            "trigger_params": {"duration_s": 0.2}, "on_complete": "zero"}]}
 
 
 if __name__ == "__main__":

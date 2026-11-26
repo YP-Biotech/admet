@@ -6,10 +6,9 @@ import re
 import signal
 import sys
 import time
-import uuid
 from collections import deque
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from queue import Empty
 from typing import Any, Callable
@@ -30,7 +29,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QToolButton,
     QProgressBar,
     QPushButton,
     QComboBox,
@@ -457,6 +455,8 @@ class ControlWindow(QMainWindow):
         self._export = None
         self._experiment = None
         self._experiment_active: dict[str, Any] | None = None     # the experiment's run going now
+        self._experiment_identity: dict[str, str] = {}              # what names it when it is planned
+        self._custom_seen: set[tuple[str, str]] = set()            # custom plans' states already kept
 
         self.setWindowTitle("ADMET Qt" + (" — TEST SIMULATION" if api.simulated else ""))
         self.resize(1440, 920)
@@ -607,10 +607,6 @@ class ControlWindow(QMainWindow):
         layout.addWidget(title)
 
         for index, stage in enumerate(self.workflow.stages):
-            if stage.id == "calculations":
-                add = ui.button("+ Protocol step")
-                add.clicked.connect(lambda: self._add_protocol_stage())
-                layout.addWidget(add)
             section = QFrame()
             section.setObjectName("TocSection")
             section_layout = QVBoxLayout(section)
@@ -629,21 +625,10 @@ class ControlWindow(QMainWindow):
             label.setObjectName("TocStage")
             row_layout.addWidget(dot)
             row_layout.addWidget(label, 1)
-            remove = None
-            if stage.id.startswith("experiment_"):
-                remove = QToolButton()
-                remove.setObjectName("TocRemove")
-                remove.setText("×")
-                remove.setAutoRaise(True)
-                remove.setFixedSize(18, 18)
-                remove.setToolTip("Remove this step")
-                remove.setCursor(Qt.CursorShape.PointingHandCursor)
-                remove.clicked.connect(lambda _checked=False, stage_id=stage.id: self._remove_protocol_stage(stage_id))
-                row_layout.addWidget(remove)
             section_layout.addWidget(row)
 
             layout.addWidget(section)
-            self.toc_rows.append({"dot": dot, "label": label, "section": section, "remove": remove})
+            self.toc_rows.append({"dot": dot, "label": label, "section": section})
 
 
         layout.addStretch()
@@ -667,90 +652,6 @@ class ControlWindow(QMainWindow):
         old.parentWidget().layout().replaceWidget(old, self.workflow_toc_panel)
         old.deleteLater()
         self._sync_toc()
-
-    def _add_protocol_stage(self, label=None):
-        from admet.workflows.control import protocol_stage
-
-        if label is None:
-            label, accepted = QInputDialog.getText(self, "Add protocol step", "Name")
-            if not accepted or not label.strip():
-                return
-        stage = protocol_stage("experiment_" + uuid.uuid4().hex[:8], label.strip())
-        stages = list(self.workflow.stages)
-        index = next(i for i, item in enumerate(stages) if item.id == "calculations")
-        stages.insert(index, stage)
-        self.workflow.stages = tuple(stages)
-        current = self.workflow_state.index
-        self.workflow_state = replace(self.workflow_state, index=current + 1 if current >= index else current,
-                                      statuses={**self.workflow_state.statuses, stage.id: StageStatus.PENDING})
-        self._rebuild_toc()
-        self._select_stage(index)
-        return stage
-
-    def _remove_protocol_stage(self, stage_id: str) -> bool:
-        """Take an experiment step out of the workflow; its plan goes with it, the runs it executed stay."""
-        stages = list(self.workflow.stages)
-        index = next((i for i, stage in enumerate(stages) if stage.id == stage_id), None)
-        if index is None or not stage_id.startswith("experiment_"):
-            return False
-        if stage_id == self._pipeline_stage_id and self._pipeline_active():
-            self._notify("Finish or abort this step's protocol before removing it.", "warning")
-            return False
-        label = re.sub(r"^\d+\.\s*", "", stages[index].label)
-        editor = self.protocol_editors.get(stage_id)
-        if editor is not None and editor.plan is not None and not self._confirm_step_removal(label):
-            return False
-        self.api.discard_preview(stage_id)
-        del stages[index]
-        self.workflow.stages = tuple(stages)
-        if self._pipeline_stage_id == stage_id:
-            self._clear_finished_pipeline_state(stages[index - 1])
-        if editor is not None:
-            del self.protocol_editors[stage_id]
-            editor.deleteLater()
-        page = self.stage_pages.pop(stage_id, None)
-        if page is not None:
-            # The plots, the preview and the monitor table are one set shared by every stage; the page
-            # that held them must not take them along.
-            for widget in (self.plot_panel, self.preview, self.monitor_table):
-                if widget is not None and page.isAncestorOf(widget):
-                    widget.setParent(None)
-            if self.page_scroll is not None and self.page_scroll.widget() is page:
-                self.page_scroll.takeWidget()
-            if self.current_stage_page is page:
-                self.current_stage_page = None
-            page.deleteLater()
-        current = self.workflow_state.index
-        statuses = {key: value for key, value in self.workflow_state.statuses.items() if key != stage_id}
-        self.workflow_state = replace(self.workflow_state, index=current - 1 if current >= index else current,
-                                      statuses=statuses)
-        self._rebuild_toc()
-        self._select_stage(self.workflow_state.index)
-        self._append_log(f"Removed step {label}")
-        return True
-
-    def _rename_protocol_stage(self, stage_id: str, name: str) -> None:
-        """The step takes the run's name the operator typed at Plan: in the workflow, the list and its editor."""
-        name = name.strip()
-        stages = list(self.workflow.stages)
-        index = next((i for i, stage in enumerate(stages) if stage.id == stage_id), None)
-        if index is None or not name or stages[index].label == name:
-            return
-        stages[index] = replace(stages[index], label=name)
-        self.workflow.stages = tuple(stages)
-        editor = self.protocol_editors.get(stage_id)
-        if editor is not None:
-            editor.stage = stages[index]
-        if index < len(self.toc_rows):
-            self.toc_rows[index]["label"].setText(f"{index + 1}. {name}")
-        if self.workflow_state.index == index:
-            self._sync_action_box(stages[index])
-
-    def _confirm_step_removal(self, label: str) -> bool:
-        answer = QMessageBox.question(
-            self, "Remove step", f"Remove {label}? Its plan is discarded; the runs it executed stay in the data folder.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        return answer == QMessageBox.StandardButton.Yes
 
     def _flush_measurements(self):
         for editor in self.protocol_editors.values():
@@ -2046,35 +1947,17 @@ class ControlWindow(QMainWindow):
             )
 
     # -- an experiment's runs, one after another ---------------------------------------
-    def _experiment_run_stage(self, label: str):
-        """The step an experiment's runs are run in, right after the Experiment page; made the first time."""
-        from admet.workflows.control import protocol_stage
-
-        stages = list(self.workflow.stages)
-        index = next((i for i, item in enumerate(stages) if item.id == EXPERIMENT_RUN_STAGE), None)
-        if index is None:
-            index = next(i for i, item in enumerate(stages) if item.id == "experiment") + 1
-            stages.insert(index, protocol_stage(EXPERIMENT_RUN_STAGE, label))
-            current = self.workflow_state.index
-            self.workflow_state = replace(self.workflow_state, index=current + 1 if current >= index else current,
-                                          statuses={**self.workflow_state.statuses,
-                                                    EXPERIMENT_RUN_STAGE: StageStatus.PENDING})
-        else:
-            stages[index] = replace(stages[index], label=label)
-        self.workflow.stages = tuple(stages)
-        self._rebuild_toc()
-        return stages[index], index
-
     def _run_experiment(self, experiment, run) -> None:
         """An experiment's run: its protocol into the run step, planned, then executed as any protocol is."""
         if self._experiment_active is not None or self._pipeline_active():
             self._notify("A protocol is running; the next run starts after it.", "warning")
             return
         run_id = run.run_id(experiment.code)
-        document = experiment.document(run)
-        stage, index = self._experiment_run_stage(f"Run {run_id}")
+        index = next(i for i, stage in enumerate(self.workflow.stages) if stage.id == EXPERIMENT_RUN_STAGE)
+        stage = self.workflow.stages[index]
         editor = self._protocol_editor(stage)
-        editor.set_document(document)
+        editor.set_document(experiment.document(run))
+        self._experiment_identity = experiment.identity(run)
         self._select_stage(index)
         previous = (editor.plan or {}).get("plan_id")
         self._experiment_active = {"code": experiment.code, "run_id": run_id, "stage": stage.id,
@@ -2141,11 +2024,55 @@ class ControlWindow(QMainWindow):
         next_id = following.run_id(panel.experiment.code)
         self._confirm(f"Run {finished} is {word}. Proceed to run {next_id}?", panel.run_next, confirm_label="Proceed")
 
+    def _run_identity(self, editor, document) -> dict[str, str]:
+        """What names the run a step is about to plan: an experiment's row as Run next gave it; a custom
+        run, the next id of the day's custom runs with the condition typed beside it; nothing else."""
+        from admet.ui.protocols import CUSTOM_STAGE
+
+        if editor.stage.id == EXPERIMENT_RUN_STAGE:
+            return dict(self._experiment_identity)
+        if editor.stage.id != CUSTOM_STAGE:
+            return {}
+        experiment = self.api.service.experiments.custom(date.today().isoformat())
+        run_id = f"{experiment.code}-{max((run.number for run in experiment.runs), default=0) + 1:02d}"
+        return {"name": run_id, "id": run_id, "condition": editor.condition, "experiment": experiment.name}
+
+    def _custom_tick(self) -> None:
+        """A custom run, once executed, is a row of the day's custom runs: its protocol, its condition,
+        where it got to and its folder."""
+        from admet.core.experiments import Run
+        from admet.ui.protocols import CUSTOM_STAGE
+
+        editor = self.protocol_editors.get(CUSTOM_STAGE)
+        plan = editor.plan if editor is not None else None
+        if not plan or not plan.get("run_code") or plan.get("state") == "planned":
+            return
+        state = {"completed": "done", "failed": "failed", "cancelled": "failed"}.get(plan["state"], "running")
+        key = (plan["plan_id"], state)
+        if key in self._custom_seen:
+            return
+        self._custom_seen.add(key)
+        experiments = self.api.service.experiments
+        code, number = plan["run_code"].rsplit("-", 1)
+        try:
+            experiment = experiments.load(code)
+        except LookupError:
+            return
+        try:
+            run = experiment.run(plan["run_code"])
+        except LookupError:
+            run = Run(int(number), condition=plan.get("condition", ""),
+                      protocol=str(plan["normalized_settings"]["protocol"].get("name") or ""))
+            experiment.runs.append(run)
+        experiment.mark(plan["run_code"], state, str(plan.get("run_id") or ""))
+        experiments.save(experiment)
+
     def _status_received(self, received):
         result, plans = received
         for editor in self.protocol_editors.values():
             editor.update_plan(plans)
         self._experiment_tick()
+        self._custom_tick()
         self.last_result = result
         was_running = self.last_metadata.get("pipeline_state")
         self.last_metadata = dict(result.metadata)

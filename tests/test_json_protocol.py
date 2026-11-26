@@ -175,20 +175,11 @@ class JsonProtocolTests(unittest.TestCase):
                 with self.assertRaises((ValueError, RuntimeError)):
                     normalize(document)
 
-    def test_the_run_block_names_the_run_and_its_set(self):
+    def test_what_names_a_run_is_not_the_protocols(self):
         document = deepcopy(DOCUMENT)
-        document["run"] = {"name": " Oil 3 ", "condition": ""}
-        self.assertEqual(normalize(document)["run"], {"name": "Oil 3"})                # trimmed, empty dropped
-        document["run"] = {"name": "", "condition": " "}
-        self.assertNotIn("run", normalize(document))                                    # nothing kept: no block
-        document["parameters"] = {"flow": ["Flow", 10]}
-        document["run"] = {"condition": "oil"}
-        self.assertEqual(normalize(document)["run"], {"condition": "oil"})                   # through parameters too
-        self.assertEqual(resolve(normalize(document))["run"], {"condition": "oil"})
-        for bad in ({"name": 3}, {"label": "x"}, "oil", {"condition": "x" * 81}):
-            document["run"] = bad
-            with self.assertRaisesRegex(ValueError, "run"):
-                normalize(document)
+        document["run"] = {"name": "Oil 3"}
+        with self.assertRaisesRegex(ValueError, "unknown protocol fields"):
+            normalize(document)
 
     def test_pressure_limits_are_not_a_protocol_field(self):
         document = deepcopy(DOCUMENT)

@@ -72,6 +72,31 @@ DEFAULTS: dict[str, Any] = {"mode": "flow", "oil": 300.0, "cells": 40.0, "beads"
 FIELDS = tuple(DEFAULTS)
 
 
+# What names a run, given beside its protocol when it is planned: its name, its generation condition,
+# and, for a run of an experiment, its id (K7Q-03, which its samples carry as K7Q-03-r2) and the
+# experiment's name.
+RUN_FIELDS = ("name", "condition", "id", "experiment")
+
+
+def run_identity(value: dict[str, Any] | None) -> dict[str, str]:
+    """A run's names as kept: text, trimmed, empty ones dropped; an id as an experiment writes it."""
+    value = value or {}
+    if not isinstance(value, dict) or set(value) - set(RUN_FIELDS):
+        raise ValueError(f"a run is named by any of {', '.join(RUN_FIELDS)}")
+    if value.get("id") and (not isinstance(value["id"], str) or not RUN_ID.fullmatch(value["id"].strip())):
+        raise ValueError("a run's id is an experiment's run id, like K7Q-03")
+    result = {}
+    for key in RUN_FIELDS:
+        text = value.get(key)
+        if text is None:
+            continue
+        if not isinstance(text, str) or len(text) > 80:
+            raise ValueError(f"a run's {key} is text of at most 80 characters")
+        if text.strip():
+            result[key] = text.strip()
+    return result
+
+
 def default_condition(run: Run) -> str:
     """A row's condition when none is given: its setpoints, 300/40/40, in mbar when pressure-driven."""
     numbers = "/".join(f"{value:g}" for value in (run.oil, run.cells, run.beads))
@@ -95,6 +120,7 @@ class Run:
     note: str = ""
     state: str = "planned"
     run_folder: str = ""             # the run's folder name once it ran
+    protocol: str = ""               # a custom run's protocol; its values are not what it ran
 
     def run_id(self, code: str) -> str:
         return f"{code}-{self.number:02d}"
@@ -189,6 +215,7 @@ class Experiment:
     name: str = ""
     runs: list[Run] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    custom: bool = False             # a day's custom runs, each a protocol run on its own
 
     # -- the table ----------------------------------------------------------------------------
     def add(self, *, condition: str = "", note: str = "", **values: Any) -> Run:
@@ -221,10 +248,15 @@ class Experiment:
         return run
 
     # -- what a run is given --------------------------------------------------------------------
+    def identity(self, run: Run) -> dict[str, str]:
+        """What names the row's run when it is planned: its id, its condition, the experiment's name."""
+        run_id = run.run_id(self.code)
+        return run_identity({"name": run_id, "id": run_id, "condition": run.condition_text()[:80],
+                             "experiment": self.name[:80]})
+
     def document(self, run: Run) -> dict[str, Any]:
         """The protocol the row runs: for each replicate, a fresh collection confirmed, then the
-        channels at the row's setpoints until its first stop; the run named by its id, in its
-        condition, marked with its id and the experiment's name."""
+        channels at the row's setpoints until its first stop."""
         run_id = run.run_id(self.code)
         kind, params, timeout = collection_stop(run)
         key = "sensor_setpoints" if run.mode == "flow" else "pressure_setpoints"
@@ -240,16 +272,15 @@ class Experiment:
             if run.video:
                 step.update(record=True, record_max_s=run.video_s)
             steps.append(step)
-        block = {"name": run_id, "id": run_id, "condition": run.condition_text()[:80]}
-        if self.name:
-            block["experiment"] = self.name[:80]
-        return {"name": "experiment_run", "steps": steps, "run": block}
+        return {"name": "experiment_run", "steps": steps}
 
     # -- JSON -------------------------------------------------------------------------------
     def to_json(self) -> dict[str, Any]:
         return {"experiment": self.name, "code": self.code, "created_at": self.created_at,
-                "runs": [{"id": run.run_id(self.code), **run.values(), "condition": run.condition,
-                          "note": run.note, "state": run.state, "run_folder": run.run_folder} for run in self.runs]}
+                **({"custom": True} if self.custom else {}),
+                "runs": [{"id": run.run_id(self.code), **({"protocol": run.protocol} if run.protocol else {}),
+                          **run.values(), "condition": run.condition, "note": run.note, "state": run.state,
+                          "run_folder": run.run_folder} for run in self.runs]}
 
     @classmethod
     def from_json(cls, document: dict[str, Any], *, taken: set[str] | None = None) -> Experiment:
@@ -262,11 +293,11 @@ class Experiment:
         code = str(document.get("code") or "") or new_code(taken)
         if not re.fullmatch(_CODE, code):
             raise ValueError(f"an experiment's code is {CODE_LENGTH} of {ALPHABET}")
-        experiment = cls(code, str(document.get("experiment") or ""))
+        experiment = cls(code, str(document.get("experiment") or ""), custom=bool(document.get("custom")))
         if document.get("created_at"):
             experiment.created_at = str(document["created_at"])
         shared = _row_values(DEFAULTS, document)
-        known = {*FIELDS, "id", "condition", "note", "state", "run_folder"}
+        known = {*FIELDS, "id", "condition", "note", "state", "run_folder", *(("protocol",) if experiment.custom else ())}
         for index, entry in enumerate(document["runs"], 1):
             where = f"run {index}"
             if not isinstance(entry, dict):
@@ -274,7 +305,8 @@ class Experiment:
             unknown = set(entry) - known
             if unknown:
                 raise ValueError(f"{where}: no {', '.join(sorted(unknown))}; a run has {', '.join(sorted(known))}")
-            run = Run(0, condition=str(entry.get("condition") or ""), note=str(entry.get("note") or ""))
+            run = Run(0, condition=str(entry.get("condition") or ""), note=str(entry.get("note") or ""),
+                      protocol=str(entry.get("protocol") or ""))
             try:
                 run.set(**_row_values(shared, entry))
             except ValueError as exc:
@@ -346,6 +378,16 @@ class ExperimentStore:
             raise LookupError(f"no experiment {code}")
         return Experiment.from_json(json.loads(rows[0][1]))
 
+    def custom(self, day: str) -> Experiment:
+        """The experiment that holds the custom runs of DAY (2026-11-26), new if there is none yet."""
+        name = f"Custom {day}"
+        entry = next((entry for entry in self.list() if entry["custom"] and entry["name"] == name), None)
+        if entry is not None:
+            return self.load(entry["code"])
+        experiment = Experiment(new_code(self.codes()), name, custom=True)
+        self.save(experiment)
+        return experiment
+
     def list(self) -> list[dict[str, Any]]:
         """Every experiment, newest first: its code, name, and how many of its runs are done."""
         entries = []
@@ -355,7 +397,7 @@ class ExperimentStore:
             except ValueError:
                 continue
             runs = document.get("runs") or []
-            entries.append({"code": code, "name": document.get("experiment", ""),
+            entries.append({"code": code, "name": document.get("experiment", ""), "custom": bool(document.get("custom")),
                             "created_at": document.get("created_at", ""), "runs": len(runs),
                             "done": sum(1 for run in runs if run.get("state") == "done")})
         return sorted(entries, key=lambda entry: entry["created_at"], reverse=True)

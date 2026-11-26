@@ -24,7 +24,8 @@ The left-hand list (TOC) is the session, top to bottom:
 | **4. Priming** | Fill the lines before an experiment. |
 | **5. Preflight** | Plan flow and phase ratios, the tubing map and liquid consumption. Nothing moves. |
 | **6. Experiment** | Design an experiment as a table of runs, each with an id; **Run next** runs them one after another. See [Experiments](./running#experiments). |
-| **Protocols** | One stage per protocol step you add with **+ Protocol step**; its **×** removes it. See [Running protocols](./running). |
+| **7. Experiment run** | Where **Run next** plans and runs an experiment's row. |
+| **8. Custom protocol** | Run any JSON protocol on its own; it takes the next id of the day's custom runs. See [Running protocols](./running). |
 | **Calculations** | Calculate results from finished runs. See [Calculations](./calculations). |
 | **Review runs** | Plot recorded runs: pressure, flow, droplet rate and CV. See [Review](./review). |
 | **Export data** | Copy finished runs to the server folder; checked, then the videos leave this computer. See [Export](./running#export). |

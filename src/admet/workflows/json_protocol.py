@@ -285,35 +285,6 @@ def normalize(document):
         return resolved
     result = deepcopy(document)
     result["parameter_values"] = parameter_values(document)
-    result.pop("run", None)
-    if "run" in resolved:
-        result["run"] = resolved["run"]
-    return result
-
-
-# The run's name, its generation condition, and, for a run of a designed experiment, its id (K7Q-03,
-# which its samples carry as K7Q-03-r2) and the experiment's name.
-RUN_FIELDS = ("name", "condition", "id", "experiment")
-
-
-def run_fields(value):
-    """The run block as kept: text, trimmed, empty ones dropped; an id as an experiment writes it."""
-    if not isinstance(value, dict) or set(value) - set(RUN_FIELDS):
-        raise ValueError(f"run must be an object with any of {', '.join(RUN_FIELDS)}")
-    if value.get("id"):
-        from admet.core.experiments import RUN_ID
-
-        if not isinstance(value["id"], str) or not RUN_ID.fullmatch(value["id"].strip()):
-            raise ValueError("run id must be an experiment's run id, like K7Q-03")
-    result = {}
-    for key in RUN_FIELDS:
-        if key not in value:
-            continue
-        text = value[key]
-        if not isinstance(text, str) or len(text) > 80:
-            raise ValueError(f"run {key} must be text of at most 80 characters")
-        if text.strip():
-            result[key] = text.strip()
     return result
 
 
@@ -373,7 +344,7 @@ def _normalize_resolved(document):
 
     if not isinstance(document, dict):
         raise ValueError("protocol must be a JSON object")
-    unknown = set(document) - {"name", "steps", "calculations", "measurements", "run"}
+    unknown = set(document) - {"name", "steps", "calculations", "measurements"}
     if unknown:
         raise ValueError(f"unknown protocol fields: {', '.join(sorted(unknown))}")
     name = document.get("name")
@@ -443,10 +414,6 @@ def _normalize_resolved(document):
     if len(expanded) > 1000:
         raise ValueError("expanded protocol exceeds 1000 steps")
     result = {"name": name, "steps": normalized}
-    if "run" in document:
-        run = run_fields(document["run"])
-        if run:
-            result["run"] = run
     if "measurements" in document:
         result["measurements"] = measurement_fields(document["measurements"], len(expanded))
     calculations = normalize_calculations(document, normalized, result.get("measurements", {}))

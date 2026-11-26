@@ -7,7 +7,8 @@ from pathlib import Path
 
 from admet.core.experiments import (ALPHABET, Experiment, ExperimentStore, find_sample_id, new_code,
                                     sample_id)
-from admet.workflows.json_protocol import normalize, resolve, run_fields
+from admet.core.experiments import run_identity
+from admet.workflows.json_protocol import normalize, resolve
 
 DESIGN = {"experiment": "ratio sweep 26 Nov", "replicates": 2,
           "runs": [{"oil": 300, "cells": 40, "beads": 40},
@@ -57,13 +58,14 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual([stop["trigger_type"] for stop in two["steps"][0]["trigger_params"]["stops"]],
                          ["volume", "time"])
         self.assertEqual(two["steps"][0]["timeout_s"], 120)
-        self.assertEqual(two["run"], {"name": f"{code}-02", "id": f"{code}-02", "condition": "boundary",
-                                      "experiment": "ratio sweep 26 Nov"})
+        self.assertEqual(experiment.identity(experiment.runs[1]),
+                         {"name": f"{code}-02", "id": f"{code}-02", "condition": "boundary",
+                          "experiment": "ratio sweep 26 Nov"})
+        self.assertEqual(set(two), {"name", "steps"})                                  # steps only
         self.assertEqual(three["steps"][0]["pressure_setpoints"], {"0": 1300, "1": 200, "2": 200})
         self.assertEqual((three["steps"][0]["record"], three["steps"][0]["record_max_s"]), (True, 100))
         for document in (one, two, three):
             normalize(resolve(document))                                               # the protocol accepts each
-            self.assertEqual(run_fields(document["run"]), document["run"])
 
     def test_a_row_that_cannot_run_is_refused_and_names_the_run(self):
         experiment = Experiment("K7Q")
@@ -113,12 +115,26 @@ class ExperimentTests(unittest.TestCase):
             self.assertEqual(store.codes(), {experiment.code})
 
 
-class RunBlockTests(unittest.TestCase):
-    def test_the_run_block_takes_an_experiments_id_and_name_and_refuses_another_id(self):
-        self.assertEqual(run_fields({"name": "K7Q-03", "id": "K7Q-03", "experiment": "sweep"}),
+class IdentityTests(unittest.TestCase):
+    def test_a_runs_names_take_an_experiments_id_and_name_and_refuse_another_id(self):
+        self.assertEqual(run_identity({"name": " K7Q-03 ", "id": "K7Q-03", "experiment": "sweep", "condition": ""}),
                          {"name": "K7Q-03", "id": "K7Q-03", "experiment": "sweep"})
         with self.assertRaisesRegex(ValueError, "like K7Q-03"):
-            run_fields({"id": "run three"})
+            run_identity({"id": "run three"})
+        with self.assertRaisesRegex(ValueError, "named by"):
+            run_identity({"tag": "x"})
+
+    def test_a_days_custom_runs_are_one_experiment_the_page_does_not_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(tmp)
+            day = store.custom("2026-11-26")
+            self.assertEqual((day.name, day.custom, store.custom("2026-11-26").code), ("Custom 2026-11-26", True, day.code))
+            self.assertNotEqual(store.custom("2026-11-27").code, day.code)
+            day.runs.append(experiment_run := Experiment("ZZZ").add())
+            experiment_run.protocol = "gravimetry"
+            store.save(day)
+            self.assertEqual(store.load(day.code).runs[0].protocol, "gravimetry")
+            self.assertTrue(all(entry["custom"] for entry in store.list()))
 
     def test_a_plan_carries_the_runs_id_and_experiment_into_its_record(self):
         from admet.core.service import Admet
@@ -126,7 +142,9 @@ class RunBlockTests(unittest.TestCase):
         experiment = Experiment.from_json(DESIGN)
         with tempfile.TemporaryDirectory() as tmp:
             admet = Admet(home=tmp)
-            plan = admet.plan_protocol("run_json_protocol", {"protocol": experiment.document(experiment.runs[0])})
+            run = experiment.runs[0]
+            plan = admet.plan_protocol("run_json_protocol", {"protocol": experiment.document(run)},
+                                       run=experiment.identity(run))
             admet.experiments.save(experiment)
             self.assertEqual(admet.experiments.codes(), {experiment.code})
         self.assertEqual((plan["run_code"], plan["experiment"], plan["tag"], plan["expected_duration_s"]),

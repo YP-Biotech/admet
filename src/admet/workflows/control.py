@@ -292,7 +292,8 @@ def create_control_workflow() -> Workflow:
                 actions=(StageAction("Continue", completes=True),),
                 show_settings=False,
             ),
-            protocol_stage("experiment_1", "7. Protocol"),
+            protocol_stage("experiment_run", "7. Experiment run"),
+            protocol_stage("custom", "8. Custom protocol"),
             Stage(
                 "calculations", "Calculations",
                 instructions=("Choose a saved run and a calculation. Results stay with the recording in the data folder.",),
