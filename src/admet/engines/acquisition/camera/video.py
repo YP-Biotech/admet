@@ -8,8 +8,12 @@ frames captured, written and dropped. While the raw file waits, a small
 encoding did not finish, the raw file and its .video.json stay, and
 encode_leftovers() finishes it later.
 
-Frames the disk cannot keep up with are dropped and counted, never a reason to
-stop: a recording with gaps is still the recording.
+Frames are gathered into blocks as they arrive, the camera's thread only keeping each one (no
+copy, nothing that lets go of the interpreter mid-frame); a block, once full, goes to the writer
+thread, which joins it in one copy and puts it on the disk in one write, without holding the
+interpreter while the disk works, so the preview and the live QC slow it little. A disk slower than the camera leaves full blocks waiting
+in memory, up to a limit set from the free memory; frames that find no room are dropped and
+counted, never a reason to stop: a recording with gaps is still the recording.
 """
 
 from __future__ import annotations
@@ -22,13 +26,13 @@ from collections.abc import Callable
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from collections import deque
+from threading import Condition, Event, Lock, Thread
 
 import numpy as np
 
 from .acquisition import as_8bit
-from .constants import QUEUE_GET_TIMEOUT, WRITER_BATCH, WRITER_QUEUE_SIZE
+from .constants import BLOCK_BYTES, BLOCK_SECONDS, MEMORY_LIMIT_MAX, MEMORY_LIMIT_SHARE, QUEUE_GET_TIMEOUT
 from .tags import ffmpeg_metadata_args
 
 log = logging.getLogger(__name__)
@@ -54,6 +58,7 @@ class VideoWorker:
         *,
         encoder: Encoder | None = None,
         record: dict | None = None,
+        memory_limit: int | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.prefix = prefix
@@ -75,12 +80,19 @@ class VideoWorker:
         self.raw_path = self.output_dir / f"{prefix}.raw"
         self.info_path = self.output_dir / f"{prefix}.video.json"
         self.video_path = self.output_dir / f"{prefix}.avi"
-        self.queue: Queue = Queue(maxsize=WRITER_QUEUE_SIZE)
         self.thread: Thread | None = None
         self._stop_event = Event()
         self._file = None
         self.frame_count = 0          # frames handed over by the camera
         self.written = 0              # frames actually in the raw file
+        # Frames wait in blocks: the one being gathered, and the full ones for the disk.
+        self.memory_limit = memory_limit      # bytes waiting frames may take; None: from the free memory
+        self._block: list[np.ndarray] = []
+        self._block_frames = 0                # frames a block holds, set by the first frame's size
+        self._full: deque[list[np.ndarray]] = deque()
+        self._held = 0                        # bytes of every frame kept and not yet on the disk
+        self.peak_held = 0
+        self._ready = Condition()
 
     def start(self) -> bool:
         try:
@@ -92,6 +104,10 @@ class VideoWorker:
             _write_info(self.info_path, self._info("recording"))
             self._stop_event.clear()
             self.frame_count = self.written = 0
+            self._block, self._block_frames, self._held, self.peak_held = [], 0, 0, 0
+            self._full.clear()
+            if self.memory_limit is None:
+                self.memory_limit = default_memory_limit()
             self.thread = Thread(target=self._writer_thread, daemon=True)
             self.thread.start()
             return True
@@ -100,22 +116,35 @@ class VideoWorker:
             return False
 
     def write(self, frame: np.ndarray) -> bool:
+        """Take a frame: kept in the block being gathered, or dropped and counted when the memory for
+        waiting frames is full. True while the recording runs, kept or not: it was captured."""
         if self._stop_event.is_set():
             return False
-        if self.queue.full():
-            try:
-                self.queue.get_nowait()   # the disk is behind: the oldest waiting frame goes
-            except Empty:
-                return False
-        try:
-            self.queue.put_nowait(frame)
-            self.frame_count += 1
-            self._last_frame_at = time.monotonic()
-            if self._first_frame_at is None:
-                self._first_frame_at = self._last_frame_at
-            return True
-        except Full:
-            return False
+        self.frame_count += 1
+        self._last_frame_at = time.monotonic()
+        if self._first_frame_at is None:
+            self._first_frame_at = self._last_frame_at
+        frame = as_8bit(frame)
+        if self._held + frame.nbytes > (self.memory_limit or 0) and self._held:
+            return True                                       # no room: dropped, frame_count - written says so
+        if not self._block_frames:
+            self._block_frames = block_frames(frame.shape, self.fps)
+        self._block.append(frame)
+        self._held += frame.nbytes
+        if self._held > self.peak_held:
+            self.peak_held = self._held
+        if len(self._block) >= self._block_frames:
+            self._hand_over()
+        return True
+
+    def _hand_over(self) -> None:
+        """The block being gathered goes to the writer thread, as full as it is."""
+        block, self._block = self._block, []
+        if not block:
+            return
+        with self._ready:
+            self._full.append(block)
+            self._ready.notify()
 
     def stop(self) -> str:
         """Stop taking frames and return at once; the writer thread drains what is queued, closes the
@@ -123,6 +152,7 @@ class VideoWorker:
 
         The caller is the protocol's thread at a step's end: it must not wait for a disk."""
         self._stop_event.set()
+        self._hand_over()
         self.stopped_at = datetime.now().isoformat(timespec="seconds")
         return str(self.video_path) if self.frame_count else ""
 
@@ -161,21 +191,27 @@ class VideoWorker:
             _DRAINING.discard(self)
 
     def _drain(self) -> None:
-        while not self._stop_event.is_set() or not self.queue.empty():
+        """Full blocks to the disk, oldest first, one write each, until the recording stopped and none waits."""
+        while True:
+            with self._ready:
+                while not self._full and not self._stop_event.is_set():
+                    self._ready.wait(QUEUE_GET_TIMEOUT)
+                block = self._full.popleft() if self._full else None
+            if block is None:                                 # stopped, nothing waiting
+                if self._block:                               # a frame came in as it stopped: its block goes too
+                    self._hand_over()
+                    continue
+                break
+            size = sum(frame.nbytes for frame in block)
             try:
-                frames = [self.queue.get(timeout=QUEUE_GET_TIMEOUT)]
-            except Empty:
-                continue
-            while len(frames) < WRITER_BATCH:          # whatever else is waiting goes in the same write
-                try:
-                    frames.append(self.queue.get_nowait())
-                except Empty:
-                    break
-            try:
-                self._file.write(b"".join(as_8bit(frame).tobytes() for frame in frames))
-                self.written += len(frames)
+                same = all(frame.shape == block[0].shape for frame in block)
+                data = np.stack(block) if same else b"".join(frame.tobytes() for frame in block)
+                self._file.write(data.data if same else data)   # one write; the disk works without the interpreter
+                self.written += len(block)
             except Exception as exc:
-                log.error("%s: %d frames could not be written: %s", self.prefix, len(frames), exc)
+                log.error("%s: %d frames could not be written: %s", self.prefix, len(block), exc)
+            finally:
+                self._held -= size
 
     def encode(self) -> tuple[bool, str]:
         """Encode the raw file now, in this thread, and tell on_finished; nothing to do if no frames were kept."""
@@ -207,11 +243,35 @@ class VideoWorker:
             "width": self.width, "height": self.height, "fps": self.fps,
             "frames_captured": self.frame_count, "frames_written": self.written,
             "frames_dropped": self.frame_count - self.written, "status": status,
+            "memory_peak_mb": round(self.peak_held / 2**20, 1),
+            "memory_limit_mb": round((self.memory_limit or 0) / 2**20, 1),
             "started_at": self.started_at, "stopped_at": self.stopped_at,
             "acquisition_fps": self.measured_fps,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "record": dict(self.record),
         }
+
+
+def block_frames(shape: tuple[int, ...], fps: float) -> int:
+    """Frames a block gathers: about BLOCK_BYTES of them, and no more than BLOCK_SECONDS of recording,
+    so a slow recording reaches the disk soon too."""
+    frame_bytes = max(1, int(np.prod(shape)))
+    by_size = max(1, BLOCK_BYTES // frame_bytes)
+    by_time = max(1, int(fps * BLOCK_SECONDS)) if fps and fps > 0 else by_size
+    return max(1, min(by_size, by_time))
+
+
+def default_memory_limit() -> int:
+    """Bytes waiting frames may take: a share of the free memory, capped; 1 GB where the system does not say."""
+    from .memory import memory_gb
+
+    try:
+        _total, free = memory_gb()
+    except Exception:
+        free = None
+    if not free:
+        return 1 << 30
+    return int(min(free * 2**30 * MEMORY_LIMIT_SHARE, MEMORY_LIMIT_MAX))
 
 
 _DRAINING: set[VideoWorker] = set()        # writers still putting frames on disk after their stop()
