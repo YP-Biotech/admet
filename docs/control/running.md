@@ -31,6 +31,44 @@ plan; the runs it executed stay. Steps are not kept between sessions.
 Edits and previews stay in memory. Only Execute archives the protocol, its
 parameter values and the run.
 
+## Experiments
+
+An experiment is a table of runs designed before any of them is run, on the
+**Experiment** page. Each row is a run: its id, its protocol, its condition, a
+column for each of its protocol's parameters, a note, its state and, once it
+ran, its run folder. A value left empty is the protocol's default, shown grey.
+A value is checked against the protocol as you type it; a wrong one is put back.
+
+- **Add run** adds a row like the last one; **Duplicate** copies the selected
+  row; **Remove** takes out a row that has not run.
+- **Import JSON…** fills a new experiment from a document; **Export JSON…**
+  writes the shown one out, with each run's id, state and folder:
+
+  ```json
+  {"experiment": "ratio sweep 26 Nov", "protocol": "dropseq_3n",
+   "runs": [{"parameters": {"oil_value": 300, "cells_value": 40, "beads_value": 40}},
+            {"parameters": {"oil_value": 250, "cells_value": 67, "beads_value": 67},
+             "condition": "boundary", "note": "near the bulge"}]}
+  ```
+
+  A run without a `protocol` takes the experiment's. An experiment whose
+  `code` is already used gets a new one, and its runs new ids.
+- **Run next** runs the next planned row: its protocol, with the row's values,
+  goes into the **Run** step that follows the page, is planned and executed.
+  When it finishes, its row says done (or failed) with its run folder, and
+  control asks *Run K7Q-03 is finished. Proceed to run K7Q-04?*. A run whose
+  plan has an unmet guard, such as a camera that is not live, is planned but
+  not started.
+
+Every experiment has a code of three characters with nothing to mistake when
+typed (no 0, O, 1, I or L), and each run a number in it: run 3 of experiment
+K7Q is **K7Q-03**. The id goes into the run's record, and each replicate the
+run collects is a sample, **K7Q-03-r2**. Name what you collect by it: a folder
+of microscopy images called `K7Q-03-r2` (or `k7q_03_rep2 cells`) is matched to
+that sample by `admet analyze`, see
+[Samples of an experiment](../analyze/overview#samples-of-an-experiment).
+Experiments are kept in the data folder's `control.db`, beside the runs.
+
 ## During a run
 
 | Control | Effect |

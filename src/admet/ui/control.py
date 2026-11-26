@@ -175,6 +175,9 @@ log = logging.getLogger(__name__)
 # The camera settings kept with the rig and set again when control opens; the scale is kept as optics.
 KEPT_CAMERA_SETTINGS = tuple(param.name for param in CAMERA_SETTINGS.params if param.name != "camera_microns_per_pixel")
 
+EXPERIMENT_RUN_STAGE = "experiment_run"   # the step an experiment's runs are run in
+EXPERIMENT_PLAN_TICKS = 40                 # status reads (0.5 s each) a run may take to be planned or to start
+
 PREVIEW_MIN_HEIGHT = 280
 PREVIEW_MAX_HEIGHT = 520
 
@@ -452,6 +455,8 @@ class ControlWindow(QMainWindow):
         self._calculations = None
         self._review = None
         self._export = None
+        self._experiment = None
+        self._experiment_active: dict[str, Any] | None = None     # the experiment's run going now
 
         self.setWindowTitle("ADMET Qt" + (" — TEST SIMULATION" if api.simulated else ""))
         self.resize(1440, 920)
@@ -957,6 +962,9 @@ class ControlWindow(QMainWindow):
         if "export" in stage.features and self._export is not None:
             self._export.setParent(None)
             self._export.hide()
+        if "experiment" in stage.features and self._experiment is not None:
+            self._experiment.setParent(None)
+            self._experiment.hide()
         if stage.id in self.protocol_editors:
             self.protocol_editors[stage.id].setParent(None)
         self._clear_layout(self.action_box_layout)
@@ -1006,6 +1014,8 @@ class ControlWindow(QMainWindow):
             self._review.refresh()
         if "export" in stage.features and self._export is not None and not self._export.tasks.busy:
             self._export.refresh()
+        if "experiment" in stage.features and self._experiment is not None:
+            self._experiment.refresh()
 
     def _render_sections(self, stage: Stage) -> None:
         """Mount this stage's planning sections, moving them off whatever held them.
@@ -1105,7 +1115,8 @@ class ControlWindow(QMainWindow):
         return controls
 
     def _render_main(self, stage: Stage) -> None:
-        offline = bool({"preflight", "calculations", "calibration", "review", "export"}.intersection(stage.features))
+        offline = bool({"preflight", "calculations", "calibration", "review", "export",
+                        "experiment"}.intersection(stage.features))
         self.main_panel.setVisible(not offline)
         if offline:
             return
@@ -1428,7 +1439,8 @@ class ControlWindow(QMainWindow):
         return table
 
     def _render_results(self, stage: Stage) -> None:
-        offline = bool({"preflight", "calculations", "calibration", "review", "export"}.intersection(stage.features))
+        offline = bool({"preflight", "calculations", "calibration", "review", "export",
+                        "experiment"}.intersection(stage.features))
         self.results_panel.setVisible(not offline)
         if offline:
             return
@@ -1510,6 +1522,18 @@ class ControlWindow(QMainWindow):
                 self._export.refresh()
             self.action_layout.addWidget(self._export)
             self._export.show()
+            return
+        if "experiment" in stage.features:
+            from admet.ui.experiment import ExperimentPanel
+
+            self.action_panel.layout().itemAt(0).widget().setText("Experiment")
+            if self._experiment is None:
+                self._experiment = ExperimentPanel(self.api, notify=lambda text, kind="primary": self._notify(text, kind))
+                self._experiment.run_requested.connect(self._run_experiment)
+            else:
+                self._experiment.refresh()
+            self.action_layout.addWidget(self._experiment)
+            self._experiment.show()
             return
         if "calibration" in stage.features:
             self.action_panel.layout().itemAt(0).widget().setText("Calibration")
@@ -2021,10 +2045,111 @@ class ControlWindow(QMainWindow):
                 lambda exc: self._append_log(f"status: {exc}"),
             )
 
+    # -- an experiment's runs, one after another ---------------------------------------
+    def _experiment_run_stage(self, label: str):
+        """The step an experiment's runs are run in, right after the Experiment page; made the first time."""
+        from admet.workflows.control import protocol_stage
+
+        stages = list(self.workflow.stages)
+        index = next((i for i, item in enumerate(stages) if item.id == EXPERIMENT_RUN_STAGE), None)
+        if index is None:
+            index = next(i for i, item in enumerate(stages) if item.id == "experiment") + 1
+            stages.insert(index, protocol_stage(EXPERIMENT_RUN_STAGE, label))
+            current = self.workflow_state.index
+            self.workflow_state = replace(self.workflow_state, index=current + 1 if current >= index else current,
+                                          statuses={**self.workflow_state.statuses,
+                                                    EXPERIMENT_RUN_STAGE: StageStatus.PENDING})
+        else:
+            stages[index] = replace(stages[index], label=label)
+        self.workflow.stages = tuple(stages)
+        self._rebuild_toc()
+        return stages[index], index
+
+    def _run_experiment(self, experiment, run) -> None:
+        """An experiment's run: its protocol into the run step, planned, then executed as any protocol is."""
+        if self._experiment_active is not None or self._pipeline_active():
+            self._notify("A protocol is running; the next run starts after it.", "warning")
+            return
+        run_id = run.run_id(experiment.code)
+        try:
+            document = experiment.document(run, self.api.service.protocol_document)
+        except (LookupError, ValueError) as exc:
+            self._notify(f"{run_id}: {exc}", "danger")
+            return
+        stage, index = self._experiment_run_stage(f"Run {run_id}")
+        editor = self._protocol_editor(stage)
+        editor.set_document(document)
+        self._select_stage(index)
+        previous = (editor.plan or {}).get("plan_id")
+        self._experiment_active = {"code": experiment.code, "run_id": run_id, "stage": stage.id,
+                                   "previous_plan": previous, "phase": "planning", "ticks": 0}
+        editor.build_plan()
+
+    def _experiment_tick(self) -> None:
+        """Where the experiment's run got to, each time the plans are read: planned, it is executed;
+        finished, its row says so and the next one is offered."""
+        active = self._experiment_active
+        if active is None:
+            return
+        editor = self.protocol_editors.get(active["stage"])
+        plan = editor.plan if editor is not None else None
+        active["ticks"] += 1
+        if active["phase"] == "planning":
+            if plan is None or plan.get("plan_id") == active["previous_plan"] or editor.dirty:
+                if active["ticks"] > EXPERIMENT_PLAN_TICKS:
+                    self._experiment_stopped(f"{active['run_id']} could not be planned.")
+                return
+            if plan.get("unmet_guards"):
+                self._experiment_stopped(f"{active['run_id']} is planned but not started: "
+                                         f"{', '.join(plan['unmet_guards'])} first.")
+                return
+            active.update(phase="starting", ticks=0, plan_id=plan["plan_id"])
+            editor.execute()
+            return
+        if plan is None or plan.get("plan_id") != active.get("plan_id"):
+            return
+        state = plan.get("state")
+        if active["phase"] == "starting":
+            if state == "planned":
+                if active["ticks"] > EXPERIMENT_PLAN_TICKS:
+                    self._experiment_stopped(f"{active['run_id']} did not start.")
+                return
+            active["phase"] = "running"
+            self._experiment_mark(active, "running", str(plan.get("run_id") or ""))
+        if state in {"completed", "failed", "cancelled"}:
+            self._experiment_active = None
+            self._experiment_mark(active, "done" if state == "completed" else "failed", str(plan.get("run_id") or ""))
+            self._experiment_offer_next(active["run_id"], state)
+
+    def _experiment_mark(self, active: dict[str, Any], state: str, run_folder: str) -> None:
+        if self._experiment is not None and self._experiment.experiment is not None \
+                and self._experiment.experiment.code == active["code"]:
+            self._experiment.mark(active["run_id"], state, run_folder)
+            return
+        experiments = self.api.service.experiments
+        experiment = experiments.load(active["code"], self.api.service.protocol_document)
+        experiment.mark(active["run_id"], state, run_folder)
+        experiments.save(experiment)
+
+    def _experiment_stopped(self, text: str) -> None:
+        self._experiment_active = None
+        self._notify(text, "warning", timeout_ms=0)
+
+    def _experiment_offer_next(self, finished: str, state: str) -> None:
+        panel = self._experiment
+        following = panel.experiment.next_planned() if panel is not None and panel.experiment is not None else None
+        word = "finished" if state == "completed" else "stopped (" + state + ")"
+        if following is None:
+            self._notify(f"Run {finished} is {word}. Every run of the experiment has been run.", "success", timeout_ms=0)
+            return
+        next_id = following.run_id(panel.experiment.code)
+        self._confirm(f"Run {finished} is {word}. Proceed to run {next_id}?", panel.run_next, confirm_label="Proceed")
+
     def _status_received(self, received):
         result, plans = received
         for editor in self.protocol_editors.values():
             editor.update_plan(plans)
+        self._experiment_tick()
         self.last_result = result
         was_running = self.last_metadata.get("pipeline_state")
         self.last_metadata = dict(result.metadata)
@@ -2941,7 +3066,7 @@ class ControlWindow(QMainWindow):
     def _notify(self, text: str, kind: str = "primary", *, timeout_ms: int = 3500) -> None:
         self._show_notification_card(text, kind=kind, timeout_ms=timeout_ms)
 
-    def _confirm(self, text: str, on_confirm: Callable[[], None]) -> None:
+    def _confirm(self, text: str, on_confirm: Callable[[], None], *, confirm_label: str = "Confirm") -> None:
         if self._confirmation_dialog is not None:
             self._confirmation_dialog.raise_()
             self._confirmation_dialog.activateWindow()
@@ -2949,7 +3074,7 @@ class ControlWindow(QMainWindow):
         dialog = QMessageBox(QMessageBox.Icon.Warning, "Confirm — ADMET", text, parent=self)
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        dialog.button(QMessageBox.StandardButton.Ok).setText("Confirm")
+        dialog.button(QMessageBox.StandardButton.Ok).setText(confirm_label)
         dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
         dialog.setEscapeButton(QMessageBox.StandardButton.Cancel)
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
