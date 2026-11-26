@@ -114,6 +114,8 @@ class MatrixRow:
     derived_condition: str = ""        # the condition its run's record gives; the alias shows beside it when it differs
     note: str = ""                     # anything the user wants to write down about the file
     last_result: str = ""              # the key of the last result made for it, to tell stale from never run
+    sample_code: str = ""              # the id of the sample it is of (K7Q-03-r2): from its run, or its folder's name
+    matched: bool = False              # an image folder already put into the sample its id names, once
 
     @property
     def name(self) -> str:
@@ -2147,6 +2149,7 @@ class AnalyzeWorkflowView:
         self.matrix.append(row)
         self.selected_uid = row.uid
         self.store.add_source(source, engine=engine, sample_id="")
+        _match_by_code(self.matrix)
         _name_rows(self.matrix)
         self._prefill_settings(row)
         self._log(f"files: added {source.name} → {engine}")
@@ -2336,9 +2339,11 @@ class AnalyzeWorkflowView:
                                   settings=dict(entry.get("settings") or {}), run=run,
                                   condition=str(entry.get("condition") or "") or derived, derived_condition=derived,
                                   note=str(entry.get("note") or ""), last_result=str(entry.get("last_result") or ""),
-                                  **origin))
+                                  sample_code=str(entry.get("sample_code") or ""),
+                                  matched=bool(entry.get("matched", False)), **origin))
         for row in rows:
             self._prefill_settings(row)
+        _match_by_code(rows)
         _name_rows(rows)
         self._saved_matrix = self._matrix_record(rows)
         return rows
@@ -2349,11 +2354,13 @@ class AnalyzeWorkflowView:
                  "cache_policy": row.cache_policy, "active": row.active, "to_run": row.to_run, "plotted": row.plotted,
                  "settings": dict(row.settings), "run": row.run, "protocol": row.protocol, "run_time": row.run_time,
                  "replicate": row.replicate, "condition": row.condition, "note": row.note,
-                 "last_result": row.last_result, "live_plotted": row.live_plotted}
+                 "last_result": row.last_result, "live_plotted": row.live_plotted,
+                 "sample_code": row.sample_code, "matched": row.matched}
                 for row in rows]
 
     def _save_matrix(self) -> None:
         """Keep what the screen shows, so it comes back as left; an unchanged screen writes nothing."""
+        _match_by_code(self.matrix)
         _name_rows(self.matrix)
         record = self._matrix_record(self.matrix)
         if record == self._saved_matrix:
@@ -2369,7 +2376,7 @@ class AnalyzeWorkflowView:
         new = self.store.add_root(folder)
         added = self.store.scan(folder)
         self._adopt(added)
-        self._notify(f"{'Watching' if new else 'Rescanned'} {folder.name}: {_count(len(added), 'new video')}.",
+        self._notify(f"{'Watching' if new else 'Rescanned'} {folder.name}: {_count(len(added), 'new file')}.",
                      "success")
         self._log(f"files: folder {folder} → {len(added)} new")
         self._refresh(force_mount=True)
@@ -2377,7 +2384,7 @@ class AnalyzeWorkflowView:
     def _rescan(self) -> None:
         added = self.store.scan()
         self._adopt(added)
-        self._notify(f"Rescanned {_count(len(self.store.roots()), 'folder')}: {_count(len(added), 'new video')}.",
+        self._notify(f"Rescanned {_count(len(self.store.roots()), 'folder')}: {_count(len(added), 'new file')}.",
                      "success")
         self._refresh(force_mount=True)
 
@@ -2393,9 +2400,11 @@ class AnalyzeWorkflowView:
                             sample_id=str(entry.get("sample_id") or ""), run=run,
                             protocol=str(entry.get("protocol") or ""), run_time=str(entry.get("run_time") or ""),
                             replicate=_int_or_none(entry.get("replicate")),
-                            condition=str(entry.get("condition") or "") or derived, derived_condition=derived)
+                            condition=str(entry.get("condition") or "") or derived, derived_condition=derived,
+                            sample_code=str(entry.get("sample_code") or ""))
             self._prefill_settings(row)
             self.matrix.append(row)
+        _match_by_code(self.matrix)
         _name_rows(self.matrix)
         if self.matrix and not self.selected_uid:
             self.selected_uid = self.matrix[0].uid
@@ -2692,14 +2701,33 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _match_by_code(rows: list[MatrixRow]) -> None:
+    """An image folder whose name carries a sample's id goes into that sample, once: put by hand
+    elsewhere or taken out, it stays where it was put. While it is in it, it is in the condition of
+    the sample's video."""
+    videos = {row.sample_code: row for row in rows if row.run and row.sample_code}
+    for row in rows:
+        if row.engine != "cellpose" or row.run or not row.sample_code:
+            continue
+        if not row.matched:
+            row.sample_id, row.matched = row.sample_code, True
+        video = videos.get(row.sample_code)
+        if video is not None and row.sample_id == row.sample_code:
+            row.condition = video.condition
+
+
 def _name_rows(rows: list[MatrixRow]) -> None:
-    """Every row's name in force: what the user wrote, else built. A file in a condition is "<condition>_rep<n>",
-    the n-th of the condition by run time and replicate; a file in none is its protocol with its replicate,
-    or its file name."""
+    """Every row's name in force: what the user wrote, else built. A run of an experiment is its
+    sample's id (K7Q-03-r2), which the folders of images labelled with it join; a file in a
+    condition is "<condition>_rep<n>", the n-th of the condition by run time and replicate; a file
+    in none is its protocol with its replicate, or its file name."""
     by_condition: dict[str, list[MatrixRow]] = {}
     for row in rows:
         if row.sample_id and not row.run:       # a folder put into a sample by hand: its name is given, not numbered
             row.built = ""
+            continue
+        if row.run and row.sample_code:          # a run of an experiment: named by its sample's id
+            row.built = row.sample_code
             continue
         by_condition.setdefault(row.condition, []).append(row)
     for group, members in by_condition.items():

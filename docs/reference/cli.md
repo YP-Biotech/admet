@@ -32,7 +32,7 @@ runs, for example the export folder on the server. Requires the `analyze` extra.
 |---|---|---|
 | `--host` | `0.0.0.0` | Address to listen on (every interface) |
 | `--port` | `8080` | Port |
-| `--data` | none | Another folder of runs to watch beside the home's data folder |
+| `--data` | none | Another folder to watch beside the home's data folder: runs, archives of runs (`.tar`), folders of images named with a sample's id |
 | `--home` | `ADMET_HOME` or `~/.admet` | The home whose data folder is watched and whose `analyze/` room keeps the registry and the results |
 
 ```bash
