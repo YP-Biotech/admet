@@ -209,6 +209,26 @@ class Admet:
         return ProtocolStore(self.home.data_dir)
 
     @property
+    def experiments(self):
+        """The experiments designed on this home, each a table of runs with their ids."""
+        from admet.core.experiments import ExperimentStore
+
+        return ExperimentStore(self.home.data_dir)
+
+    def protocol_document(self, name: str) -> dict[str, Any]:
+        """A protocol by its name: one saved in the data folder first, else a template; LookupError if neither."""
+        from admet.workflows.json_protocol import template_documents
+
+        try:
+            return self.protocol_store().read(name)["protocol"]
+        except (OSError, ValueError):
+            pass
+        templates = template_documents()
+        if name in templates:
+            return templates[name]
+        raise LookupError(f"no protocol {name}")
+
+    @property
     def registry(self):
         """Analyze's registry: the sources it knows and where their results are."""
         from admet.core.registry import Registry
@@ -281,7 +301,7 @@ class Admet:
     def _video_finished(self, video_path: str, encoded: bool, reason: str) -> None:
         """A video finished encoding after its recording stopped, or could not: its run's record says so."""
         path = Path(video_path)
-        if not (path.parent / RECORD).is_file():
+        if not self.runs.exists(path.parent.name):
             return
         try:
             Run(path.parent).video_finished(path.name, encoded, reason)
@@ -478,6 +498,8 @@ class Admet:
             "operation_id": operation_id,
             "tag": str(run.get("name") or ""),
             "condition": str(run.get("condition") or ""),
+            "run_code": str(run.get("id") or ""),          # the run's id in its experiment; its samples add -rN
+            "experiment": str(run.get("experiment") or ""),
             "state": "planned",
             "created_at": _now_iso(),
             "normalized_settings": normalized,
@@ -1040,7 +1062,7 @@ class Admet:
             run = self.runs.begin_recording(label)
             recording_id = f"{run.name}_{time.strftime('%Y%m%d_%H%M%S')}"
             run.update(recording_id=recording_id)
-        targets = {"video": run.path / f"{recording_id}.avi", "timeline": run.db_path}
+        targets = {"video": run.path / f"{recording_id}.avi", "timeline": run.ref}
         missing = set(spec.outputs) - set(targets)
         if missing:
             raise LookupError(
@@ -1053,14 +1075,19 @@ class Admet:
         """What the recording left behind goes into its run's record, named within the folder."""
         if not recording:
             return
-        folder = Path(str(recording.get("timeline") or recording.get("video_path") or "")).parent
-        if not (folder / RECORD).is_file():
+        from admet.core.rundb import locate
+
+        _database, run_id = locate(str(recording.get("timeline") or ""))
+        if run_id is None:
+            run_id = Path(str(recording.get("video_path") or "")).parent.name
+        if not self.runs.exists(run_id):
             return
-        run = Run(folder)
+        run = self.runs.open(run_id)
         kept = {**recording, "context": self.run_context()}
-        for key in ("video_path", "timeline"):
-            if kept.get(key):
-                kept[key] = Path(str(kept[key])).name
+        if kept.get("video_path"):
+            kept["video_path"] = Path(str(kept["video_path"])).name
+        if kept.get("timeline"):
+            kept["timeline"] = RECORD                    # the run's timeline: in its run.db once sealed
         fields: dict[str, Any] = {"recording": kept}
         if run.read().get("kind") == "recording":
             fields.update(state="completed", stopped_at=_now_iso())

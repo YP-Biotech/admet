@@ -60,36 +60,45 @@ A new run starts with an empty table. To review or correct an earlier run, use
 
 ## Recording
 
-Every run is one folder under the home's `data/runs/`, named by date, time and
-the run's name: `20261118_183000_oil_3/`. It holds:
+Control keeps every run in one database, the home's `data/control.db`:
 
-- `run.db`, one SQLite file holding
-  - the run's record: the protocol and the plan as they ran, the run's name and
-    condition, the state and times, the rig mapping and corrections in force, the
-    step events, the measurements typed during the run, the videos made and the
-    results calculated from it afterwards;
-  - the timeline: pressure and flow of each channel ten times a second and the
-    live QC rows once a second, on one clock;
-- the step videos, one file per step marked `"record": true`
-  (see [Video](../protocols/format#video)), named after the run and the step.
+- each run's record: the protocol and the plan as they ran, the run's name and
+  condition, the state and times, the rig mapping and corrections in force, the
+  step events, the measurements typed during the run, the videos made and the
+  results calculated from it afterwards;
+- each run's timeline, recorded while its protocol runs: pressure and flow of each
+  channel ten times a second and the live QC rows once a second, on one clock.
 
-Nothing in the folder points outside it, so a folder copied elsewhere is whole.
-Every change to the record is one transaction, and the timeline is committed once a
-second while the run records, so a crash loses at most the last second. When the
-recording closes the file is left whole on its own, so a copy of it, or analyze
-reading it from a network share, sees everything.
+Every change to a record is one transaction, and the timeline is committed once a
+second while the run records, so a crash loses at most the last second. Review and
+Calculations read the runs from it.
 
-To read a run in another program, write its record and timeline out as the files
-runs used to have:
+Each run also has a folder under the home's `data/runs/`, named by date, time and
+the run's name: `20261118_183000_oil_3/`. It holds the step videos, one file per step
+marked `"record": true` (see [Video](../protocols/format#video)), named after the run
+and the step. Once the run has finished, it also holds `run.db`: the run **sealed**,
+its record and its timeline on their own, written again whenever the record changes
+(a result calculated, an export noted). That folder is what goes to the server and
+what analyze reads: nothing in it points outside it, so a folder copied elsewhere is
+whole, and the file is left whole on its own, so a copy of it, or analyze reading it
+from a network share, sees everything.
+
+For a server the rig cannot reach, put the finished runs into one archive, copy it
+over, and let analyze take it in:
+
+```bash
+admet export --tar runs.tar                       # every finished run
+admet export --tar k7q.tar --run 20261126_140000_k7q_03 --run 20261126_141500_k7q_04
+```
+
+To read a finished run in another program, write its sealed record and timeline out
+as a JSON and a CSV file:
 
 ```bash
 admet export-run data/runs/20261118_183000_oil_3              # run.json and run.csv in the run folder
 admet export-run data/runs/20261118_183000_oil_3 --into out/  # or elsewhere
 ```
 
-Run folders recorded before `run.db`, with `run.json` and `run.csv`, are read
-once they are migrated: `admet migrate <data folder>` gives each its `run.db`
-and leaves the two old files beside it, to be removed once checked.
 A recording started by hand, outside a protocol, is a run folder too.
 The step videos are encoded once the run is over, one after another, so no encode
 competes with the next step's recording for the disk; each is noted in the record

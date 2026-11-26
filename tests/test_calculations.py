@@ -17,10 +17,10 @@ RUN_ID = "run_" + "0" * 32
 def archived_density(data_dir):
     directory = Path(data_dir) / "runs" / RUN_ID
     directory.mkdir(parents=True, exist_ok=True)
-    document, _timeline, events_path, origin = recorded_density(directory)
+    document, _timeline, events_path, origin = recorded_density(directory, target=Run(directory).ref)
     events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
     events_path.unlink()
-    rundb.write_record(directory / "run.db", {
+    rundb.write_record(Run(directory).ref, {
         "state": "completed", "completed_at": "2026-09-28T12:00:00+00:00", "plan_id": "plan_synthetic",
         "run_id": RUN_ID, "normalized_settings": {"protocol": document}, "events": events,
         "artifacts": {"timeline": "run.db", "polling_origin_monotonic": origin, "recording_closed": True},
@@ -35,7 +35,7 @@ class CalculationTests(unittest.TestCase):
         self.directory = archived_density(self.tmp.name)
 
     def test_plain_protocol_calculates_and_preserves_sources_and_history(self):
-        before = (Run(self.directory).inputs_digest(), rundb.timeline_digest(self.directory / "run.db"))
+        before = (Run(self.directory).inputs_digest(), rundb.timeline_digest(Run(self.directory).ref))
         with patch("admet.core.service.Admet.engine_action", side_effect=AssertionError("hardware")):
             first = calculate_run(self.directory, "fluid_density")
             second = calculate_run(self.directory, "fluid_density")
@@ -49,13 +49,15 @@ class CalculationTests(unittest.TestCase):
         self.assertEqual([item["path"] for item in first["inputs"]], ["record", "timeline"])
         self.assertEqual(first["calculation_version"], 2)
         self.assertGreater(overview["result"]["statistics"]["flow_1_ul_min"]["samples"], 0)
-        self.assertEqual((Run(self.directory).inputs_digest(), rundb.timeline_digest(self.directory / "run.db")), before)
+        self.assertEqual((Run(self.directory).inputs_digest(), rundb.timeline_digest(Run(self.directory).ref)), before)
 
     def test_a_moved_project_still_finds_its_recording(self):
         import shutil
 
-        moved = Path(self.tmp.name) / "moved"
+        moved = Path(self.tmp.name) / "moved"                 # the data folder: its runs and its control.db
         shutil.copytree(Path(self.tmp.name) / "runs", moved / "runs")
+        for part in Path(self.tmp.name).glob("control.db*"):
+            shutil.copy2(part, moved / part.name)
         result = calculate_run(moved / "runs" / RUN_ID, "fluid_density")
         self.assertAlmostEqual(result["result"]["density_g_ml"], 1.2)
 
@@ -91,7 +93,7 @@ class CalculationTests(unittest.TestCase):
             calculate_run(self.directory, "fluid_density")
 
     def test_summary_missing_values_remain_null(self):
-        set_timeline(self.directory / "run.db", "elapsed_s,pressure_1_mbar,flow_1_ul_min\n0,,\n1,nan,\n")
+        set_timeline(Run(self.directory).ref, "elapsed_s,pressure_1_mbar,flow_1_ul_min\n0,,\n1,nan,\n")
         stats = calculate_run(self.directory, "recording_summary")["result"]["statistics"]
         for entry in stats.values():
             self.assertEqual(entry["missing"], 2)
@@ -132,7 +134,7 @@ class CalculationTests(unittest.TestCase):
 
     def test_collection_window_integrates_transients_and_rejects_gaps_and_pause(self):
         from admet.workflows.calculation_inputs import step_window, trace, volume_ul
-        context = {"directory": self.directory, "timeline": self.directory / "run.db",
+        context = {"directory": self.directory, "timeline": Run(self.directory).ref,
                    "summary": {"state": "completed", "artifacts": {"polling_origin_monotonic": 100}}}
         events = [{"step_index": 0, "step_name": "collect", "state": "running", "outcome": "running",
                    "monotonic": 100, "confirmation_message": "wait"},

@@ -5,7 +5,8 @@ Everything starts from one command, `admet`.
 ```text
 admet control  [--home PATH]
 admet analyze  [--host HOST] [--port PORT] [--data DIR] [--home PATH]
-admet migrate  PROJECT [--into DIR] [--copy] [--rig] [--home PATH]
+admet rig      [--home PATH]
+admet export   --tar FILE [--run RUN_ID ...] [--home PATH]
 admet describe [TARGET]
 admet install-sdk [--version TAG] [--force]
 ```
@@ -39,14 +40,24 @@ uv run --extra analyze admet analyze
 uv run --extra analyze admet analyze --home /Volumes/data/admet --port 9000
 ```
 
-## admet migrate
+## admet rig
 
-Lays an old `.admetp` project out as run folders in the home's data folder; see
-[Projects](../guide/projects#migrating-a-project).
+Shows the home's rig settings: where `rig.json` is and each setting it keeps.
 
 ```bash
-uv run admet migrate experiment.admetp
-uv run admet migrate experiment.admetp --rig        # and take its rig settings into the home
+uv run admet rig
+```
+
+## admet export
+
+Puts finished runs into one tar archive, each run's folder as the server takes it:
+its videos and its sealed `run.db`. Copy the archive to a server the rig cannot reach
+and let analyze take it in. Nothing on the rig is removed; runs still going or still
+encoding are left out and named.
+
+```bash
+uv run admet export --tar runs.tar
+uv run admet export --tar k7q.tar --run 20261126_140000_k7q_03
 ```
 
 ## admet describe

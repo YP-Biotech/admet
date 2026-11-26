@@ -32,13 +32,14 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(RUN_ID.fullmatch(run.run_id), run.run_id)
             self.assertTrue(run.run_id.endswith("_oil_3"))
             self.assertEqual(run.path, Path(tmp) / "runs" / run.run_id)
-            record = rundb.read_record(run.path / RECORD)
+            record = rundb.read_record(run.ref)
             self.assertEqual((record["run_id"], record["name"], record["kind"], record["tag"], record["condition"]),
                              (run.run_id, "oil_3", "protocol", "Oil 3", "oil"))
             self.assertEqual(record["measurements"], {"fields": {"mass": {"label": "Mass", "unit": "mg"}},
                                                       "values": {"mass": None}, "revision": 0})
             self.assertEqual((record["events"], record["calculations"], record["artifacts"]), ([], [], {}))
-            self.assertEqual((run.db_path, RECORD), (run.path / "run.db", "run.db"))
+            self.assertEqual((run.sealed_path, RECORD), (run.path / "run.db", "run.db"))
+            self.assertEqual(run.ref, f"{Path(tmp) / 'control.db'}#{run.run_id}")
 
     def test_an_unnamed_run_takes_the_protocols_name_and_two_in_one_second_do_not_collide(self):
         with tempfile.TemporaryDirectory() as tmp:
