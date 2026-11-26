@@ -606,3 +606,74 @@ class CameraAcquisitionThreadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlockWriterTests(unittest.TestCase):
+    """Frames gathered into blocks, a block one write, the waiting ones held in memory up to a limit."""
+
+    def test_every_frame_reaches_the_file_in_order_however_the_blocks_fall(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worker = VideoWorker(tmpdir, "order", 3, 2, 30.0, encoder=lambda *args: (True, ""))   # 7 frames a block
+            worker.encode_at_stop = False
+            self.assertTrue(worker.start())
+            frames = [np.full((2, 3), value, dtype=np.uint8) for value in range(100)]
+            for frame in frames:
+                self.assertTrue(worker.write(frame))
+            worker.stop()                                                   # 100 = 14 blocks and 2 left over
+            self.assertTrue(worker.wait(5))
+            self.assertFalse(worker.write(frames[0]))                       # after the stop: not taken
+            self.assertEqual((worker.frame_count, worker.written), (100, 100))
+            self.assertEqual(worker.raw_path.read_bytes(), b"".join(frame.tobytes() for frame in frames))
+
+    def test_a_slow_disk_fills_the_memory_up_to_its_limit_and_the_rest_is_dropped_and_counted(self):
+        class SlowFile:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def write(self, data):
+                time.sleep(0.05)
+                return self.handle.write(data)
+
+            def close(self):
+                self.handle.close()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            frame_bytes = 60 * 320
+            worker = VideoWorker(tmpdir, "slow", 320, 60, 400.0, encoder=lambda *args: (True, ""),
+                                 memory_limit=300 * frame_bytes)
+            worker.encode_at_stop = False
+            self.assertTrue(worker.start())
+            worker._file = SlowFile(worker._file)
+            for value in range(2000):
+                self.assertTrue(worker.write(np.full((60, 320), value % 256, dtype=np.uint8)))
+            worker.stop()
+            self.assertTrue(worker.wait(30))
+            dropped = worker.frame_count - worker.written
+            self.assertGreater(dropped, 0)
+            self.assertEqual(worker.frame_count, 2000)
+            self.assertLessEqual(worker.peak_held, 300 * frame_bytes)
+            self.assertEqual(worker.raw_path.stat().st_size, worker.written * frame_bytes)   # whole frames only
+            info = worker._info("recorded")
+            self.assertEqual((info["frames_dropped"], info["memory_limit_mb"]), (dropped, round(300 * frame_bytes / 2**20, 1)))
+            self.assertGreater(info["memory_peak_mb"], 0)
+
+    def test_a_frame_of_another_size_is_written_as_it_came(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worker = VideoWorker(tmpdir, "sizes", 2, 2, 1000.0, encoder=lambda *args: (True, ""))
+            worker.encode_at_stop = False
+            self.assertTrue(worker.start())
+            frames = [np.full((2, 2), 1, np.uint8), np.full((3, 2), 2, np.uint8), np.full((2, 2), 3, np.uint8)]
+            for frame in frames:
+                worker.write(frame)
+            worker.stop()
+            self.assertTrue(worker.wait(5))
+            self.assertEqual(worker.raw_path.read_bytes(), b"".join(frame.tobytes() for frame in frames))
+
+    def test_a_block_holds_a_quarter_second_or_sixteen_megabytes_and_the_limit_comes_from_the_free_memory(self):
+        from admet.engines.acquisition.camera.video import block_frames, default_memory_limit
+
+        self.assertEqual(block_frames((60, 320), 4032.0), (16 << 20) // (60 * 320))     # 873 frames, 16 MB
+        self.assertEqual(block_frames((60, 320), 30.0), 7)                             # a quarter second
+        self.assertEqual(block_frames((60, 320), 0.0), (16 << 20) // (60 * 320))
+        limit = default_memory_limit()
+        self.assertTrue(0 < limit <= 8 << 30)

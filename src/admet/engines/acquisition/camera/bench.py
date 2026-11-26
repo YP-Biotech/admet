@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from .acquisition import CameraAcquisitionThread
+from .memory import memory_gb
 from .qc import BurstQC, QCWorker
 from .video import VideoWorker
 
@@ -40,6 +41,8 @@ class StageResult:
     grab_us_median: float         # time one call for a frame takes, the wait for it included
     grab_us_p99: float
     numbered: bool = True         # the camera's frame numbers and timestamps could be read
+    held_mb: float = 0.0          # the most the writer held in memory, waiting for the disk
+    held_limit_mb: float = 0.0    # what it was allowed to hold
 
     @property
     def budget_us(self) -> float:
@@ -198,6 +201,8 @@ def _result(stage: str, elapsed: float, timed: TimedCamera, writer: Any, tick_hz
         grab_us_median=round(float(np.median(durations)), 1) if len(durations) else 0.0,
         grab_us_p99=round(float(np.percentile(durations, 99)), 1) if len(durations) else 0.0,
         camera_skipped=timed.skipped if numbered else 0, numbered=numbered,
+        held_mb=round(getattr(writer, "peak_held", 0) / 2**20, 1),
+        held_limit_mb=round((getattr(writer, "memory_limit", 0) or 0) / 2**20, 1),
     )
 
 
@@ -254,33 +259,6 @@ class SystemCheck:
     def behind_mb_s(self) -> float:
         """How far the disk falls behind the camera; 0 when it keeps up."""
         return max(0.0, self.needed_mb_s - self.disk_mb_s) if self.disk_mb_s else 0.0
-
-
-def memory_gb() -> tuple[float, float | None]:
-    """The PC's memory, total and free, in GB; free is None where the system does not say."""
-    import os
-    import sys
-
-    if sys.platform == "win32":
-        import ctypes
-
-        class Status(ctypes.Structure):
-            _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
-                        ("free", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
-                        ("page_free", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
-                        ("virtual_free", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
-
-        status = Status()
-        status.length = ctypes.sizeof(Status)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))     # type: ignore[attr-defined]
-        return status.total / 2**30, status.free / 2**30
-    page = os.sysconf("SC_PAGE_SIZE")
-    total = os.sysconf("SC_PHYS_PAGES") * page / 2**30
-    try:
-        free = os.sysconf("SC_AVPHYS_PAGES") * page / 2**30
-    except (ValueError, OSError):
-        free = None
-    return total, free
 
 
 def disk_speed(folder: str | Path, gigabytes: float = 4.0, *, chunk_mb: int = 64) -> float:
@@ -346,6 +324,9 @@ def report_lines(results: list[StageResult]) -> list[str]:
                          f"(grab takes {r.grab_us_median:.0f} µs of a {r.budget_us:.0f} µs budget, plus the loop)")
         if r.writer_dropped:
             lines.append(f"{r.stage}: {r.writer_dropped} frames dropped by the writer: the disk fell behind")
+        if r.held_limit_mb:
+            lines.append(f"{r.stage}: the writer held up to {r.held_mb:.0f} MB waiting for the disk "
+                         f"(allowed {r.held_limit_mb:.0f} MB)")
     if any(not r.numbered for r in results):
         lines.append("the camera gave no usable frame numbers or timestamps: frames it made but never handed over "
                      "cannot be counted, and the rate is the frames that arrived over the PC's clock")
