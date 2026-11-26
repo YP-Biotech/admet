@@ -116,3 +116,64 @@ class SystemCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelCameraTests(unittest.TestCase):
+    """A camera modelled in software: the rig's rate on any computer, frames lost as pylon loses them."""
+
+    def test_it_makes_frames_at_the_rate_given_numbered_and_timed_like_the_camera(self):
+        from admet.engines.acquisition.camera.model import ModelCamera
+
+        camera = ModelCamera(2000.0, 320, 60)
+        camera.start_grabbing()
+        grabbed, started = [], time.perf_counter()
+        while time.perf_counter() - started < 0.3:
+            frame = camera.grab()
+            if frame is not None:
+                grabbed.append(frame)
+        numbers = [number for _frame, _ticks, number in grabbed]
+        self.assertEqual(numbers, list(range(len(numbers))))                    # every one, in order
+        self.assertAlmostEqual(len(numbers) / 0.3, 2000.0, delta=200.0)
+        ticks = [ticks for _frame, ticks, _number in grabbed]
+        self.assertEqual(ticks[1] - ticks[0], 500_000)                          # 0.5 ms apart, in ns
+        self.assertEqual(grabbed[0][0].shape, (60, 320))
+        self.assertEqual(camera.lost, 0)
+
+    def test_python_falling_a_buffer_behind_loses_the_oldest_frames_and_the_numbers_show_it(self):
+        from admet.engines.acquisition.camera.model import ModelCamera
+
+        camera = ModelCamera(4000.0, buffer_frames=100)
+        camera.start_grabbing()
+        time.sleep(0.2)                                                         # 800 made, 100 kept
+        _frame, _ticks, number = camera.grab()
+        self.assertGreater(number, 600)
+        self.assertEqual(camera.lost, number)
+
+    def test_the_bench_runs_on_the_modelled_camera_and_keeps_up(self):
+        from admet.engines.acquisition.camera.bench import bench
+        from admet.engines.acquisition.camera.model import ModelCamera, ModelController
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = bench({}, seconds=0.5, out_dir=tmp, stages=("disk",),
+                            controller=ModelController(ModelCamera(1000.0)))
+        result, = results
+        self.assertTrue(result.numbered)
+        self.assertAlmostEqual(result.camera_fps, 1000.0, delta=50.0)
+        self.assertEqual((result.camera_skipped, result.writer_dropped, result.lost), (0, 0, 0))
+
+    def test_frames_come_from_a_recording_when_one_is_given(self):
+        import cv2
+
+        from admet.engines.acquisition.camera.model import ModelCamera
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "v.avi"
+            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"FFV1"), 24, (32, 8), False)
+            for value in (10, 20, 30):
+                writer.write(np.full((8, 32), value, np.uint8))
+            writer.release()
+            camera = ModelCamera(100.0, video=path)
+            self.assertEqual([int(frame[0, 0]) for frame in camera.frames], [10, 20, 30])
+            self.assertEqual((camera.width, camera.height), (32, 8))
+            with self.assertRaises(ValueError):
+                ModelCamera(100.0, video=Path(tmp) / "nothing.avi")

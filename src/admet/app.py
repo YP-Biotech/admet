@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--camera", type=int, default=0, help="the camera's index")
     bench.add_argument("--disk-gb", type=float, default=4.0,
                        help="GB written to measure the disk's sustained speed in --out, then removed (0 skips it)")
+    bench.add_argument("--model", action="store_true",
+                       help="a camera modelled in software instead of the real one, at --fps (default 4032): "
+                            "frames numbered and timed as the camera's, lost when Python falls a buffer behind")
+    bench.add_argument("--model-video", help="frames for the modelled camera from this recording (default: drawn plugs)")
+    bench.add_argument("--model-buffer", type=int, default=1000,
+                       help="frames the modelled camera keeps for Python before it loses the oldest (default 1000)")
     bench.add_argument("--json", action="store_true", help="print the counts as JSON")
 
     return parser
@@ -174,11 +180,24 @@ def run_camera_bench(args: argparse.Namespace) -> int:
                 "camera_offset_x": args.offset_x, "camera_offset_y": args.offset_y,
                 "camera_exposure_us": args.exposure, "camera_gain": args.gain,
                 "camera_framerate_enabled": args.fps > 0, "camera_framerate_hz": args.fps or 30.0}
+    controller = None
+    if args.model:
+        from admet.engines.acquisition.camera.model import ModelCamera, ModelController
+
+        try:
+            model = ModelCamera(args.fps or 4032.0, args.width, args.height, buffer_frames=args.model_buffer,
+                                video=args.model_video)
+        except ValueError as exc:
+            print(f"Camera bench failed: {exc}", file=sys.stderr)
+            return 1
+        controller = ModelController(model)
+        args.width, args.height = model.width, model.height
     frame_bytes = args.width * args.height
     try:
         # The disk first, while its cache holds nothing of the bench's own recordings.
         check = system_check(args.out or tempfile.gettempdir(), frame_bytes, 0.0, disk_gb=args.disk_gb)
-        results = bench(settings, seconds=args.seconds, out_dir=args.out, stages=tuple(args.stage or STAGES))
+        results = bench(settings, seconds=args.seconds, out_dir=args.out, stages=tuple(args.stage or STAGES),
+                        controller=controller)
     except Exception as exc:
         print(f"Camera bench failed: {exc}", file=sys.stderr)
         return 1
@@ -187,7 +206,11 @@ def run_camera_bench(args: argparse.Namespace) -> int:
     if args.json:
         return _print({"system": {**asdict(check), "ram_seconds": check.ram_seconds, "behind_mb_s": check.behind_mb_s},
                        "stages": as_dicts(results)})
-    print("\n".join([*system_lines(check), "", *report_lines(results)]))
+    lines = [*system_lines(check), "", *report_lines(results)]
+    if args.model:
+        lines.insert(0, f"a modelled camera at {args.fps or 4032.0:g} fps, a buffer of {args.model_buffer} frames, "
+                        f"frames {'from ' + args.model_video if args.model_video else 'drawn'}")
+    print("\n".join(lines))
     return 0
 
 
