@@ -59,6 +59,7 @@ def _describe_event(event: Any) -> dict[str, Any]:
         "step_volumes": dict(event.step_volumes),
         "confirmation_message": event.confirmation_message,
         "error": event.error_msg,
+        **({"ended_by": event.ended_by} if getattr(event, "ended_by", "") else {}),
     }
 
 
@@ -126,17 +127,7 @@ def _planned_step(index: int, step: Any) -> dict[str, Any]:
 
     params = deepcopy(step.trigger_params)
     timeout = step.timeout_s if step.timeout_s is not None else params.get("timeout_s")
-    expected = params.get("duration_s")
-    if expected is None and step.trigger_type == "confirmation":
-        expected = 0.0
-    if expected is None and step.trigger_type == "stability":
-        expected = timeout
-    if expected is None and step.trigger_type == "volume":
-        sensor_index = int(params["sensor_index"])
-        requested_flow = step.sensor_setpoints.get(sensor_index)
-        target_volume = params.get("target_volume_ul")
-        if requested_flow is not None and requested_flow > 0 and target_volume is not None:
-            expected = float(target_volume) / float(requested_flow) * 60.0
+    expected = _expected_duration(step.trigger_type, params, step.sensor_setpoints, timeout)
     return {
         "number": index,
         "name": step.name,
@@ -150,6 +141,30 @@ def _planned_step(index: int, step: Any) -> dict[str, Any]:
         "confirmation": step.confirm_message or None,
         "record_s": min(step.record_max_s or RECORD_CAP_S, RECORD_CAP_S) if step.record else None,
     }
+
+
+def _expected_duration(kind: str, params: dict[str, Any], flows: dict[int, float], timeout: Any) -> float | None:
+    """How long a step's trigger should take at the flows it sets; None when that cannot be told."""
+    if params.get("duration_s") is not None:
+        return params["duration_s"]
+    if kind == "confirmation":
+        return 0.0
+    if kind == "stability":
+        return timeout
+    if kind == "volume":
+        flow = flows.get(int(params["sensor_index"]))
+        if flow and flow > 0 and params.get("target_volume_ul") is not None:
+            return float(params["target_volume_ul"]) / float(flow) * 60.0
+    if kind == "total_volume":
+        flow = sum(max(0.0, float(flows.get(int(sensor), 0))) for sensor in params.get("sensors", []))
+        if flow > 0 and params.get("target_volume_ul") is not None:
+            return float(params["target_volume_ul"]) / flow * 60.0
+    if kind == "any":
+        known = [value for stop in params.get("stops", [])
+                 if (value := _expected_duration(stop.get("trigger_type", ""), stop.get("trigger_params", {}),
+                                                 flows, timeout)) is not None]
+        return min(known) if known else None
+    return None
 
 
 def _sum_expected_duration(steps: list[dict[str, Any]]) -> float | None:

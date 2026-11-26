@@ -61,6 +61,25 @@ you resume it.
 | `stability` | A reading has settled | see `admet describe run_steps` |
 | `threshold` | A reading crosses a value | see `admet describe run_steps` |
 | `condition` | A condition on readings holds | see `admet describe run_steps` |
+| `total_volume` | The channels together have delivered the volume | `sensors` (a list), `target_volume_ul` |
+| `any` | The first of its stops is met | `stops`: a list of triggers, each `{"trigger_type", "trigger_params"}` |
+
+`any` ends a step on whichever stop comes first: 150 µL of oil, 200 µL in the
+tube, or 90 s:
+
+```json
+"trigger_type": "any",
+"trigger_params": {"stops": [
+  {"trigger_type": "volume", "trigger_params": {"sensor_index": 0, "target_volume_ul": 150}},
+  {"trigger_type": "total_volume", "trigger_params": {"sensors": [0, 1, 2], "target_volume_ul": 200}},
+  {"trigger_type": "time", "trigger_params": {"duration_s": 90}}]},
+"timeout_s": 120
+```
+
+Its stops take parameters as a step's trigger does. The step's event in the
+run's record says which stop ended it (`ended_by`), and the plan's ETA is that
+of the stop expected first. Like every trigger that is not `time`, it needs a
+`timeout_s`.
 
 A volume trigger watches the one channel named by `sensor_index`; every other
 channel in the step stops at the same moment, whatever it has delivered.

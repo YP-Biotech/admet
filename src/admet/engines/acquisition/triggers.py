@@ -25,8 +25,6 @@ log = logging.getLogger(__name__)
 
 SensorReader = Callable[[int], float]
 
-SensorReader = Callable[[int], float]
-
 class Trigger(ABC):
     @abstractmethod
     def reset(self) -> None:
@@ -363,6 +361,88 @@ class ConfirmationTrigger(Trigger):
     def description(self) -> str:
         return f"Confirm: {self._message}"
 
+class TotalVolumeTrigger(Trigger):
+    """Stops once the channels named have delivered TARGET together: what lands in the tube."""
+
+    def __init__(self, sensors: list[int], target_volume_ul: float):
+        if not isinstance(sensors, (list, tuple)) or not sensors \
+                or any(isinstance(s, bool) or not isinstance(s, int) for s in sensors):
+            raise ValueError("sensors is a list of sensor indexes")
+        self._sensors = tuple(sensors)
+        self._target_ul = float(target_volume_ul)
+        self._start: dict[int, float] | None = None
+        self._delivered = 0.0
+
+    def reset(self) -> None:
+        self._start = None
+        self._delivered = 0.0
+
+    def check(self, get_flow: SensorReader, get_volume: SensorReader) -> bool:
+        volumes = {sensor: get_volume(sensor) for sensor in self._sensors}
+        if self._start is None:
+            self._start = volumes
+        self._delivered = sum(volumes[sensor] - self._start[sensor] for sensor in self._sensors)
+        return self._delivered >= self._target_ul
+
+    def progress(self) -> float:
+        return 1.0 if self._target_ul <= 0 else min(1.0, self._delivered / self._target_ul)
+
+    def description(self) -> str:
+        return f"Total volume: {self._target_ul:g} ul (sensors {', '.join(map(str, self._sensors))})"
+
+
+class AnyTrigger(Trigger):
+    """Stops on the first of its stops to be met: oil delivered, total delivered, time, ... Each is
+    a trigger of its own, {"trigger_type": ..., "trigger_params": {...}}; ended_by is the one that
+    ended the step."""
+
+    def __init__(self, stops: list[dict]):
+        if not isinstance(stops, list) or not stops:
+            raise ValueError("stops is a list of at least one trigger")
+        self.stops: list[Trigger] = []
+        for number, stop in enumerate(stops, 1):
+            if not isinstance(stop, dict):
+                raise ValueError(f"stop {number} is an object with trigger_type and trigger_params")
+            kind = stop.get("trigger_type")
+            if kind in ("any", "confirmation") or kind not in _TRIGGERS:
+                raise ValueError(f"stop {number}: trigger_type is one of "
+                                 f"{', '.join(k for k in _TRIGGERS if k not in ('any', 'confirmation'))}")
+            params = stop.get("trigger_params") or {}
+            taken = trigger_params(kind)
+            unknown = set(params) - set(taken)
+            missing = {name for name, needed in taken.items() if needed} - set(params)
+            if unknown or missing:
+                raise ValueError(f"stop {number}: the {kind} trigger takes {', '.join(taken)}"
+                                 + (f"; it needs {', '.join(sorted(missing))}" if missing else ""))
+            self.stops.append(create_trigger(kind, params))
+        self.ended_by: Trigger | None = None
+        self.timed_out = False
+
+    def reset(self) -> None:
+        self.ended_by, self.timed_out = None, False
+        for stop in self.stops:
+            stop.reset()
+
+    def shift(self, seconds: float) -> None:
+        for stop in self.stops:
+            stop.shift(seconds)
+
+    def check(self, get_flow: SensorReader, get_volume: SensorReader) -> bool:
+        done = [stop.check(get_flow, get_volume) for stop in self.stops]     # every stop sees every reading
+        for stop, met in zip(self.stops, done):
+            if met:
+                self.ended_by = stop
+                self.timed_out = bool(getattr(stop, "timed_out", False))
+                return True
+        return False
+
+    def progress(self) -> float:
+        return max(stop.progress() for stop in self.stops)
+
+    def description(self) -> str:
+        return " or ".join(stop.description() for stop in self.stops)
+
+
 # What can end a step, and what each one needs. Read from the triggers
 # themselves so a caller can be told what to pass instead of finding out from a
 # TypeError, and so this cannot drift from the constructors it describes.
@@ -373,6 +453,8 @@ _TRIGGERS: dict[str, type] = {
     "threshold": ThresholdTrigger,
     "condition": ConditionTrigger,
     "confirmation": ConfirmationTrigger,
+    "total_volume": TotalVolumeTrigger,
+    "any": AnyTrigger,
 }
 TRIGGER_TYPES = tuple(_TRIGGERS)
 

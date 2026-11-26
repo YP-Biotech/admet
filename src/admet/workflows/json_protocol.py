@@ -198,6 +198,22 @@ def _measurements_per_unit(fields, values):
     return result
 
 
+def _stops(stops, values):
+    """Each of a step's several stops with its parameters worked out, as a step's own are."""
+    if not isinstance(stops, list):
+        raise ValueError("stops is a list of triggers")
+    resolved = []
+    for stop in stops:
+        if not isinstance(stop, dict) or not isinstance(stop.get("trigger_params", {}), dict):
+            raise ValueError("each stop is an object with trigger_type and trigger_params")
+        params = {key: (interpolate(value, values) if key in TEXT_TRIGGER_PARAMS
+                        else [expression(item, values) for item in value] if key == "sensors" and isinstance(value, list)
+                        else expression(value, values))
+                  for key, value in stop.get("trigger_params", {}).items()}
+        resolved.append({**stop, "trigger_params": params})
+    return resolved
+
+
 def resolve(document):
     """Compile declared arithmetic into ordinary validated protocol steps."""
     if not isinstance(document, dict):
@@ -233,6 +249,9 @@ def resolve(document):
                         if target_key in compiled:
                             raise ValueError("channel parameters resolve to duplicate targets")
                         compiled[target_key] = (interpolate(v, step_values) if k in TEXT_TRIGGER_PARAMS
+                                                else _stops(v, step_values) if key == "trigger_params" and k == "stops"
+                                                else [expression(item, step_values) for item in v]
+                                                if key == "trigger_params" and k == "sensors" and isinstance(v, list)
                                                 else expression(v, step_values))
                     step[key] = compiled
                 if key == "pressure_setpoints":
@@ -382,6 +401,8 @@ def _normalize_resolved(document):
         if not isinstance(params, dict):
             raise ValueError("trigger_params must be an object")
         for key, value in params.items():
+            if key in ("stops", "sensors"):
+                continue                   # checked by the trigger itself, below
             if key == "message":
                 if not isinstance(value, str):
                     raise ValueError("confirmation message must be text")
@@ -398,6 +419,13 @@ def _normalize_resolved(document):
         trigger = step.get("trigger_type")
         if trigger == "confirmation":
             raise ValueError("use confirm_message before a step; confirmation triggers are unsupported")
+        if trigger in ("any", "total_volume"):
+            from admet.engines.acquisition.triggers import create_trigger
+
+            try:
+                create_trigger(trigger, params)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"step {index + 1}: {exc}") from exc
         if trigger != "time" and "timeout_s" not in step:
             raise ValueError("non-time steps require timeout_s")
         if "timeout_s" in step:
@@ -474,6 +502,8 @@ def validate_channels(document, channels):
                 if target > maximum:
                     raise ValueError(f"{context} exceeds detected range maximum {maximum:g} {unit}. "
                                      "Check all parameter multipliers, not only the base value.")
-        sensor = step.get("trigger_params", {}).get("sensor_index")
-        if sensor is not None and str(sensor) not in by_index:
-            raise ValueError(f"trigger sensor {sensor} is not connected")
+        params = step.get("trigger_params", {})
+        triggers = [params] + [stop.get("trigger_params", {}) for stop in params.get("stops", [])]
+        for sensor in [t.get("sensor_index") for t in triggers] + [s for t in triggers for s in t.get("sensors", [])]:
+            if sensor is not None and str(sensor) not in by_index:
+                raise ValueError(f"trigger sensor {sensor} is not connected")
