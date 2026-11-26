@@ -337,8 +337,8 @@ def channel_counts(columns: Iterable[str]) -> tuple[int, int]:
 
 
 def write_timeline(path: str | Path, rows: Iterable[dict[str, Any]], pressure_count: int, sensor_count: int) -> int:
-    """Timeline rows written at once, a reading or a QC row each as its columns say (for migrated runs
-    and tests); how many."""
+    """Timeline rows written at once, a reading or a QC row each as its columns say (for tests and
+    tools); how many."""
     connection = connect(path)
     count = 0
     try:

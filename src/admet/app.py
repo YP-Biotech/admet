@@ -36,20 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="an operation or engine id; omit for everything",
     )
 
-    migrate = sub.add_parser("migrate", help="lay old data out as control records now: an .admetp project as run "
-                                             "folders, or run folders with run.json and run.csv given their run.db")
-    migrate.add_argument("project", help="the .admetp project folder, or a folder of runs (a data folder, an export "
-                                         "folder, or one run)")
-    migrate.add_argument("--into", help="the data folder to lay the runs out in (default: the home's data folder)")
-    migrate.add_argument("--copy", action="store_true", help="copy the videos instead of moving them")
-    migrate.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
-    migrate.add_argument("--rig", action="store_true",
-                         help="take the project's rig settings into the home's rig.json (one project's rig is kept)")
-
-    rig = sub.add_parser("rig", help="show the home's rig settings, or take them from a project's manifest.json")
-    rig.add_argument("--from", dest="source", metavar="PROJECT",
-                     help="an .admetp project folder (or its manifest.json) whose rig settings replace the home's; "
-                          "nothing of its runs is touched")
+    rig = sub.add_parser("rig", help="show the home's rig settings: where rig.json is and what it holds")
     rig.add_argument("--home", help="the admet home to use instead of ADMET_HOME or ~/.admet")
 
     export_run = sub.add_parser("export-run", help="write a run's record and timeline as run.json and run.csv")
@@ -102,33 +89,8 @@ def main(argv: list[str] | None = None) -> int:
 
         return _attempt(lambda: Admet().describe(args.target))
 
-    if args.command == "migrate":
-        from admet.core.home import AdmetHome
-        from admet.core.migrate import migrate_project, migrate_runs, rig_settings, run_folders
-        from admet.core.registry import Registry
-
-        if not (Path(args.project) / "manifest.json").is_file() and run_folders(args.project):
-            report = migrate_runs(args.project)
-            print("\n".join(report.lines()))
-            return 1 if report.failed else 0
-
-        home = AdmetHome.resolve(args.home).ensure()
-        try:
-            report = migrate_project(args.project, args.into or home.data_dir, copy=args.copy,
-                                     registry=Registry(home.analyze_dir))
-            lines = report.lines()
-            if args.rig:
-                settings = rig_settings(args.project)
-                home.update_rig(**settings)
-                lines.append(f"rig settings taken into {home.rig_path}: {', '.join(sorted(settings)) or 'none found'}")
-        except (OSError, ValueError, KeyError) as exc:
-            print(f"Could not migrate {args.project}: {exc}", file=sys.stderr)
-            return 1
-        print("\n".join(lines))
-        return 0
-
     if args.command == "rig":
-        return run_rig(args.source, home=args.home)
+        return run_rig(home=args.home)
 
     if args.command == "export-run":
         from admet.core import rundb
@@ -191,31 +153,11 @@ def run_camera_bench(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_rig(source: str | None, *, home: str | None = None) -> int:
-    """The home's rig settings shown; with SOURCE, the project's rig settings put in their place first, the
-    file as it was kept beside it as rig.before.json."""
-    import shutil
-
+def run_rig(*, home: str | None = None) -> int:
+    """The home's rig settings: where rig.json is, and each setting it keeps."""
     from admet.core.home import AdmetHome
-    from admet.core.migrate import rig_settings
 
     resolved = AdmetHome.resolve(home).ensure()
-    if source:
-        project = Path(source)
-        project = project.parent if project.name == "manifest.json" else project
-        try:
-            settings = rig_settings(project)
-        except ValueError as exc:
-            print(f"Could not read the rig settings: {exc}", file=sys.stderr)
-            return 1
-        if not settings:
-            print(f"{project / 'manifest.json'} holds no rig settings; the home's rig is unchanged", file=sys.stderr)
-            return 1
-        if resolved.rig_path.is_file():
-            shutil.copy2(resolved.rig_path, resolved.rig_path.with_name("rig.before.json"))
-            print(f"the rig as it was: {resolved.rig_path.with_name('rig.before.json')}")
-        resolved.update_rig(**settings)
-        print(f"taken from {project.name}: {', '.join(sorted(settings))}")
     rig = resolved.rig()
     print(f"rig: {resolved.rig_path}")
     for key in sorted(rig):
