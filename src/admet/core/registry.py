@@ -15,14 +15,18 @@ from __future__ import annotations
 import hashlib
 from functools import lru_cache
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from admet.core.experiments import find_sample_id
 from admet.core.rundb import read_record
 from admet.core.runs import RECORD
 from admet.core.files import write_atomic
+
+log = logging.getLogger(__name__)
 
 REGISTRY = "registry.json"
 RESULTS_DIR = "results"
@@ -155,9 +159,11 @@ class Registry:
 
     def add_source(self, path: str | Path, *, engine: str = "", sample_id: str = "", run: str | Path | None = None,
                    settings: dict[str, Any] | None = None, protocol: str = "", run_time: str = "",
-                   replicate: int | None = None, condition: str = "", note: str = "") -> dict[str, Any] | None:
+                   replicate: int | None = None, condition: str = "", note: str = "",
+                   sample_code: str = "") -> dict[str, Any] | None:
         """Know a file; None when it was known already. SAMPLE_ID empty means the name is built;
-        CONDITION is the generation condition the file starts in, the one its run was planned with."""
+        CONDITION is the generation condition the file starts in, the one its run was planned with;
+        SAMPLE_CODE the id of the sample it is of (K7Q-03-r2), from its run or its folder's name."""
         source = Path(path).expanduser().resolve()
         record = self.read()
         if any(_canonical(entry.get("path")) == str(source) for entry in record["sources"] if isinstance(entry, dict)):
@@ -166,7 +172,7 @@ class Registry:
                  "cache_policy": "use", "active": True, "settings": dict(settings or {}),
                  "run": str(Path(run).resolve()) if run else "", "protocol": protocol, "run_time": run_time,
                  "replicate": replicate, "condition": str(condition or "").strip(), "note": str(note or ""),
-                 "added_at": _now()}
+                 "sample_code": str(sample_code or ""), "added_at": _now()}
         record["sources"].append(entry)
         self.write(record)
         return dict(entry)
@@ -200,10 +206,12 @@ class Registry:
 
     # -- runs in the watched folders ------------------------------------------------
     def scan(self, folder: str | Path | None = None) -> list[dict[str, Any]]:
-        """Every video of every run in the folder (or in all the watched folders) that is not known yet."""
+        """What is new in the folder (or in all the watched folders): archives of runs taken in first,
+        then every video of every run, and every folder of images named with a sample's id."""
         folders = [Path(folder)] if folder is not None else [Path(root) for root in self.roots()]
         added = []
         for root in folders:
+            self.ingest(root)
             for record_path in sorted(_run_records(root)):
                 record = read_record(record_path)
                 if not record:
@@ -223,13 +231,48 @@ class Registry:
                     # is built from them and the file's condition unless the user writes one over it. The condition is
                     # the one the run was planned with in control, else the protocol with its setpoints,
                     # until the user puts the file elsewhere.
+                    replicate = replicate_of(video, len(videos))
                     entry = self.add_source(path, engine="opencv", sample_id="", run=run_dir,
-                                            protocol=protocol, run_time=run_time(run_dir),
-                                            replicate=replicate_of(video, len(videos)),
-                                            condition=str(record.get("condition") or "") or protocol_condition(record))
+                                            protocol=protocol, run_time=run_time(run_dir), replicate=replicate,
+                                            condition=str(record.get("condition") or "") or protocol_condition(record),
+                                            sample_code=run_sample_code(record, replicate, len(videos)))
                     if entry is not None:
                         added.append(entry)
+            for images in _named_image_folders(root):
+                entry = self.add_source(images, engine="cellpose", sample_code=find_sample_id(images.name) or "")
+                if entry is not None:
+                    added.append(entry)
         return added
+
+    def ingest(self, folder: str | Path) -> list[str]:
+        """Archives of runs (admet export --tar) dropped into the folder, unpacked into it once each:
+        their run folders join the folder's runs. The archives themselves are left as they are."""
+        import tarfile
+
+        root = Path(folder)
+        if not root.is_dir():
+            return []
+        record = self.read()
+        done = {(entry.get("path"), entry.get("size"), entry.get("mtime_ns"))
+                for entry in record.get("ingested", []) if isinstance(entry, dict)}
+        taken = []
+        for archive in sorted(root.glob("*.tar")):
+            stat = archive.stat()
+            key = (str(archive.resolve()), stat.st_size, stat.st_mtime_ns)
+            if key in done:
+                continue
+            try:
+                with tarfile.open(archive) as tar:
+                    tar.extractall(root, filter="data")      # nothing outside the folder, no links, no devices
+            except (OSError, tarfile.TarError) as exc:
+                log.warning("could not take in %s: %s", archive, exc)
+                continue
+            record.setdefault("ingested", []).append({"path": key[0], "size": key[1], "mtime_ns": key[2],
+                                                      "at": _now()})
+            taken.append(archive.name)
+        if taken:
+            self.write(record)
+        return taken
 
     # -- what the screen remembers -------------------------------------------------------
     def view_setting(self, key: str, default: Any = None) -> Any:
@@ -245,6 +288,45 @@ class Registry:
     # -- results ------------------------------------------------------------------------
     def result_dir(self, source: str | Path, settings: dict[str, Any] | None = None) -> Path:
         return self.results_dir / content_key(source, settings)
+
+
+def run_sample_code(record: dict[str, Any], replicate: int | None, videos: int) -> str:
+    """The id of the sample a run's video is of: the run's id in its experiment and the replicate
+    (K7Q-03-r2); the run's id alone for its one video; empty for a run of no experiment."""
+    from admet.core.experiments import sample_id
+
+    code = str(record.get("run_code") or "")
+    if not code:
+        return ""
+    if replicate:
+        return sample_id(code, replicate)
+    return code if videos == 1 else ""
+
+
+def _named_image_folders(root: Path, depth: int = 3) -> list[Path]:
+    """Folders of images under ROOT (DEPTH levels at most) whose names carry a sample's id."""
+    from admet.core.experiments import find_sample_id
+
+    found: list[Path] = []
+    if not root.is_dir():
+        return found
+
+    def walk(folder: Path, level: int) -> None:
+        try:
+            children = list(folder.iterdir())
+        except OSError:
+            return
+        if find_sample_id(folder.name) and any(child.suffix.lower() in IMAGE_SUFFIXES for child in children
+                                               if child.is_file()):
+            found.append(folder)
+            return
+        if level < depth:
+            for child in sorted(children):
+                if child.is_dir() and not child.name.startswith("."):
+                    walk(child, level + 1)
+
+    walk(root, 0)
+    return found
 
 
 CHANNEL_LETTERS = ("o", "c", "b")           # oil, cells, beads: the rig's channels 0, 1, 2
@@ -282,7 +364,7 @@ def condition_channels(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 def protocol_condition(record: dict[str, Any]) -> str:
     """The generation condition of a run, by what it did: its protocol and the oil, cells and beads setpoints of
-    its recording step, "dropseq_3n o300 c40 b40"; a pressure setpoint says so, "o600mbar". Nothing known is ""."""
+    its recording step, "collection o300 c40 b40"; a pressure setpoint says so, "o600mbar". Nothing known is ""."""
     protocol = (record.get("normalized_settings") or {}).get("protocol")
     if not isinstance(protocol, dict):
         return ""

@@ -229,3 +229,72 @@ class RegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def experiment_run(data_dir, code="K7Q-03", replicates=3):
+    """A finished run of an experiment: its record carries its id, its steps are replicates."""
+    store = RunStore(data_dir)
+    run = store.begin({"plan_id": "p", "tag": code, "run_code": code, "condition": "300/40/40",
+                       "operation_id": "run_json_protocol"})
+    videos = []
+    for rep in range(1, replicates + 1):
+        name = f"{code}_step{rep:02d}_20261126_1400{rep:02d}.avi"
+        (run.path / name).write_bytes(bytes([rep]) * 1024)
+        videos.append({"step": rep, "step_name": f"set01_rep{rep:02d}", "video_path": name})
+    run.update(state="completed", artifacts={"videos": videos})
+    return run
+
+
+def image_folder(root, name, images=2):
+    folder = Path(root) / name
+    folder.mkdir(parents=True)
+    for index in range(images):
+        (folder / f"img{index}.tif").write_bytes(b"II*\x00")
+    return folder
+
+
+class SampleIdTests(unittest.TestCase):
+    """Runs of an experiment and folders of images labelled with a sample's id find each other."""
+
+    def test_a_runs_videos_carry_their_samples_ids(self):
+        from admet.core.registry import run_sample_code
+
+        with tempfile.TemporaryDirectory() as tmp:
+            experiment_run(Path(tmp) / "data")
+            registry = Registry(Path(tmp) / "analyze")
+            added = registry.scan(Path(tmp) / "data")
+        self.assertEqual(sorted(entry["sample_code"] for entry in added), ["K7Q-03-r1", "K7Q-03-r2", "K7Q-03-r3"])
+        self.assertEqual(run_sample_code({"run_code": "K7Q-03"}, None, 1), "K7Q-03")
+        self.assertEqual(run_sample_code({}, 2, 3), "")
+
+    def test_folders_of_images_named_with_an_id_are_found_and_others_left_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            micro = Path(tmp) / "microscopy"
+            image_folder(micro, "K7Q-03-r2_set101.2026-11-26-14-03-11")
+            image_folder(micro / "day 2", "k7q_04_rep1")
+            image_folder(micro, "set102.2026-11-26-15-00-00")                 # no id: not taken
+            (micro / "K7Q-05-r1 empty").mkdir()                                # an id, but no images
+            registry = Registry(Path(tmp) / "analyze")
+            added = registry.scan(micro)
+            again = registry.scan(micro)
+        self.assertEqual(sorted((Path(e["path"]).name, e["sample_code"], e["engine"]) for e in added),
+                         [("K7Q-03-r2_set101.2026-11-26-14-03-11", "K7Q-03-r2", "cellpose"),
+                          ("k7q_04_rep1", "K7Q-04-r1", "cellpose")])
+        self.assertEqual(again, [])
+
+    def test_an_archive_dropped_into_a_watched_folder_is_taken_in_once(self):
+        from admet.core.export import export_tar
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = experiment_run(Path(tmp) / "rig")
+            server = Path(tmp) / "server"
+            server.mkdir()
+            export_tar(RunStore(Path(tmp) / "rig"), server / "k7q.tar")
+            registry = Registry(Path(tmp) / "analyze")
+            added = registry.scan(server)
+            self.assertTrue((server / run.run_id / "run.db").is_file())
+            self.assertEqual(len(added), 3)
+            (server / run.run_id / "run.db").unlink()                        # not unpacked a second time
+            self.assertEqual(registry.ingest(server), [])
+            self.assertFalse((server / run.run_id / "run.db").exists())
+            self.assertTrue((server / "k7q.tar").is_file())                  # the archive is left as it is

@@ -1114,7 +1114,7 @@ class RunPlot:
 
 
 def run_label(run_dir: str | Path) -> str:
-    """A run folder's name as the screen says it: the name with the run's time, "dropseq_1n 16:43"."""
+    """A run folder's name as the screen says it: the name with the run's time, "K7Q-03 16:43"."""
     name = Path(run_dir).name
     stamp, _sep, rest = name.partition("_")
     if len(name) > 15 and name[8] == "_" and name[:8].isdigit() and name[9:15].isdigit():
@@ -1134,7 +1134,7 @@ def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
     A recording is drawn in its sample's colour, a channel in its line pattern. Its step is the one
     its bursts fall in; a recording outside any step (a run without events) is its bursts' span.
     """
-    from admet.core.runs import Run
+    from admet.core.runs import sealed_record
     from admet.core.timeline import QC_LIMIT_PERCENT, read_fluidics, read_qc, step_segments
 
     xname = "s since the step began"
@@ -1152,7 +1152,7 @@ def runs_charts(runs: Sequence[RunPlot]) -> list[tuple[str, dict[str, Any]]]:
             continue
         if qc is None:
             continue                                          # no recording, nothing a ticked file is of
-        record = Run(run.run_dir).read()
+        record = sealed_record(run.run_dir)
         polling = record.get("artifacts", {}).get("polling_origin_monotonic")
         events = [e for e in record.get("events", []) if isinstance(e, dict)] if type(polling) in (int, float) else []
         segments = step_segments(events, polling or 0.0) if events else []

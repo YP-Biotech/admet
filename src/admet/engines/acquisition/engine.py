@@ -38,7 +38,7 @@ from admet.engines.acquisition.recording import (
 )
 from admet.engines.acquisition.pipeline import PipelineEngine, ProtocolStep, build_pipeline_steps
 from admet.engines.acquisition.step_video import StepVideo
-from admet.engines.acquisition.triggers import ConditionTrigger, TimeTrigger, VolumeTrigger
+from admet.engines.acquisition.triggers import AnyTrigger, ConditionTrigger, TimeTrigger, VolumeTrigger
 from admet.engines.acquisition.settings import CONTROL_ENGINE_SETTINGS, CORRECTION_PARAM_NAMES, MANUAL_STOPS
 
 log = logging.getLogger(__name__)
@@ -781,6 +781,9 @@ class AcquisitionEngine:
         volume = _volume_trigger(step)
         if volume is None or step.on_complete != "zero" or self._acquisition is None:
             return
+        several = getattr(step.trigger, "inner", step.trigger)
+        if isinstance(several, AnyTrigger) and several.ended_by is not volume:
+            return                     # another stop ended it: the flow at the stop is not the volume's
         flows = volume._flows
         flow_at_stop = statistics.median(flows) if flows else 0.0
         channel_index = sensor_to_channel.get(volume.sensor_index)
@@ -1291,7 +1294,10 @@ def _wait_for_writers() -> None:
 
 
 def _volume_trigger(step: Any) -> VolumeTrigger | None:
+    """The step's volume stop: its trigger, or the first volume stop of several."""
     trigger = getattr(step.trigger, "inner", step.trigger)
+    if isinstance(trigger, AnyTrigger):
+        return next((stop for stop in trigger.stops if isinstance(stop, VolumeTrigger)), None)
     return trigger if isinstance(trigger, VolumeTrigger) else None
 
 

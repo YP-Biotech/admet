@@ -61,6 +61,25 @@ you resume it.
 | `stability` | A reading has settled | see `admet describe run_steps` |
 | `threshold` | A reading crosses a value | see `admet describe run_steps` |
 | `condition` | A condition on readings holds | see `admet describe run_steps` |
+| `total_volume` | The channels together have delivered the volume | `sensors` (a list), `target_volume_ul` |
+| `any` | The first of its stops is met | `stops`: a list of triggers, each `{"trigger_type", "trigger_params"}` |
+
+`any` ends a step on whichever stop comes first: 150 µL of oil, 200 µL in the
+tube, or 90 s:
+
+```json
+"trigger_type": "any",
+"trigger_params": {"stops": [
+  {"trigger_type": "volume", "trigger_params": {"sensor_index": 0, "target_volume_ul": 150}},
+  {"trigger_type": "total_volume", "trigger_params": {"sensors": [0, 1, 2], "target_volume_ul": 200}},
+  {"trigger_type": "time", "trigger_params": {"duration_s": 90}}]},
+"timeout_s": 120
+```
+
+Its stops take parameters as a step's trigger does. The step's event in the
+run's record says which stop ended it (`ended_by`), and the plan's ETA is that
+of the stop expected first. Like every trigger that is not `time`, it needs a
+`timeout_s`.
 
 A volume trigger watches the one channel named by `sensor_index`; every other
 channel in the step stops at the same moment, whatever it has delivered.
@@ -83,12 +102,24 @@ Both are optional text of up to 80 characters; a missing or empty one is none. T
 recording and the lists in Review and Calculations carry it, and in `admet control`
 the step takes it at Plan; without one the run is named after the protocol. The
 **condition** is the generation condition the run belongs to. Left out, it is the
-protocol with its oil, cells and beads setpoints, `dropseq_3n o300 c40 b40`; give
+protocol with its oil, cells and beads setpoints, `collection o300 c40 b40`; give
 one to call it something else. The record and the recordings carry it, Review
 lists it, and `admet analyze` puts the run's videos into it when it scans them,
 named `<condition>_rep1`, `<condition>_rep2`, … (see
 [Generation conditions](../analyze/overview#generation-conditions)). In `admet control` the two
 are the first rows of the parameter table.
+
+A run of a designed experiment carries two more, which the experiment writes, not the operator:
+
+```json
+"run": {"name": "K7Q-03", "condition": "300/40/40", "id": "K7Q-03", "experiment": "ratio sweep 26 Nov"}
+```
+
+The **id** is the run's id in its experiment: a code of three characters (no 0/O, 1/I/L), a dash
+and the run's number. Each replicate collected from the run is a sample with an id of its own,
+the run's id and the replicate: `K7Q-03-r2`. The run's record carries the id as `run_code`, so
+whatever is labelled with a sample's id, such as a folder of microscopy images, can be matched to
+the run and the replicate it came from. The **experiment** is the experiment's name.
 
 ## Measurements
 

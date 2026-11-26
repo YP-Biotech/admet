@@ -158,6 +158,7 @@ class PipelineEvent:
     at: str = ""
     monotonic: float = 0.0
     outcome: StepOutcome = StepOutcome.RUNNING
+    ended_by: str = ""                 # of a step's several stops, the one that ended it
 
 class PipelineEngine(threading.Thread):
     def __init__(
@@ -410,9 +411,11 @@ class PipelineEngine(threading.Thread):
                     raise TimeoutError(f"step {step.name} timed out")
                 step.status = StepStatus.TIMED_OUT if timed_out else StepStatus.COMPLETED
                 self._apply_on_complete(step)
+                ended_by = getattr(getattr(step.trigger, "inner", step.trigger), "ended_by", None)
                 self._emit_event(
                     step_volumes=step_volumes,
                     outcome=StepOutcome.TIMED_OUT if timed_out else StepOutcome.COMPLETED,
+                    ended_by=ended_by.description() if ended_by is not None else "",
                 )
                 return
 
@@ -496,6 +499,7 @@ class PipelineEngine(threading.Thread):
         confirmation_message: str | None = None,
         outcome: StepOutcome = StepOutcome.RUNNING,
         about_the_run: bool = False,
+        ended_by: str = "",
     ) -> None:
         if confirmation_message is None:
             confirmation_message = self._gate_message
@@ -523,6 +527,7 @@ class PipelineEngine(threading.Thread):
                 at=now_iso(),
                 monotonic=time.monotonic(),
                 outcome=outcome,
+                ended_by=ended_by,
             )
             self._latest_event = event
             self._recent_events.append(event)

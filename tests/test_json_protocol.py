@@ -21,6 +21,21 @@ DOCUMENT = {
 }
 
 
+def collection():
+    """One collection whose channels are each under flow or pressure, filmed when asked."""
+    return {"name": "collection", "parameters": {
+        "oil_control": {"type": "choice", "label": "Oil", "default": "flow", "options": ["flow", "pressure"]},
+        "oil_value": ["Oil setpoint", 300], "cells_value": ["Cells", 40], "beads_value": ["Beads", 40],
+        "record_video": {"type": "boolean", "label": "Video", "default": False},
+        "record_s": {"type": "number", "label": "Video limit", "default": 100, "min": 1, "max": 100}},
+        "steps": [{"name": "rep01", "control": {"0": "{oil_control}", "1": "flow", "2": "flow"},
+                   "sensor_setpoints": {"0": "oil_value", "1": "cells_value", "2": "beads_value"},
+                   "pressure_setpoints": {"0": "oil_value"},
+                   "trigger_type": "volume", "trigger_params": {"sensor_index": 0, "target_volume_ul": 150},
+                   "timeout_s": 120, "on_complete": "zero", "record": "{record_video}", "record_max_s": "record_s",
+                   "confirm_message": "Oil L {oil_control} {oil_value}"}]}
+
+
 class JsonProtocolTests(unittest.TestCase):
     def test_fake_protocol_executes_records_and_calculates(self):
         # One short protocol through the whole path on the simulator: plan,
@@ -84,8 +99,7 @@ class JsonProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with chdir(tmp):
                 self.assertEqual(set(template_documents()), {
-                    "dead_volume", "density", "dropseq_1n", "dropseq_3n", "flow_stability_scout", "gravimetry",
-                    "viscosity",
+                    "dead_volume", "density", "flow_stability_scout", "gravimetry", "viscosity",
                 })
             directory = Path(tmp) / "templates"
             directory.mkdir()
@@ -93,55 +107,24 @@ class JsonProtocolTests(unittest.TestCase):
             with patch("importlib.resources.files", return_value=Path(tmp)):
                 self.assertEqual(set(template_documents()), {"short_run"})
 
-    def test_dropseq_template_runs_three_replicates_with_bounded_execution(self):
-        document = template_documents()["dropseq_3n"]
-        steps = resolve(document)["steps"]
-        self.assertEqual([step["name"] for step in steps], ["set01_rep01", "set01_rep02", "set01_rep03", "Finish set01"])
-        for step in steps[:3]:
-            self.assertEqual((step["trigger_type"], step["trigger_params"], step["timeout_s"]),
-                             ("volume", {"sensor_index": 0, "target_volume_ul": 150}, 120))
-            self.assertEqual((step["sensor_setpoints"], step["pressure_setpoints"]), ({"0": 300, "1": 40, "2": 40}, {}))
-        self.assertEqual((steps[3]["sensor_setpoints"], steps[3]["trigger_type"]), ({}, "time"))
-        for step in steps:
-            self.assertEqual(step["on_complete"], "zero")
-            self.assertTrue(step["confirm_message"])
-        admet = Admet()
-        with patch.object(admet, "engine_action", side_effect=AssertionError("planning actuated")):
-            plan = admet.plan_protocol(operation_id="run_json_protocol", settings={"protocol": document})
-        self.assertEqual(plan["expected_duration_s"], 90)
-        self.assertEqual(plan["steps"][0]["flow_setpoints_ul_min"], {"0": 300, "1": 40, "2": 40})
-
-    def test_dropseq_1n_is_one_collection_with_the_same_parameters(self):
-        one, three = template_documents()["dropseq_1n"], template_documents()["dropseq_3n"]
-        self.assertEqual(set(one["parameters"]), set(three["parameters"]))
-        steps = resolve(one)["steps"]
-        self.assertEqual([step["name"] for step in steps], ["set01_rep01", "Finish set01"])
-        self.assertEqual(steps[0]["trigger_params"], resolve(three)["steps"][0]["trigger_params"])
-        self.assertIn("Collection:", steps[0]["confirm_message"])
-        one["parameter_values"]["record_video"] = True
-        self.assertEqual([step.get("record") for step in resolve(one)["steps"]], [True, None])
-
-    def test_dropseq_records_each_collection_only_when_asked(self):
-        document = template_documents()["dropseq_3n"]
-        self.assertEqual([step.get("record") for step in resolve(document)["steps"]], [False, False, False, None])
+    def test_a_boolean_parameter_switches_a_steps_video(self):
+        document = collection()
+        self.assertEqual([step.get("record") for step in resolve(document)["steps"]], [False])
         self.assertTrue(all("record_max_s" not in step for step in resolve(document)["steps"]))
-        document["parameter_values"].update({"record_video": True, "record_s": 60})
-        steps = resolve(document)["steps"]
-
-        self.assertEqual([(s.get("record"), s.get("record_max_s")) for s in steps],
-                         [(True, 60), (True, 60), (True, 60), (None, None)])        # never the finish gate
+        document["parameter_values"] = {"record_video": True, "record_s": 60}
+        self.assertEqual([(s.get("record"), s.get("record_max_s")) for s in resolve(document)["steps"]], [(True, 60)])
         admet = Admet()
         with patch.object(admet, "engine_action", side_effect=AssertionError("planning actuated")):
             plan = admet.plan_protocol(operation_id="run_json_protocol", settings={"protocol": document})
-        self.assertEqual(plan["recording"]["video_steps"], [1, 2, 3])
+        self.assertEqual(plan["recording"]["video_steps"], [1])
         self.assertIn("camera_live", plan["unmet_guards"])
         document["steps"][0]["record"] = "{oil_control}"
         with self.assertRaisesRegex(ValueError, "record must be true or false"):
             resolve(document)
 
     def test_control_puts_each_channel_under_flow_or_pressure(self):
-        document = template_documents()["dropseq_3n"]
-        document["parameter_values"].update({"oil_control": "pressure", "oil_value": 1300})
+        document = collection()
+        document["parameter_values"] = {"oil_control": "pressure", "oil_value": 1300}
         step = resolve(document)["steps"][0]
 
         self.assertEqual((step["sensor_setpoints"], step["pressure_setpoints"]), ({"1": 40, "2": 40}, {"0": 1300}))

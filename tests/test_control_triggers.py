@@ -151,3 +151,47 @@ class TriggerBehaviorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeveralStopsTests(unittest.TestCase):
+    """any ends a step on the first of its stops; total_volume counts the channels together."""
+
+    @staticmethod
+    def drive(trigger, ticks, flows, step_ul):
+        trigger.reset()
+        volumes = {sensor: 0.0 for sensor in flows}
+        for tick in range(ticks):
+            if trigger.check(lambda sensor: flows[sensor], lambda sensor: volumes[sensor]):
+                return tick
+            for sensor in volumes:
+                volumes[sensor] += step_ul[sensor]
+        return None
+
+    def test_total_volume_stops_on_what_the_channels_delivered_together(self):
+        trigger = create_trigger("total_volume", {"sensors": [0, 1, 2], "target_volume_ul": 10.0})
+        self.assertEqual(self.drive(trigger, 100, {0: 60, 1: 6, 2: 6}, {0: 1.0, 1: 0.5, 2: 0.5}), 5)
+        self.assertEqual(trigger.progress(), 1.0)
+        with self.assertRaisesRegex(ValueError, "sensors"):
+            create_trigger("total_volume", {"sensors": 0, "target_volume_ul": 10.0})
+
+    def test_the_first_stop_met_ends_the_step_and_says_which_it_was(self):
+        stops = [{"trigger_type": "volume", "trigger_params": {"sensor_index": 0, "target_volume_ul": 50.0,
+                                                               "mode": "integral"}},
+                 {"trigger_type": "total_volume", "trigger_params": {"sensors": [0, 1], "target_volume_ul": 30.0}}]
+        trigger = create_trigger("any", {"stops": stops})
+        self.assertEqual(self.drive(trigger, 100, {0: 60, 1: 60}, {0: 1.0, 1: 1.0}), 15)
+        self.assertIs(trigger.ended_by, trigger.stops[1])
+        self.assertIn(" or ", trigger.description())
+        stops[0]["trigger_params"]["target_volume_ul"] = 20.0
+        trigger = create_trigger("any", {"stops": stops})
+        self.assertEqual(self.drive(trigger, 100, {0: 60, 1: 60}, {0: 2.0, 1: 0.5}), 10)
+        self.assertIs(trigger.ended_by, trigger.stops[0])
+
+    def test_stops_are_checked_when_made(self):
+        for stops, message in (([], "at least one"),
+                               ([{"trigger_type": "any", "trigger_params": {"stops": []}}], "trigger_type"),
+                               ([{"trigger_type": "confirmation", "trigger_params": {"message": "x"}}], "trigger_type"),
+                               ([{"trigger_type": "time", "trigger_params": {}}], "needs duration_s"),
+                               ([{"trigger_type": "time", "trigger_params": {"duration_s": 1, "x": 2}}], "takes")):
+            with self.assertRaisesRegex(ValueError, message):
+                create_trigger("any", {"stops": stops})

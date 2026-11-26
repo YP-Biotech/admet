@@ -90,7 +90,7 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
             rows.append(row)
         tail = (end, q)
         clock += duration + 4
-    set_timeline(directory / "run.db", timeline_text(rows, ["elapsed_s", *[f"{kind}_{channel}_{unit}" for channel in channels
+    set_timeline(Run(directory).ref, timeline_text(rows, ["elapsed_s", *[f"{kind}_{channel}_{unit}" for channel in channels
                                                                             for kind, unit in (("flow", "ul_min"),
                                                                                                ("pressure", "mbar"))]]))
     kept = {**plan, "state": "completed", "run_id": run_id or name, "events": events,
@@ -116,7 +116,7 @@ def archive(root, name, *, flow=None, slope=2, multiplier=1.2, run_id=None, para
                                            * multiplier * 1.6)
     elif name == "dead_volume":
         values.update(zip(configs[0]["volumes"], (80, 82, 84)))
-    rundb.write_record(directory / "run.db", {**kept, "measurements": {"fields": fields, "values": values, "revision": 1}})
+    rundb.write_record(Run(directory).ref, {**kept, "measurements": {"fields": fields, "values": values, "revision": 1}})
     return directory
 
 
@@ -381,10 +381,10 @@ class MetrologyTests(unittest.TestCase):
 
     def test_viscosity_rejects_unstable_data(self):
         directory = archive(self.tmp.name, "viscosity")
-        rows = rundb.timeline_rows(directory / "run.db")
+        rows = rundb.timeline_rows(Run(directory).ref)
         for i, row in enumerate(rows):
             row["flow_1_ul_min"] = float(row["flow_1_ul_min"]) * (1.4 if i % 2 else 0.6)
-        set_timeline_rows(directory / "run.db", rows)
+        set_timeline_rows(Run(directory).ref, rows)
         result = calculate_run(directory, "viscosity")["result"]
         self.assertEqual(result["status"], "inconclusive")
         self.assertIsNone(result["resistance_mbar_min_ul"])
@@ -439,8 +439,10 @@ class MetrologyTests(unittest.TestCase):
         self.assertEqual((tables["Correction for a profile"]["rows"][0][0], tables["Correction for a profile"]["highlight"]),
                          ("Scale only (suggested)", 0))
         self.assertEqual(len(tables["Collections"]["rows"]), 9)
-        copied = Path(self.tmp.name) / "copied"
+        copied = Path(self.tmp.name) / "copied"                # the data folder: its runs and its control.db
         shutil.copytree(Path(self.tmp.name) / "runs", copied / "runs")
+        for part in Path(self.tmp.name).glob("control.db*"):
+            shutil.copy2(part, copied / part.name)
         self.assertFalse(saved_results(copied / "runs" / "gravimetry")[0]["outdated"])
 
     def test_sample_steps_passes_and_units_are_checked(self):
@@ -468,7 +470,7 @@ class MetrologyTests(unittest.TestCase):
             events = record(directory)["events"]
             windows = [(events[i]["monotonic"] - 101, events[i + 1]["monotonic"] - 99)
                        for i in range(0, len(events), 2)]
-            path = directory / "run.db"
+            path = Run(directory).ref
             rows = rundb.timeline_rows(path)
             for row in rows:
                 t = float(row["elapsed_s"])

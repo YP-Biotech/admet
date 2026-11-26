@@ -283,7 +283,16 @@ def create_control_workflow() -> Workflow:
                 actions=(StageAction("Continue", completes=True),),
                 settings_options={"sections": ("flow", "layout", "consumption")},
             ),
-            protocol_stage("experiment_1", "6. Experiment 1"),
+            Stage(
+                "experiment", "6. Experiment",
+                instructions=("Design the experiment as a table of runs, or import one as JSON. Each run gets an id; "
+                              "label what you collect with the run's id and the replicate, K7Q-03-r2. Run next runs "
+                              "the next planned row and asks before the one after.",),
+                features=("experiment",),
+                actions=(StageAction("Continue", completes=True),),
+                show_settings=False,
+            ),
+            protocol_stage("experiment_1", "7. Protocol"),
             Stage(
                 "calculations", "Calculations",
                 instructions=("Choose a saved run and a calculation. Results stay with the recording in the data folder.",),

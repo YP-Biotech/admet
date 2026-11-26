@@ -16,7 +16,7 @@ uv run --extra analyze admet analyze --host 127.0.0.1 --data /srv/admet/runs
 |---|---|---|
 | `--host` | `0.0.0.0` | Address to listen on; the default is every interface |
 | `--port` | `8080` | Port to listen on |
-| `--data` | none | Another folder of runs to watch beside the home's data folder, for example the export folder on the server |
+| `--data` | none | Another folder to watch beside the home's data folder: the export folder on the server, the microscope's folder; archives of runs dropped into it are taken in |
 | `--home` | `ADMET_HOME` or `~/.admet` | The admet home whose data folder is watched and whose `analyze/` room holds the registry and the results |
 
 Analyze watches the home's data folder from the start, so every run the rig
@@ -69,11 +69,33 @@ under Details, the run and step it came from. The list and every file's settings
 are kept in the registry, so the screen comes back as you left it; **Rescan** at
 the top lists videos that arrived in the watched folders since.
 
+## Samples of an experiment
+
+A run from an experiment designed in `admet control` carries its id, and each
+replicate collected from it is a sample with its own id: run `K7Q-03`, its
+second replicate `K7Q-03-r2`. Analyze names such a sample by its id, under the
+run's condition.
+
+Label what you collected with the sample's id: rename the folder the microscope
+writes so that its name holds the id, anywhere in it, in any case, with the parts
+joined by `-`, `_`, `.`, a space or nothing, the replicate as `r2` or `rep2`:
+`K7Q-03-r2_set101.2026-11-26-14-03-11`, `k7q_03_rep2`. Watch the folder the
+microscope writes into (`--data`, or **Add folder…** on 1. Files) and every folder of
+images named with an id is listed by itself and put into the sample of that id,
+in the condition of its video, when the video is there. Put elsewhere or taken out
+by hand, it stays where you put it. A folder with an id no run has is a sample of
+its own until that run's video arrives.
+
+Runs reach the server through its export folder, or, when the rig cannot reach
+it, as an archive (`admet export --tar` on the rig): drop the `.tar` into a
+watched folder and the next scan unpacks it there, once, and lists its runs. The
+archive is left as it is.
+
 ## Generation conditions
 
 A generation condition is how a file's droplets were made: the protocol and the
 oil, cells and beads setpoints of the step that recorded, written
-`dropseq_3n o300 c40 b40`, a pressure setpoint as `o600mbar`. Every file from a
+`collection o300 c40 b40`, a pressure setpoint as `o600mbar`. Every file from a
 run gets it at scan, from the condition the run was planned with in `admet
 control` when there is one, else from the protocol itself. Runs of one protocol at
 the same setpoints thus fall into one condition on their own, whatever day they

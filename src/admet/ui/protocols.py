@@ -129,22 +129,27 @@ def summary_text(results):
     return "\n".join(flow) or "—", "\n".join(volume) or "—"
 
 
+def trigger_text(trigger, params):
+    if trigger == "volume":
+        return f"volume ch {params['sensor_index']}: {params['target_volume_ul']:g} µL"
+    if trigger == "total_volume":
+        return f"volume ch {'+'.join(map(str, params['sensors']))}: {params['target_volume_ul']:g} µL"
+    if trigger == "time":
+        return f"time: {params['duration_s']:g} s"
+    if trigger == "stability":
+        tolerance = params.get("tolerance_ul_min", STABILITY_TOLERANCE_UL_MIN)
+        window = params.get("window_s", STABILITY_DURATION_S)
+        return f"stable ch {params['sensor_index']}: ±{tolerance:g} µL/min for {window:g} s"
+    if trigger == "any":
+        return " or ".join(trigger_text(stop["trigger_type"], stop.get("trigger_params", {}))
+                           for stop in params["stops"])
+    return trigger + ": " + json.dumps(params, sort_keys=True)
+
+
 def step_rows(plan):
     rows = []
     for step in plan["steps"]:
-        params = step["trigger_params"]
-        trigger = step["trigger_type"]
-        if trigger == "volume":
-            condition = f"volume ch {params['sensor_index']}: {params['target_volume_ul']:g} µL"
-        elif trigger == "time":
-            condition = f"time: {params['duration_s']:g} s"
-        elif trigger == "stability":
-            tolerance = params.get("tolerance_ul_min", STABILITY_TOLERANCE_UL_MIN)
-            window = params.get("window_s", STABILITY_DURATION_S)
-            condition = (f"stable ch {params['sensor_index']}: ±{tolerance:g} µL/min "
-                         f"for {window:g} s")
-        else:
-            condition = trigger + ": " + json.dumps(params, sort_keys=True)
+        condition = trigger_text(step["trigger_type"], step["trigger_params"])
         condition += " · ETA " + value_text(step["expected_duration_s"], " s")
         controls = [
             (index, mode, value_text(target, unit))
@@ -154,7 +159,8 @@ def step_rows(plan):
             )
             for index, target in step[key].items()
         ]
-        gate_only = not controls and trigger == "time" and params["duration_s"] == 0 and step["confirmation"]
+        gate_only = (not controls and step["trigger_type"] == "time" and step["trigger_params"]["duration_s"] == 0
+                     and step["confirmation"])
         if gate_only:
             condition = "Operator: " + step["name"]
         controls = controls or [("—", "confirm" if gate_only else "off", "—")]
@@ -457,7 +463,9 @@ class ProtocolEditor(QWidget):
             return widget
 
         kinds = {"number": ParamKind.FLOAT, "text": ParamKind.TEXT, "boolean": ParamKind.BOOLEAN, "choice": ParamKind.CHOICE}
-        params = [Param("run." + key, RUN_LABELS[key], ParamKind.TEXT, default="") for key in RUN_FIELDS]
+        # The name and the condition are typed; a run's id and experiment come from its experiment.
+        params = [Param("run." + key, RUN_LABELS[key], ParamKind.TEXT, default="") for key in RUN_FIELDS
+                  if key in RUN_LABELS]
         params += [Param(name, declaration["label"], kinds[declaration["type"]], default=declaration["default"],
                          minimum=declaration.get("min"), maximum=declaration.get("max"))
                    for name, declaration in declarations.items()]
