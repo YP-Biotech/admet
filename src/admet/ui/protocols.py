@@ -22,6 +22,7 @@ from admet.workflows.json_protocol import (
 )
 
 CUSTOM_STAGE = "custom"       # the page a protocol is run on its own, its condition typed beside it
+EXPERIMENT_RUN_STAGE = "experiment_run"   # an experiment's row runs here; the row is its definition
 
 
 def value_text(value, unit=""):
@@ -343,6 +344,9 @@ class ProtocolEditor(QWidget):
         self.editor.setMaximumHeight(180)
         self.editor.setPlaceholderText("Select a template or edit the JSON definition here.")
         self.builtin = stage.settings_options.get("builtin", "")
+        # Only a protocol run on its own is chosen and edited here; built-in steps and an experiment's
+        # rows bring their own definition, so the selector, the parameters and the JSON stay hidden.
+        self.editable = not self.builtin and stage.id != EXPERIMENT_RUN_STAGE
         if not self.builtin:
             self.templates = template_documents()
             bar = QHBoxLayout()
@@ -350,11 +354,12 @@ class ProtocolEditor(QWidget):
             self.library.setMinimumWidth(170)
             bar.addWidget(self.library, 1)
             self.library.currentIndexChanged.connect(self.open_template)
+            self.library.setVisible(self.editable)
             root.addLayout(bar)
             self.parameter_box = QVBoxLayout()
             root.addLayout(self.parameter_box)
             root.addWidget(self.editor)
-        else:
+        if not self.editable:
             self.editor.hide()
         self.table = PlanTable()
         self.table.setObjectName("RawConfigTable")
@@ -392,7 +397,7 @@ class ProtocolEditor(QWidget):
         self._edit_generation += 1
         self._table_digest = None
         self.dirty = True
-        self.editor.setVisible(not self.builtin and not self._executing)
+        self.editor.setVisible(self.editable and not self._executing)
         self.table.hide()
         self.details_box.hide()
         self.window._protocol_changed()
@@ -407,7 +412,7 @@ class ProtocolEditor(QWidget):
         self.measurements.preview(fields)
 
     def refresh_parameters(self):
-        if self.builtin:
+        if not self.editable:
             return
         if self.parameter_table is not None:
             self.parameter_box.removeWidget(self.parameter_table)
@@ -554,7 +559,7 @@ class ProtocolEditor(QWidget):
         self._table_digest = None
         self.measurements.preview(resolve(plan["normalized_settings"]["protocol"]).get("measurements", {}))
         self.show_plan()
-        self.editor.setVisible(not bool(self.builtin))
+        self.editor.setVisible(self.editable)
         self.window._append_log("Preview ready — nothing recorded or actuated")
         self.window._protocol_changed()
 
@@ -603,7 +608,7 @@ class ProtocolEditor(QWidget):
 
         def failed(exc):
             self.lock_definition(False)
-            self.editor.setVisible(not bool(self.builtin))
+            self.editor.setVisible(self.editable)
             self.error(exc)
 
         self.window.tasks.submit(lambda: self.backend.call("control_protocol", {

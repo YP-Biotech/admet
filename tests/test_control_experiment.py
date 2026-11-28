@@ -168,6 +168,9 @@ class WindowTests(Case):
         stage = next(stage for stage in window.workflow.stages if stage.id == "experiment_run")
         editor = window.protocol_editors[stage.id]
         self.assertEqual(editor.plan["tag"], f"{code}-01")
+        self.assertTrue(editor.library.isHidden() and editor.editor.isHidden())   # the row is the definition
+        self.assertIsNone(editor.parameter_table)
+        self.assertFalse(editor.table.isHidden())                                 # only the plan shows
         self.assertTrue(experiment.runs[0].run_folder)
         record = self.api.service.runs.open(experiment.runs[0].run_folder).read()
         self.assertEqual((record.get("run_code"), record.get("experiment")), (f"{code}-01", "two runs"))
@@ -191,6 +194,7 @@ class WindowTests(Case):
         editor = window._protocol_editor(window.workflow.stages[index])
         editor.set_document(CUSTOM)
         pump(self.app, 0.05)
+        self.assertFalse(editor.library.isHidden() or editor.editor.isHidden())   # chosen and edited here
         editor.run_editors["condition"].setText("oil only")
         editor.build_plan()
         self.wait(lambda: editor.plan is not None)

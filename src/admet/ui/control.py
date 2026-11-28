@@ -173,7 +173,6 @@ log = logging.getLogger(__name__)
 # The camera settings kept with the rig and set again when control opens; the scale is kept as optics.
 KEPT_CAMERA_SETTINGS = tuple(param.name for param in CAMERA_SETTINGS.params if param.name != "camera_microns_per_pixel")
 
-EXPERIMENT_RUN_STAGE = "experiment_run"   # the step an experiment's runs are run in
 EXPERIMENT_PLAN_TICKS = 40                 # status reads (0.5 s each) a run may take to be planned or to start
 
 PREVIEW_MIN_HEIGHT = 280
@@ -1953,6 +1952,8 @@ class ControlWindow(QMainWindow):
             self._notify("A protocol is running; the next run starts after it.", "warning")
             return
         run_id = run.run_id(experiment.code)
+        from admet.ui.protocols import EXPERIMENT_RUN_STAGE
+
         index = next(i for i, stage in enumerate(self.workflow.stages) if stage.id == EXPERIMENT_RUN_STAGE)
         stage = self.workflow.stages[index]
         editor = self._protocol_editor(stage)
@@ -2027,7 +2028,7 @@ class ControlWindow(QMainWindow):
     def _run_identity(self, editor, document) -> dict[str, str]:
         """What names the run a step is about to plan: an experiment's row as Run next gave it; a custom
         run, the next id of the day's custom runs with the condition typed beside it; nothing else."""
-        from admet.ui.protocols import CUSTOM_STAGE
+        from admet.ui.protocols import CUSTOM_STAGE, EXPERIMENT_RUN_STAGE
 
         if editor.stage.id == EXPERIMENT_RUN_STAGE:
             return dict(self._experiment_identity)
