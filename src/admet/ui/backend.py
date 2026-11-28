@@ -19,11 +19,11 @@ class DesktopBackend:
         self._rig_lock = threading.RLock()                 # one change to the rig's lists at a time
         self._previews = {}
 
-    def preview(self, scope, document):
-        """Plan a protocol for one stage; the document's run block names the run and its set."""
+    def preview(self, scope, document, run=None):
+        """Plan a protocol for one stage; RUN names the run: its name, condition, id and experiment."""
         with self.lock:
             self.discard_preview(scope)
-            plan = self.service.plan_protocol("run_json_protocol", {"protocol": document})
+            plan = self.service.plan_protocol("run_json_protocol", {"protocol": document}, run=run)
             self._previews[scope] = plan["plan_id"]
             return plan
 

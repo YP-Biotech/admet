@@ -1,10 +1,13 @@
-"""A run is a folder: data/runs/<date>_<name>/ with run.db and its videos.
+"""A run: its record and its timeline in the data folder's control.db, its videos in its folder.
 
-run.db (see rundb) holds the run's one record: the plan and the protocol as they ran, the
-state and the times, the rig mapping and the corrections in force, the step events, the
+control.db (see rundb) keeps every run control recorded: the plan and the protocol as they ran,
+the state and the times, the rig mapping and the corrections in force, the step events, the
 measurements typed during the run, the videos it made, and the results calculated from it
-afterwards; and its timeline, fluidics and QC rows on one clock. Each change to the record is
-one transaction. Nothing in the folder points outside it, so a folder copied elsewhere is whole.
+afterwards; and its timeline, fluidics and QC rows on one clock. Each change to a record is one
+transaction. The run's folder, data/runs/<date>_<name>/, holds its videos; once the run has
+finished it holds its run.db too, the run sealed on its own, sealed again whenever its record
+changes. That folder is what goes to the server and what analyze reads: nothing in it points
+outside it, so a folder copied elsewhere is whole.
 """
 
 from __future__ import annotations
@@ -20,7 +23,8 @@ from typing import Any
 from admet.core import rundb
 from admet.core.files import write_atomic
 
-RECORD = rundb.DB_NAME
+RECORD = rundb.DB_NAME             # a sealed run's file in its folder
+CONTROL_DB = rundb.CONTROL_DB      # every run of a data folder, in the data folder
 RUNS_DIR = "runs"
 RUN_ID = re.compile(r"\d{8}_\d{6}_[a-z0-9_]+")
 FINISHED = frozenset({"completed", "failed", "cancelled"})
@@ -47,25 +51,52 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def sealed_record(folder: str | Path) -> dict[str, Any]:
+    """A finished run's record as its folder carries it, in its run.db: what analyze and the server
+    read, wherever the folder was copied; empty when the folder holds none."""
+    return rundb.read_record(Path(folder) / RECORD)
+
+
 class Run:
-    """One run folder and its record."""
+    """One run of a data folder: its folder, data/runs/<id>/, and its record in control.db."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.run_id = self.path.name
+        self.database = self.path.parent.parent / CONTROL_DB
 
     @property
-    def db_path(self) -> Path:
+    def ref(self) -> str:
+        """Where the run's record and timeline are: its locator in control.db."""
+        return rundb.locator(self.database, self.run_id)
+
+    @property
+    def sealed_path(self) -> Path:
+        """The run on its own, in its folder, once it has finished."""
         return self.path / RECORD
 
     def read(self) -> dict[str, Any]:
-        return rundb.read_record(self.db_path)
+        return rundb.read_record(self.ref)
 
     def write(self, record: dict[str, Any]) -> None:
-        rundb.write_record(self.db_path, record)
+        rundb.write_record(self.ref, record)
+        self._seal_if_finished(record)
 
     def update(self, **fields: Any) -> dict[str, Any]:
-        return rundb.update_record(self.db_path, lambda record: {**record, **fields})
+        return self._changed(rundb.update_record(self.ref, lambda record: {**record, **fields}))
+
+    def seal(self) -> Path:
+        """The run written on its own into its folder as run.db: what goes to the server and analyze."""
+        self.path.mkdir(parents=True, exist_ok=True)
+        return rundb.seal(self.ref, self.sealed_path)
+
+    def _changed(self, record: dict[str, Any]) -> dict[str, Any]:
+        self._seal_if_finished(record)
+        return record
+
+    def _seal_if_finished(self, record: dict[str, Any]) -> None:
+        if record.get("state") in FINISHED:
+            self.seal()
 
     @property
     def name(self) -> str:
@@ -84,7 +115,7 @@ class Run:
             kept.append(True)
             return record
 
-        rundb.update_record(self.db_path, add)
+        self._changed(rundb.update_record(self.ref, add))
         return bool(kept)
 
     def measurements(self, changes: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -107,7 +138,7 @@ class Run:
             kept["revision"] += 1
             return record
 
-        return rundb.update_record(self.db_path, change)["measurements"]
+        return self._changed(rundb.update_record(self.ref, change))["measurements"]
 
     def inputs_digest(self) -> str:
         """What a calculation reads from the record, hashed: everything but the results themselves."""
@@ -129,7 +160,7 @@ class Run:
             record["calculations"] = [*(results if isinstance(results, list) else []), kept]
             return record
 
-        rundb.update_record(self.db_path, add)
+        self._changed(rundb.update_record(self.ref, add))
         return kept
 
     def video_finished(self, video_name: str, encoded: bool, reason: str) -> bool:
@@ -149,33 +180,34 @@ class Run:
                     found.append(True)
             return record if found else None
 
-        rundb.update_record(self.db_path, mark)
+        self._changed(rundb.update_record(self.ref, mark))
         return bool(found)
 
 
 class RunStore:
-    """The runs of one data folder."""
+    """The runs of one data folder: their records in its control.db, their folders under runs/."""
 
     def __init__(self, data_dir: str | Path) -> None:
         self.root = Path(data_dir)
         self.runs_dir = self.root / RUNS_DIR
+        self.database = self.root / CONTROL_DB
 
     def exists(self, run_id: Any) -> bool:
         return isinstance(run_id, str) and RUN_ID.fullmatch(run_id) is not None \
-            and (self.runs_dir / run_id / RECORD).is_file()
+            and bool(rundb.read_record(rundb.locator(self.database, run_id)))
 
     def open(self, run_id: Any) -> Run:
         if not isinstance(run_id, str) or RUN_ID.fullmatch(run_id) is None:
             raise ValueError("invalid run ID")
-        path = self.runs_dir / run_id
-        if not (path / RECORD).is_file():
+        if not self.exists(run_id):
             raise LookupError(f"unknown run {run_id!r}")
-        return Run(path)
+        return Run(self.runs_dir / run_id)
 
     def _new(self, name: str) -> Run:
         base = f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
+        taken = set(rundb.run_ids(self.database))
         folder, n = base, 2
-        while (self.runs_dir / folder).exists():
+        while (self.runs_dir / folder).exists() or folder in taken:
             folder, n = f"{base}_{n}", n + 1
         (self.runs_dir / folder).mkdir(parents=True)
         return Run(self.runs_dir / folder)
@@ -207,15 +239,15 @@ class RunStore:
     def list(self) -> list[dict[str, Any]]:
         """Every run, newest first: where it is, what it is called, how it ended."""
         entries = []
-        for record_path in self.runs_dir.glob(f"*/{RECORD}"):
-            record = rundb.read_record(record_path)
+        for run_id in rundb.run_ids(self.database):
+            record = rundb.read_record(rundb.locator(self.database, run_id))
             if not record:
                 continue
             protocol = (record.get("normalized_settings") or {}).get("protocol") or {}
             entries.append({
-                "run_id": record_path.parent.name,
-                "directory": str(record_path.parent),
-                "name": record.get("tag") or protocol.get("name") or record.get("name") or record_path.parent.name,
+                "run_id": run_id,
+                "directory": str(self.runs_dir / run_id),
+                "name": record.get("tag") or protocol.get("name") or record.get("name") or run_id,
                 "condition": str(record.get("condition") or ""),
                 "kind": record.get("kind", "protocol"),
                 "state": record.get("state", ""),

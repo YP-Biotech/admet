@@ -18,11 +18,11 @@ from admet.core.engine import Param, ParamKind
 from admet.engines.acquisition.fluidics.config import STABILITY_DURATION_S, STABILITY_TOLERANCE_UL_MIN
 from admet.workflows.control import builtin_document
 from admet.workflows.json_protocol import (
-    RUN_FIELDS, loads, parameter_declarations, parameter_text, resolve, template_documents,
+    loads, parameter_declarations, parameter_text, resolve, template_documents,
 )
 
-RUN_LABELS = {"name": "Run", "condition": "Condition"}
-RUN_HINTS = {"name": "the protocol's name", "condition": "from the protocol"}
+CUSTOM_STAGE = "custom"       # the page a protocol is run on its own, its condition typed beside it
+EXPERIMENT_RUN_STAGE = "experiment_run"   # an experiment's row runs here; the row is its definition
 
 
 def value_text(value, unit=""):
@@ -129,22 +129,27 @@ def summary_text(results):
     return "\n".join(flow) or "—", "\n".join(volume) or "—"
 
 
+def trigger_text(trigger, params):
+    if trigger == "volume":
+        return f"volume ch {params['sensor_index']}: {params['target_volume_ul']:g} µL"
+    if trigger == "total_volume":
+        return f"volume ch {'+'.join(map(str, params['sensors']))}: {params['target_volume_ul']:g} µL"
+    if trigger == "time":
+        return f"time: {params['duration_s']:g} s"
+    if trigger == "stability":
+        tolerance = params.get("tolerance_ul_min", STABILITY_TOLERANCE_UL_MIN)
+        window = params.get("window_s", STABILITY_DURATION_S)
+        return f"stable ch {params['sensor_index']}: ±{tolerance:g} µL/min for {window:g} s"
+    if trigger == "any":
+        return " or ".join(trigger_text(stop["trigger_type"], stop.get("trigger_params", {}))
+                           for stop in params["stops"])
+    return trigger + ": " + json.dumps(params, sort_keys=True)
+
+
 def step_rows(plan):
     rows = []
     for step in plan["steps"]:
-        params = step["trigger_params"]
-        trigger = step["trigger_type"]
-        if trigger == "volume":
-            condition = f"volume ch {params['sensor_index']}: {params['target_volume_ul']:g} µL"
-        elif trigger == "time":
-            condition = f"time: {params['duration_s']:g} s"
-        elif trigger == "stability":
-            tolerance = params.get("tolerance_ul_min", STABILITY_TOLERANCE_UL_MIN)
-            window = params.get("window_s", STABILITY_DURATION_S)
-            condition = (f"stable ch {params['sensor_index']}: ±{tolerance:g} µL/min "
-                         f"for {window:g} s")
-        else:
-            condition = trigger + ": " + json.dumps(params, sort_keys=True)
+        condition = trigger_text(step["trigger_type"], step["trigger_params"])
         condition += " · ETA " + value_text(step["expected_duration_s"], " s")
         controls = [
             (index, mode, value_text(target, unit))
@@ -154,7 +159,8 @@ def step_rows(plan):
             )
             for index, target in step[key].items()
         ]
-        gate_only = not controls and trigger == "time" and params["duration_s"] == 0 and step["confirmation"]
+        gate_only = (not controls and step["trigger_type"] == "time" and step["trigger_params"]["duration_s"] == 0
+                     and step["confirmation"])
         if gate_only:
             condition = "Operator: " + step["name"]
         controls = controls or [("—", "confirm" if gate_only else "off", "—")]
@@ -324,7 +330,8 @@ class ProtocolEditor(QWidget):
         self.plan = None
         self.dirty = True
         self.parameter_editors = {}
-        self.run_editors = {}                  # the run's name and condition, the first rows of the parameter table
+        self.run_editors = {}                  # the custom run's condition, the first row of the parameter table
+        self.condition = ""
         self.parameter_table = None
         self._table_digest = None
         self._edit_generation = 0
@@ -337,6 +344,9 @@ class ProtocolEditor(QWidget):
         self.editor.setMaximumHeight(180)
         self.editor.setPlaceholderText("Select a template or edit the JSON definition here.")
         self.builtin = stage.settings_options.get("builtin", "")
+        # Only a protocol run on its own is chosen and edited here; built-in steps and an experiment's
+        # rows bring their own definition, so the selector, the parameters and the JSON stay hidden.
+        self.editable = not self.builtin and stage.id != EXPERIMENT_RUN_STAGE
         if not self.builtin:
             self.templates = template_documents()
             bar = QHBoxLayout()
@@ -344,11 +354,12 @@ class ProtocolEditor(QWidget):
             self.library.setMinimumWidth(170)
             bar.addWidget(self.library, 1)
             self.library.currentIndexChanged.connect(self.open_template)
+            self.library.setVisible(self.editable)
             root.addLayout(bar)
             self.parameter_box = QVBoxLayout()
             root.addLayout(self.parameter_box)
             root.addWidget(self.editor)
-        else:
+        if not self.editable:
             self.editor.hide()
         self.table = PlanTable()
         self.table.setObjectName("RawConfigTable")
@@ -386,7 +397,7 @@ class ProtocolEditor(QWidget):
         self._edit_generation += 1
         self._table_digest = None
         self.dirty = True
-        self.editor.setVisible(not self.builtin and not self._executing)
+        self.editor.setVisible(self.editable and not self._executing)
         self.table.hide()
         self.details_box.hide()
         self.window._protocol_changed()
@@ -401,7 +412,7 @@ class ProtocolEditor(QWidget):
         self.measurements.preview(fields)
 
     def refresh_parameters(self):
-        if self.builtin:
+        if not self.editable:
             return
         if self.parameter_table is not None:
             self.parameter_box.removeWidget(self.parameter_table)
@@ -414,18 +425,16 @@ class ProtocolEditor(QWidget):
         except (ValueError, TypeError):
             return
         declarations = parameter_declarations(document)
-        run = document.get("run") if isinstance(document.get("run"), dict) else {}
         from admet.ui.control import NumericParamEdit
 
         def make_editor(param):
-            if param.name.startswith("run."):
-                key = param.name[4:]
-                widget = QLineEdit(str(run.get(key) or ""))
-                widget.setPlaceholderText(document.get("name", "") if key == "name" else RUN_HINTS[key])
+            if param.name == "run.condition":
+                widget = QLineEdit(self.condition)
+                widget.setPlaceholderText("the protocol and its setpoints")
                 widget.setMaxLength(80)
                 widget.textEdited.connect(self.edited)
-                widget.editingFinished.connect(lambda key=key, widget=widget: self.set_run_field(key, widget.text()))
-                self.run_editors[key] = widget
+                widget.editingFinished.connect(lambda widget=widget: setattr(self, "condition", widget.text().strip()))
+                self.run_editors["condition"] = widget
                 widget.setEnabled(not self._executing)
                 return widget
             value = document["parameter_values"][param.name]
@@ -457,32 +466,13 @@ class ProtocolEditor(QWidget):
             return widget
 
         kinds = {"number": ParamKind.FLOAT, "text": ParamKind.TEXT, "boolean": ParamKind.BOOLEAN, "choice": ParamKind.CHOICE}
-        params = [Param("run." + key, RUN_LABELS[key], ParamKind.TEXT, default="") for key in RUN_FIELDS]
+        # A custom run's condition is typed; its id comes from the day's custom runs.
+        params = [Param("run.condition", "Condition", ParamKind.TEXT, default="")] if self.stage.id == CUSTOM_STAGE else []
         params += [Param(name, declaration["label"], kinds[declaration["type"]], default=declaration["default"],
                          minimum=declaration.get("min"), maximum=declaration.get("max"))
                    for name, declaration in declarations.items()]
         self.parameter_table = self.window._param_table(params, editor_factory=make_editor)
         self.parameter_box.addWidget(self.parameter_table)
-
-    def set_run_field(self, key, value):
-        """The run's name or condition, into the document's run block; an empty value takes the field out."""
-        document = json.loads(self.editor.toPlainText())
-        run = dict(document.get("run") or {}) if isinstance(document.get("run"), dict) else {}
-        value = value.strip()
-        if (run.get(key) or "") == value:
-            return
-        if value:
-            run[key] = value
-        else:
-            run.pop(key, None)
-        if run:
-            document["run"] = run
-        else:
-            document.pop("run", None)
-        self.editor.blockSignals(True)
-        self.editor.setPlainText(json.dumps(document, indent=2, ensure_ascii=False))
-        self.editor.blockSignals(False)
-        self.edited()
 
     def set_parameter(self, name, value):
         # Keep other pending cells intact; validation of all resolved steps happens on Build/Save.
@@ -517,8 +507,8 @@ class ProtocolEditor(QWidget):
             if isinstance(widget, QLineEdit) and not isinstance(widget, NumericParamEdit):
                 if json.loads(self.editor.toPlainText()).get("parameter_values", {}).get(name) != widget.text():
                     self.set_parameter(name, widget.text())
-        for key, widget in self.run_editors.items():
-            self.set_run_field(key, widget.text())                        # a value typed but not yet left
+        if "condition" in self.run_editors:
+            self.condition = self.run_editors["condition"].text().strip()   # a value typed but not yet left
         return loads(self.editor.toPlainText())
 
     def populate_templates(self):
@@ -550,16 +540,18 @@ class ProtocolEditor(QWidget):
         except Exception as exc:
             self.error(exc)
             return
-        name = str((document.get("run") or {}).get("name") or "") if not self.builtin else ""
-        if name:
-            self.window._rename_protocol_stage(self.stage.id, name)     # the step is the run from now on
+        try:
+            run = self.window._run_identity(self, document)
+        except (LookupError, ValueError) as exc:
+            self.error(exc)
+            return
         generation = self._edit_generation
 
         def received(plan):
             if generation == self._edit_generation:
                 self.add_plan(plan)
 
-        self.submit(lambda: self.backend.preview(self.stage.id, document), received)
+        self.submit(lambda: self.backend.preview(self.stage.id, document, run), received)
 
     def add_plan(self, plan):
         self.plan = plan
@@ -567,7 +559,7 @@ class ProtocolEditor(QWidget):
         self._table_digest = None
         self.measurements.preview(resolve(plan["normalized_settings"]["protocol"]).get("measurements", {}))
         self.show_plan()
-        self.editor.setVisible(not bool(self.builtin))
+        self.editor.setVisible(self.editable)
         self.window._append_log("Preview ready — nothing recorded or actuated")
         self.window._protocol_changed()
 
@@ -616,7 +608,7 @@ class ProtocolEditor(QWidget):
 
         def failed(exc):
             self.lock_definition(False)
-            self.editor.setVisible(not bool(self.builtin))
+            self.editor.setVisible(self.editable)
             self.error(exc)
 
         self.window.tasks.submit(lambda: self.backend.call("control_protocol", {

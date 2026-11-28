@@ -187,12 +187,13 @@ class DesktopBackendTests(unittest.TestCase):
         self.assertEqual(archived["parameter_values"]["finish"], "zero")
         self.assertEqual(archived["parameter_values"]["offset"], -1)
 
-    def test_dropseq_template_simulated_collection_gates_and_artifacts(self):
+    def test_an_experiment_row_collects_its_replicates_with_a_gate_before_each(self):
+        from admet.core.experiments import Experiment
+
         self.connect()
-        document = template_documents()["dropseq_3n"]
-        document["parameter_values"]["target_ul"] = 5                          # a 5 uL test aliquot per replicate
-        saved = self.backend.call("save_protocol", {"protocol": document})
-        plan = self.backend.plan_file(saved["path"])
+        experiment = Experiment("K7Q", "sweep")
+        run = experiment.add(stop_oil_ul=5)                                     # a 5 uL test aliquot per replicate
+        plan = self.backend.preview("experiment_1", experiment.document(run), experiment.identity(run))
         observed = self.backend.call("observe")
         self.assertFalse(observed["recording"]["active"])
         self.assertEqual({c["mode"] for c in observed["channels"]}, {"off"})
@@ -212,17 +213,17 @@ class DesktopBackendTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         else:
-            self.fail("simulated Drop-Seq did not complete")
+            self.fail("the simulated collections did not complete")
         self.assertTrue(running_targets_seen)
-        self.assertEqual(gates, 4)                                              # three replicates, then finish
+        self.assertEqual(gates, 3)                                              # one before each replicate
         completed = self.wait_completed(plan["plan_id"])
         self.assertFalse(self.backend.call("observe")["recording"]["active"])
         directory = Path(self.backend.workdir) / "runs" / completed["run_id"]
         summary = rundb.read_record(directory / "run.db")
-        self.assertEqual(summary["normalized_settings"]["protocol"], document)
+        self.assertEqual((summary["run_code"], summary["experiment"]), ("K7Q-01", "sweep"))
         self.assertTrue((directory / summary["artifacts"]["timeline"]).is_file())
         events = self.backend.call("protocol_events", {"limit": 1000})["events"]
-        for name in ("set01_rep01", "set01_rep02", "set01_rep03"):
+        for name in ("K7Q-01 rep01", "K7Q-01 rep02", "K7Q-01 rep03"):
             done = next(e for e in events if e["step_name"] == name and e["outcome"] == "completed")
             self.assertGreaterEqual(float(done["step_volumes"][0]), 5)
 
@@ -280,8 +281,7 @@ class DesktopBackendTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "start Live"):
                 self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"]})
         self.assertFalse(self.backend.engine.recording_active)
-        recorded["run"] = {"name": "oil 3", "condition": "oil"}
-        plan = self.backend.preview("experiment_1", recorded)
+        plan = self.backend.preview("experiment_1", recorded, {"name": "oil 3", "condition": "oil"})
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.assertFalse(camera.recording)                                  # waiting at the gate: no video
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 0.1})
@@ -350,7 +350,7 @@ class DesktopBackendTests(unittest.TestCase):
         from admet.workflows.calculations import recorded_runs
 
         self.connect()
-        plan = self.backend.preview("experiment_1", {**definition(), "run": {"name": "  oil 3 ", "condition": " oil "}})
+        plan = self.backend.preview("experiment_1", definition(), {"name": "  oil 3 ", "condition": " oil "})
         self.assertEqual((plan["tag"], plan["condition"]), ("oil 3", "oil"))
         self.backend.call("control_protocol", {"action": "execute", "plan_id": plan["plan_id"], "timeout_s": 1})
         self.backend.call("control_protocol", {"action": "confirm", "timeout_s": 1})
@@ -364,6 +364,8 @@ class DesktopBackendTests(unittest.TestCase):
         unnamed = self.backend.preview("experiment_1", definition())
         self.assertEqual((unnamed["tag"], unnamed["condition"]), ("", ""))      # unnamed: the protocol's name, no set
         self.assertEqual(self.backend.measurement_runs(), [])             # nothing to type in this one
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            self.backend.preview("experiment_1", {**definition(), "run": {"name": "oil 3"}})   # not the protocol's
 
     def test_density_completion_closes_recording_without_running_calculations(self):
         from tests.test_fluid_density import recorded_density

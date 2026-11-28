@@ -8,20 +8,24 @@ from admet.core import rundb
 
 
 def set_timeline(db, text):
-    """The run's timeline replaced by the rows of CSV text, its header naming the columns."""
+    """The run's timeline replaced by the rows of CSV text, its header naming the columns; DB is a
+    run.db's path or a run's locator in control.db."""
     reader = csv.DictReader(io.StringIO(text))
     rows = list(reader)
-    db = Path(db)
-    if db.is_file():
-        connection = rundb.connect(db)
+    path, run_id = rundb.locate(db)
+    if path.is_file():
+        connection = rundb.connect(path)
         try:
             with connection:
-                connection.execute("DROP TABLE IF EXISTS fluidics")
-                connection.execute("DROP TABLE IF EXISTS qc")
+                for table in ("fluidics", "qc"):
+                    if run_id is None:
+                        connection.execute(f"DROP TABLE IF EXISTS {table}")
+                    elif rundb._table_columns(connection, table):
+                        connection.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
         finally:
             connection.close()
     rundb.write_timeline(db, rows, *rundb.channel_counts(reader.fieldnames or []))
-    return db
+    return db if run_id is not None else Path(db)
 
 
 def add_to_timeline(db, text):
